@@ -19,16 +19,20 @@ That will make easy to make a scan using the return value of CreateFile or equvi
 Please replace current libclamav installation with wsdk scanner core directory.
 
 ### Usage
-Instruct developers on how to use your project after they’ve installed it.
-This would also be a good place to include screenshots of your project in action.
-
 ```cpp
 const char *virname;
 unsigned long size = 0;
 struct cl_scan_options options;
 
 const char *path = "PLACE PATH HERE";
-int result = cl_scanhandle(Handle, path, &virname, &size, engine, &options);
+HANDLE handle = CreateFile(path,
+                           GENERIC_READ | GENERIC_WRITE,
+                           0,
+                           NULL,
+                           CREATE_NEW,
+                           FILE_ATTRIBUTE_NORMAL,
+                           NULL);   
+int result = cl_scanhandle(handle, path, &virname, &size, engine, &options);
 ```
 
 ## Licensing
