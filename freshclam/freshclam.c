@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *  Copyright (C) 2002-2007 Tomasz Kojm <tkojm@clamav.net>
  *
@@ -21,8 +21,6 @@
 #if HAVE_CONFIG_H
 #include "clamav-config.h"
 #endif
-
-#include "libfreshclam/libfreshclam.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,15 +49,23 @@
 #endif
 
 #include "target.h"
+
+// libclamav
 #include "clamav.h"
-#include "libfreshclam/libfreshclam.h"
+#include "others.h"
+#include "str.h"
 
-#include "libclamav/others.h"
-#include "libclamav/str.h"
+// common
+#include "optparser.h"
+#include "output.h"
+#include "misc.h"
 
-#include "shared/optparser.h"
-#include "shared/output.h"
-#include "shared/misc.h"
+#ifdef _WIN32
+#include "service.h"
+#endif
+
+// libfreshclam
+#include "libfreshclam.h"
 
 #include "execute.h"
 #include "notify.h"
@@ -113,25 +119,42 @@ sighandler(int sig)
                 cli_rmdirs(g_freshclamTempDirectory);
             if (g_pidfile)
                 unlink(g_pidfile);
-            logg("Update process terminated\n");
+            logg(LOGG_INFO, "Update process terminated\n");
             exit(0);
     }
 
     return;
 }
 
-static void writepid(const char *pidfile)
+static int writepid(const char *pidfile)
 {
     FILE *fd;
     int old_umask;
-    old_umask = umask(0006);
+    old_umask = umask(0022);
     if ((fd = fopen(pidfile, "w")) == NULL) {
-        logg("!Can't save PID to file %s: %s\n", pidfile, strerror(errno));
+        logg(LOGG_ERROR, "Can't save PID to file %s: %s\n", pidfile, strerror(errno));
+        return 1;
     } else {
         fprintf(fd, "%d\n", (int)getpid());
         fclose(fd);
     }
     umask(old_umask);
+
+#ifndef _WIN32
+    /*If the file has already been created by a different user, it will just be
+     * rewritten by us, but not change the ownership, so do that explicitly.
+     */
+    if (0 == geteuid()) {
+        struct passwd *pw = getpwuid(0);
+        int ret           = lchown(pidfile, pw->pw_uid, pw->pw_gid);
+        if (ret) {
+            logg(LOGG_ERROR, "Can't change ownership of PID file %s '%s'\n", pidfile, strerror(errno));
+            return 1;
+        }
+    }
+#endif /*_WIN32 */
+
+    return 0;
 }
 
 static void help(void)
@@ -139,7 +162,7 @@ static void help(void)
     printf("\n");
     printf("                      Clam AntiVirus: Database Updater %s\n", get_version());
     printf("           By The ClamAV Team: https://www.clamav.net/about.html#credits\n");
-    printf("           (C) 2020 Cisco Systems, Inc.\n");
+    printf("           (C) 2023 Cisco Systems, Inc.\n");
     printf("\n");
     printf("    freshclam [options]\n");
     printf("\n");
@@ -149,13 +172,18 @@ static void help(void)
     printf("    --debug                              Enable debug messages\n");
     printf("    --quiet                              Only output error messages\n");
     printf("    --no-warnings                        Don't print and log warnings\n");
-    printf("    --stdout                             Write to stdout instead of stderr. Does not affect 'debug' messages.\n");
+    printf("    --stdout                             Write to stdout instead of stderr.\n");
+    printf("                                         Does not affect 'debug' messages.\n");
     printf("    --show-progress                      Show download progress percentage\n");
     printf("\n");
     printf("    --config-file=FILE                   Read configuration from FILE.\n");
     printf("    --log=FILE           -l FILE         Log into FILE\n");
+#ifdef _WIN32
+    printf("    --install-service                    Install Windows Service\n");
+    printf("    --uninstall-service                  Uninstall Windows Service\n");
+#endif
     printf("    --daemon             -d              Run in daemon mode\n");
-    printf("    --pid=FILE           -p FILE         Save daemon's pid in FILE\n");
+    printf("    --pid=FILE           -p FILE         Write the daemon's pid to FILE\n");
 #ifndef _WIN32
     printf("    --foreground         -F              Don't fork into background (for use in daemon mode).\n");
     printf("    --user=USER          -u USER         Run as USER\n");
@@ -163,14 +191,33 @@ static void help(void)
     printf("    --no-dns                             Force old non-DNS verification method\n");
     printf("    --checks=#n          -c #n           Number of checks per day, 1 <= n <= 50\n");
     printf("    --datadir=DIRECTORY                  Download new databases into DIRECTORY\n");
-#ifdef BUILD_CLAMD
     printf("    --daemon-notify[=/path/clamd.conf]   Send RELOAD command to clamd\n");
-#endif
     printf("    --local-address=IP   -a IP           Bind to IP for HTTP downloads\n");
-    printf("    --on-update-execute=COMMAND          Execute COMMAND after successful update\n");
+    printf("    --on-update-execute=COMMAND          Execute COMMAND after successful update.\n");
+    printf("                                         Use EXIT_1 to return 1 after successful database update.\n");
     printf("    --on-error-execute=COMMAND           Execute COMMAND if errors occurred\n");
     printf("    --on-outdated-execute=COMMAND        Execute COMMAND when software is outdated\n");
     printf("    --update-db=DBNAME                   Only update database DBNAME\n");
+    printf("\n");
+    printf("Environment Variables:\n");
+    printf("\n");
+#if !defined(C_DARWIN) && !defined(_WIN32)
+    printf("  CURL_CA_BUNDLE                         May be set to the path of a file (bundle)\n");
+    printf("                                         containing one or more CA certificates.\n");
+    printf("                                         This will override the default openssl\n");
+    printf("                                         certificate path.\n");
+    printf("\n");
+#endif
+    printf("  FRESHCLAM_CLIENT_CERT                  May be set to the path of a file (PEM)\n");
+    printf("                                         containing the client certificate.\n");
+    printf("                                         This may be used for client authentication\n");
+    printf("                                         to a private mirror.\n");
+    printf("  FRESHCLAM_CLIENT_KEY                   May be set to the path of a file (PEM)\n");
+    printf("                                         containing the client private key.\n");
+    printf("                                         This is required if FRESHCLAM_CLIENT_CERT is set.\n");
+    printf("  FRESHCLAM_CLIENT_KEY_PASSWD            May be set to a password for the client key PEM file.\n");
+    printf("                                         This is required if FRESHCLAM_CLIENT_KEY is\n");
+    printf("                                         set and the PEM file is password protected.\n");
     printf("\n");
 }
 
@@ -181,13 +228,13 @@ static void libclamav_msg_callback(enum cl_msg severity, const char *fullmsg, co
 
     switch (severity) {
         case CL_MSG_ERROR:
-            logg("^[LibClamAV] %s", msg);
+            logg(LOGG_WARNING, "[LibClamAV] %s", msg);
             break;
         case CL_MSG_WARN:
-            logg("~[LibClamAV] %s", msg);
+            logg(LOGG_INFO, "[LibClamAV] %s", msg);
             break;
         default:
-            logg("*[LibClamAV] %s", msg);
+            logg(LOGG_DEBUG, "[LibClamAV] %s", msg);
             break;
     }
 }
@@ -199,7 +246,7 @@ static void libclamav_msg_callback_quiet(enum cl_msg severity, const char *fullm
 
     switch (severity) {
         case CL_MSG_ERROR:
-            logg("^[LibClamAV] %s", msg);
+            logg(LOGG_WARNING, "[LibClamAV] %s", msg);
             break;
         default:
             break;
@@ -212,7 +259,7 @@ fc_error_t download_complete_callback(const char *dbFilename, void *context)
     fc_error_t ret;
     fc_ctx *fc_context = (fc_ctx *)context;
 
-#ifndef WIN32
+#ifndef _WIN32
     char firstline[256];
     char lastline[256];
     int pipefd[2];
@@ -222,28 +269,28 @@ fc_error_t download_complete_callback(const char *dbFilename, void *context)
 #endif
 
     if ((NULL == context) || (NULL == dbFilename)) {
-        logg("^Invalid arguments to download_complete_callback.\n");
+        logg(LOGG_WARNING, "Invalid arguments to download_complete_callback.\n");
         goto done;
     }
 
-    logg("*download_complete_callback: Download complete for database : %s\n", dbFilename);
-    logg("*download_complete_callback:   fc_context->bTestDatabases   : %u\n", fc_context->bBytecodeEnabled);
-    logg("*download_complete_callback:   fc_context->bBytecodeEnabled : %u\n", fc_context->bBytecodeEnabled);
+    logg(LOGG_DEBUG, "download_complete_callback: Download complete for database : %s\n", dbFilename);
+    logg(LOGG_DEBUG, "download_complete_callback:   fc_context->bTestDatabases   : %u\n", fc_context->bTestDatabases);
+    logg(LOGG_DEBUG, "download_complete_callback:   fc_context->bBytecodeEnabled : %u\n", fc_context->bBytecodeEnabled);
 
-    logg("Testing database: '%s' ...\n", dbFilename);
+    logg(LOGG_INFO, "Testing database: '%s' ...\n", dbFilename);
 
     if (fc_context->bTestDatabases) {
-#ifdef WIN32
+#ifdef _WIN32
 
         __try {
             ret = fc_test_database(dbFilename, fc_context->bBytecodeEnabled);
-        } __except (logg("!Exception during database testing, code %08x\n",
+        } __except (logg(LOGG_ERROR, "Exception during database testing, code %08x\n",
                          GetExceptionCode()),
                     EXCEPTION_CONTINUE_SEARCH) {
             ret = FC_ETESTFAIL;
         }
         if (FC_SUCCESS != ret) {
-            logg("^Database load exited with \"%s\" (%d)\n", fc_strerror(ret), ret);
+            logg(LOGG_WARNING, "Database load exited with \"%s\"\n", fc_strerror(ret));
             status = FC_ETESTFAIL;
             goto done;
         }
@@ -255,14 +302,22 @@ fc_error_t download_complete_callback(const char *dbFilename, void *context)
              * Failed to create pipe.
              * Test database without using pipe & child process.
              */
-            logg("^pipe() failed: %s\n", strerror(errno));
+            logg(LOGG_WARNING, "pipe() failed: %s\n", strerror(errno));
             ret = fc_test_database(dbFilename, fc_context->bBytecodeEnabled);
             if (FC_SUCCESS != ret) {
-                logg("^Database load exited with \"%s\" (%d)\n", fc_strerror(ret), ret);
+                logg(LOGG_WARNING, "Database load exited with \"%s\"\n", fc_strerror(ret));
                 status = FC_ETESTFAIL;
                 goto done;
             }
         } else {
+            /*
+             * Attempt to test database in a child process.
+             */
+
+            /* We need to be able to wait for the child process ourselves.
+             * We'll re-enable wait in the global handler when we're done. */
+            g_sigchildWait = 0;
+
             switch (pid = fork()) {
                 case -1: {
                     /*
@@ -271,12 +326,12 @@ fc_error_t download_complete_callback(const char *dbFilename, void *context)
                      */
                     close(pipefd[0]);
                     close(pipefd[1]);
-                    logg("^fork() to test database failed: %s\n", strerror(errno));
+                    logg(LOGG_WARNING, "fork() to test database failed: %s\n", strerror(errno));
 
                     /* Test the database without forking. */
                     ret = fc_test_database(dbFilename, fc_context->bBytecodeEnabled);
                     if (FC_SUCCESS != ret) {
-                        logg("^Database load exited with \"%s\" (%d)\n", fc_strerror(ret), ret);
+                        logg(LOGG_WARNING, "Database load exited with \"%s\"\n", fc_strerror(ret));
                         status = FC_ETESTFAIL;
                         goto done;
                     }
@@ -290,7 +345,7 @@ fc_error_t download_complete_callback(const char *dbFilename, void *context)
 
                     /* Redirect stderr to the pipe for the parent process */
                     if (dup2(pipefd[1], 2) == -1) {
-                        logg("^dup2() call to redirect stderr to pipe failed: %s\n", strerror(errno));
+                        logg(LOGG_WARNING, "dup2() call to redirect stderr to pipe failed: %s\n", strerror(errno));
                     }
 
                     /* Test the database */
@@ -317,7 +372,7 @@ fc_error_t download_complete_callback(const char *dbFilename, void *context)
                     /* must read entire output, child doesn't like EPIPE */
                     while (fgets(lastline, sizeof(firstline), pipeHandle)) {
                         /* print the full output only when LogVerbose or -v is given */
-                        logg("*%s", lastline);
+                        logg(LOGG_DEBUG, "%s", lastline);
                     }
                     fclose(pipeHandle);
                     pipeHandle = NULL;
@@ -327,7 +382,7 @@ fc_error_t download_complete_callback(const char *dbFilename, void *context)
                     }
 
                     if ((waitpidret == -1) && (errno != ECHILD))
-                        logg("^waitpid() failed: %s\n", strerror(errno));
+                        logg(LOGG_WARNING, "waitpid() failed: %s\n", strerror(errno));
 
                     /* Strip trailing whitespace from child error output */
                     cli_chomp(firstline);
@@ -335,26 +390,26 @@ fc_error_t download_complete_callback(const char *dbFilename, void *context)
 
                     if (firstline[0]) {
                         /* The child process output some error messages */
-                        logg("^Stderr output from database load : %s%s%s\n", firstline, lastline[0] ? " [...] " : "", lastline);
+                        logg(LOGG_WARNING, "Stderr output from database load : %s%s%s\n", firstline, lastline[0] ? " [...] " : "", lastline);
                     }
 
                     if (WIFEXITED(stat_loc)) {
                         ret = (fc_error_t)WEXITSTATUS(stat_loc);
                         if (FC_SUCCESS != ret) {
-                            logg("^Database load exited with \"%s\" (%d)\n", fc_strerror(ret), ret);
+                            logg(LOGG_WARNING, "Database load exited with \"%s\"\n", fc_strerror(ret));
                             status = FC_ETESTFAIL;
                             goto done;
                         }
 
                         if (firstline[0])
-                            logg("^Database successfully loaded, but there is stderr output\n");
+                            logg(LOGG_WARNING, "Database successfully loaded, but there is stderr output\n");
 
                     } else if (WIFSIGNALED(stat_loc)) {
-                        logg("!Database load killed by signal %d\n", WTERMSIG(stat_loc));
+                        logg(LOGG_ERROR, "Database load killed by signal %d\n", WTERMSIG(stat_loc));
                         status = FC_ETESTFAIL;
                         goto done;
                     } else {
-                        logg("^Unknown status from wait: %d\n", stat_loc);
+                        logg(LOGG_WARNING, "Unknown status from wait: %d\n", stat_loc);
                         status = FC_ETESTFAIL;
                         goto done;
                     }
@@ -369,11 +424,12 @@ fc_error_t download_complete_callback(const char *dbFilename, void *context)
 done:
 
     if (FC_SUCCESS == status) {
-        logg("Database test passed.\n");
+        logg(LOGG_INFO, "Database test passed.\n");
     } else {
-        logg("!Database test FAILED.\n");
+        logg(LOGG_ERROR, "Database test FAILED.\n");
     }
 
+    /* Re-enable the global handler's child process wait */
     g_sigchildWait = 1;
 
     return status;
@@ -395,7 +451,7 @@ done:
  * @param server            Server string
  * @param defaultProtocol   Default protocol if not already specified. Eg: "https"
  * @param defaultPort       Default port if not already specified. Eg: 443
- * @param serverUrl         [out] A malloced string in the protocol://server:port format.
+ * @param[out] serverUrl    A malloced string in the protocol://server:port format.
  * @return fc_error_t       FC_SUCCESS if success.
  * @return fc_error_t       FC_EARG if invalid args.
  * @return fc_error_t       FC_EMEM if malloc failed.
@@ -412,7 +468,7 @@ static fc_error_t get_server_node(
     size_t urlLen = 0;
 
     if ((NULL == server) || (NULL == defaultProtocol) || (NULL == serverUrl)) {
-        mprintf("!get_server_node: Invalid args!\n");
+        mprintf(LOGG_ERROR, "get_server_node: Invalid args!\n");
         goto done;
     }
 
@@ -424,7 +480,7 @@ static fc_error_t get_server_node(
     if (!strncmp(server, "db.", 3) && strstr(server, ".clamav.net")) {
         url = cli_strdup("https://database.clamav.net");
         if (NULL == url) {
-            logg("!get_server_node: Failed to duplicate string for database.clamav.net url.\n");
+            logg(LOGG_ERROR, "get_server_node: Failed to duplicate string for database.clamav.net url.\n");
             status = FC_EMEM;
             goto done;
         }
@@ -432,7 +488,7 @@ static fc_error_t get_server_node(
         urlLen = strlen(defaultProtocol) + strlen("://") + strlen(server);
         url    = malloc(urlLen + 1);
         if (NULL == url) {
-            logg("!get_server_node: Failed to allocate memory for server url.\n");
+            logg(LOGG_ERROR, "get_server_node: Failed to allocate memory for server url.\n");
             status = FC_EMEM;
             goto done;
         }
@@ -441,7 +497,7 @@ static fc_error_t get_server_node(
         urlLen = strlen(server);
         url    = cli_strdup(server);
         if (NULL == url) {
-            logg("!get_server_node: Failed to duplicate string for server url.\n");
+            logg(LOGG_ERROR, "get_server_node: Failed to duplicate string for server url.\n");
             status = FC_EMEM;
             goto done;
         }
@@ -457,12 +513,12 @@ done:
 /**
  * @brief Add string to list of strings.
  *
- * @param item          string to add to list.
- * @param stringList    [in/out] String list to add string to.
- * @param nListItems    [in/out] Number of strings in list.
- * @return fc_error_t   FC_SUCCESS if success.
- * @return fc_error_t   FC_EARG if invalid args passed to function.
- * @return fc_error_t   FC_EMEM if failed to allocate memory.
+ * @param item                  string to add to list.
+ * @param[in,out] stringList    String list to add string to.
+ * @param[in,out] nListItems    Number of strings in list.
+ * @return fc_error_t           FC_SUCCESS if success.
+ * @return fc_error_t           FC_EARG if invalid args passed to function.
+ * @return fc_error_t           FC_EMEM if failed to allocate memory.
  */
 static fc_error_t string_list_add(const char *item, char ***stringList, uint32_t *nListItems)
 {
@@ -472,14 +528,14 @@ static fc_error_t string_list_add(const char *item, char ***stringList, uint32_t
     uint32_t nItems = 0;
 
     if ((NULL == item) || (NULL == stringList) || (NULL == nListItems)) {
-        mprintf("!string_list_add: Invalid arguments.\n");
+        mprintf(LOGG_ERROR, "string_list_add: Invalid arguments.\n");
         goto done;
     }
 
     nItems  = *nListItems + 1;
     newList = (char **)cli_realloc(*stringList, nItems * sizeof(char *));
     if (newList == NULL) {
-        mprintf("!string_list_add: Failed to allocate memory for optional database list entry.\n");
+        mprintf(LOGG_ERROR, "string_list_add: Failed to allocate memory for optional database list entry.\n");
         status = FC_EMEM;
         goto done;
     }
@@ -488,7 +544,7 @@ static fc_error_t string_list_add(const char *item, char ***stringList, uint32_t
 
     newList[nItems - 1] = cli_strdup(item);
     if (newList[nItems - 1] == NULL) {
-        mprintf("!string_list_add: Failed to allocate memory for optional database list item.\n");
+        mprintf(LOGG_ERROR, "string_list_add: Failed to allocate memory for optional database list item.\n");
         status = FC_EMEM;
         goto done;
     }
@@ -528,10 +584,10 @@ static void free_string_list(char **stringList, uint32_t nListItems)
 /**
  * @brief Get the database server list object
  *
- * @param opts          Freshclam options struct.
- * @param serverList    [out] List of servers.
- * @param nServers      [out] Number of servers in list.
- * @param bPrivate      [out] Non-zero if PrivateMirror servers were selected.
+ * @param opts              FreshClam options struct.
+ * @param[out]  serverList  List of servers.
+ * @param[out]  nServers    Number of servers in list.
+ * @param[out]  bPrivate    Non-zero if PrivateMirror servers were selected.
  * @return fc_error_t
  */
 static fc_error_t get_database_server_list(
@@ -547,7 +603,7 @@ static fc_error_t get_database_server_list(
     uint32_t numServers = 0;
 
     if ((NULL == opts) || (NULL == serverList) || (NULL == nServers) || (NULL == bPrivate)) {
-        mprintf("!get_database_server_list: Invalid args!\n");
+        mprintf(LOGG_ERROR, "get_database_server_list: Invalid args!\n");
         goto done;
     }
 
@@ -564,13 +620,13 @@ static fc_error_t get_database_server_list(
             char *serverUrl = NULL;
 
             if (cli_strbcasestr(opt->strarg, ".clamav.net")) {
-                logg("!The PrivateMirror config option may not include servers under *.clamav.net.\n");
+                logg(LOGG_ERROR, "The PrivateMirror config option may not include servers under *.clamav.net.\n");
                 status = FC_ECONFIG;
                 goto done;
             }
 
             if (FC_SUCCESS != (ret = get_server_node(opt->strarg, "http", &serverUrl))) {
-                mprintf("!get_database_server_list: Failed to read PrivateMirror server %s", opt->strarg);
+                mprintf(LOGG_ERROR, "get_database_server_list: Failed to read PrivateMirror server %s", opt->strarg);
                 status = ret;
                 goto done;
             }
@@ -578,7 +634,7 @@ static fc_error_t get_database_server_list(
             if (FC_SUCCESS != (ret = string_list_add(serverUrl, &servers, &numServers))) {
                 free(serverUrl);
 
-                mprintf("!get_database_server_list: Failed to add string to list.\n");
+                mprintf(LOGG_ERROR, "get_database_server_list: Failed to add string to list.\n");
                 status = ret;
                 goto done;
             }
@@ -588,7 +644,7 @@ static fc_error_t get_database_server_list(
         /* Check for DatabaseMirrors. */
         if (!(opt = optget(opts, "DatabaseMirror"))->enabled) {
             /* No DatabaseMirror configured. Fail out. */
-            logg("!No DatabaseMirror or PrivateMirror servers set in freshclam config file.\n");
+            logg(LOGG_ERROR, "No DatabaseMirror or PrivateMirror servers set in freshclam config file.\n");
             status = FC_ECONFIG;
             goto done;
         }
@@ -597,7 +653,7 @@ static fc_error_t get_database_server_list(
             char *serverUrl = NULL;
 
             if (FC_SUCCESS != (ret = get_server_node(opt->strarg, "https", &serverUrl))) {
-                mprintf("!get_database_server_list: Failed to parse DatabaseMirror server %s.", opt->strarg);
+                mprintf(LOGG_ERROR, "get_database_server_list: Failed to parse DatabaseMirror server %s.", opt->strarg);
                 status = ret;
                 goto done;
             }
@@ -605,7 +661,7 @@ static fc_error_t get_database_server_list(
             if (FC_SUCCESS != (ret = string_list_add(serverUrl, &servers, &numServers))) {
                 free(serverUrl);
 
-                mprintf("!get_database_server_list: Failed to add string to list.\n");
+                mprintf(LOGG_ERROR, "get_database_server_list: Failed to add string to list.\n");
                 status = ret;
                 goto done;
             }
@@ -627,76 +683,14 @@ done:
 }
 
 /**
- * @brief Switch users to the DatabaseOwner, if specified.
- *
- * @param dbowner     A user account that will have write permissions in the database directory.
- * @return fc_error_t FC_SUCCESS if success.
- * @return fc_error_t FC_EARG if success.
- */
-static fc_error_t switch_user(const char *dbowner)
-{
-    fc_error_t status = FC_EARG;
-
-#ifdef HAVE_PWD_H
-    struct passwd *user;
-
-    if (NULL == dbowner) {
-        logg("*No DatabaseOwner specified. Freshclam will run as the current user.\n");
-        status = FC_SUCCESS;
-        goto done;
-    }
-
-    if (!geteuid()) {
-        if ((user = getpwnam(dbowner)) == NULL) {
-            logg("^Can't get information about user %s.\n", dbowner);
-            status = FC_ECONFIG;
-            goto done;
-        }
-
-#ifdef HAVE_INITGROUPS
-        if (initgroups(dbowner, user->pw_gid)) {
-            logg("^initgroups() failed.\n");
-            status = FC_ECONFIG;
-            goto done;
-        }
-#elif HAVE_SETGROUPS
-        if (setgroups(1, &user->pw_gid)) {
-            logg("^setgroups() failed.\n");
-            status = FC_ECONFIG;
-            goto done;
-        }
-#endif
-
-        if (setgid(user->pw_gid)) {
-            logg("^setgid(%d) failed.\n", (int)user->pw_gid);
-            status = FC_ECONFIG;
-            goto done;
-        }
-
-        if (setuid(user->pw_uid)) {
-            logg("^setuid(%d) failed.\n", (int)user->pw_uid);
-            status = FC_ECONFIG;
-            goto done;
-        }
-    }
-#endif /* HAVE_PWD_H */
-
-    status = FC_SUCCESS;
-
-done:
-
-    return status;
-}
-
-/**
  * @brief Get a list of strings for a given repeatable opt argument.
  *
- * @param opt           optstruct of repeatable argument to collect in a list.
- * @param stringList    [out] String list.
- * @param nListItems    [out] Number of strings in list.
- * @return fc_error_t   FC_SUCCESS if success.
- * @return fc_error_t   FC_EARG if invalid args passed to function.
- * @return fc_error_t   FC_EMEM if failed to allocate memory.
+ * @param opt               optstruct of repeatable argument to collect in a list.
+ * @param[out] stringList   String list.
+ * @param[out] nListItems   Number of strings in list.
+ * @return fc_error_t       FC_SUCCESS if success.
+ * @return fc_error_t       FC_EARG if invalid args passed to function.
+ * @return fc_error_t       FC_EMEM if failed to allocate memory.
  */
 static fc_error_t get_string_list(const struct optstruct *opt, char ***stringList, uint32_t *nListItems)
 {
@@ -707,7 +701,7 @@ static fc_error_t get_string_list(const struct optstruct *opt, char ***stringLis
     uint32_t nItems = 0;
 
     if ((NULL == opt) || (NULL == stringList) || (NULL == nListItems)) {
-        mprintf("!get_string_list: Invalid arguments.\n");
+        mprintf(LOGG_ERROR, "get_string_list: Invalid arguments.\n");
         goto done;
     }
 
@@ -718,7 +712,7 @@ static fc_error_t get_string_list(const struct optstruct *opt, char ***stringLis
     if (opt->enabled) {
         while (opt) {
             if (FC_SUCCESS != (ret = string_list_add(opt->strarg, stringList, nListItems))) {
-                mprintf("!get_string_list: Failed to add string to list.\n");
+                mprintf(LOGG_ERROR, "get_string_list: Failed to add string to list.\n");
                 status = ret;
                 goto done;
             }
@@ -743,7 +737,7 @@ static fc_error_t initialize(struct optstruct *opts)
     fc_error_t status = FC_EARG;
     cl_error_t cl_init_retcode;
     fc_config fcConfig;
-    char *tempDirectory = NULL;
+    char *tempDirectory                = NULL;
     const struct optstruct *logFileOpt = NULL;
 
     STATBUF statbuf;
@@ -751,7 +745,7 @@ static fc_error_t initialize(struct optstruct *opts)
     memset(&fcConfig, 0, sizeof(fc_config));
 
     if (NULL == opts) {
-        mprintf("!initialize: Invalid arguments.\n");
+        mprintf(LOGG_ERROR, "initialize: Invalid arguments.\n");
         goto done;
     }
 
@@ -776,11 +770,11 @@ static fc_error_t initialize(struct optstruct *opts)
         struct passwd *user;
 #endif
 
-        logg("Creating missing database directory: %s\n", fcConfig.databaseDirectory);
+        logg(LOGG_INFO, "Creating missing database directory: %s\n", fcConfig.databaseDirectory);
 
         if (0 != mkdir(fcConfig.databaseDirectory, 0755)) {
-            logg("!Failed to create database directory: %s\n", fcConfig.databaseDirectory);
-            logg("Manually prepare the database directory, or re-run freshclam with higher privileges.\n");
+            logg(LOGG_ERROR, "Failed to create database directory: %s\n", fcConfig.databaseDirectory);
+            logg(LOGG_INFO, "Manually prepare the database directory, or re-run freshclam with higher privileges.\n");
             status = FC_EDBDIRACCESS;
             goto done;
         }
@@ -790,41 +784,48 @@ static fc_error_t initialize(struct optstruct *opts)
             /* Running as root user, will assign ownership of database directory to DatabaseOwner */
             errno = 0;
             if ((user = getpwnam(optget(opts, "DatabaseOwner")->strarg)) == NULL) {
-                logg("ERROR: Failed to get information about user \"%s\".\n",
-                    optget(opts, "DatabaseOwner")->strarg);
+                logg(LOGG_INFO, "ERROR: Failed to get information about user \"%s\".\n",
+                     optget(opts, "DatabaseOwner")->strarg);
                 if (errno == 0) {
-                    logg("Create the \"%s\" user account for freshclam to use, or set the DatabaseOwner config option in freshclam.conf to a different user.\n",
-                        optget(opts, "DatabaseOwner")->strarg);
-                    logg("For more information, see https://www.clamav.net/documents/installing-clamav-on-unix-linux-macos-from-source\n");
+                    logg(LOGG_INFO, "Create the \"%s\" user account for freshclam to use, or set the DatabaseOwner config option in freshclam.conf to a different user.\n",
+                         optget(opts, "DatabaseOwner")->strarg);
+                    logg(LOGG_INFO, "For more information, see https://docs.clamav.net/manual/Installing/Installing-from-source-Unix.html\n");
                 } else {
-                    logg("An unexpected error occurred when attempting to query the \"%s\" user account.\n",
-                        optget(opts, "DatabaseOwner")->strarg);
+                    logg(LOGG_INFO, "An unexpected error occurred when attempting to query the \"%s\" user account.\n",
+                         optget(opts, "DatabaseOwner")->strarg);
                 }
                 status = FC_EDBDIRACCESS;
                 goto done;
             }
 
             if (chown(fcConfig.databaseDirectory, user->pw_uid, user->pw_gid)) {
-                logg("!Failed to change database directory ownership to user %s. Error: %s\n", optget(opts, "DatabaseOwner")->strarg, strerror(errno));
+                logg(LOGG_ERROR, "Failed to change database directory ownership to user %s. Error: %s\n", optget(opts, "DatabaseOwner")->strarg, strerror(errno));
                 status = FC_EDBDIRACCESS;
                 goto done;
             }
 
-            logg("Assigned ownership of database directory to user \"%s\".\n", optget(opts, "DatabaseOwner")->strarg);
+            logg(LOGG_INFO, "Assigned ownership of database directory to user \"%s\".\n", optget(opts, "DatabaseOwner")->strarg);
         }
 #endif
     }
 
 #ifdef HAVE_PWD_H
-    /*
-     * freshclam shouldn't work with root privileges.
-     * Drop privileges to the DatabaseOwner user, if specified.
-     */
-    ret = switch_user(optget(opts, "DatabaseOwner")->strarg);
-    if (FC_SUCCESS != ret) {
-        logg("!Failed to switch to %s user.\n", optget(opts, "DatabaseOwner")->strarg);
-        status = ret;
-        goto done;
+    /* Drop database privileges here if we are not planning on daemonizing.  If
+     * we are, we should wait until after we craete the PidFile to drop
+     * privileges.  That way, it is owned by root (or whoever started freshclam),
+     * and no one can change it.  */
+    if (!optget(opts, "daemon")->enabled) {
+        /*
+         * freshclam shouldn't work with root privileges.
+         * Drop privileges to the DatabaseOwner user, if specified.
+         * Pass NULL for the log file name, because it hasn't been created yet.
+         */
+        ret = drop_privileges(optget(opts, "DatabaseOwner")->strarg, NULL);
+        if (ret) {
+            logg(LOGG_ERROR, "Failed to switch to %s user.\n", optget(opts, "DatabaseOwner")->strarg);
+            status = FC_ECONFIG;
+            goto done;
+        }
     }
 #endif /* HAVE_PWD_H */
 
@@ -832,7 +833,7 @@ static fc_error_t initialize(struct optstruct *opts)
      * Initilize libclamav.
      */
     if (CL_SUCCESS != (cl_init_retcode = cl_init(CL_INIT_DEFAULT))) {
-        mprintf("!initialize: Can't initialize libclamav: %s\n", cl_strerror(cl_init_retcode));
+        mprintf(LOGG_ERROR, "initialize: Can't initialize libclamav: %s\n", cl_strerror(cl_init_retcode));
         status = FC_EINIT;
         goto done;
     }
@@ -903,7 +904,7 @@ static fc_error_t initialize(struct optstruct *opts)
         fcConfig.localIP = (optget(opts, "LocalIPAddress"))->strarg;
 
     /* Select a path for the temp directory:  databaseDirectory/tmp */
-    tempDirectory = cli_gentemp_with_prefix(fcConfig.databaseDirectory, "tmp");
+    tempDirectory          = cli_gentemp_with_prefix(fcConfig.databaseDirectory, "tmp");
     fcConfig.tempDirectory = tempDirectory;
 
     /* Store the path of the temp directory so we can delete it later. */
@@ -922,12 +923,12 @@ static fc_error_t initialize(struct optstruct *opts)
 
         cfgfile = optget(opts, "config-file")->strarg;
         if (CLAMSTAT(cfgfile, &statbuf) == -1) {
-            logg("^Can't stat %s (critical error)\n", cfgfile);
+            logg(LOGG_WARNING, "Can't stat %s (critical error)\n", cfgfile);
             status = FC_ECONFIG;
             goto done;
         }
         if (statbuf.st_mode & (S_IRGRP | S_IWGRP | S_IXGRP | S_IROTH | S_IWOTH | S_IXOTH)) {
-            logg("^Insecure permissions (for HTTPProxyPassword): %s must have no more than 0700 permissions.\n", cfgfile);
+            logg(LOGG_WARNING, "Insecure permissions (for HTTPProxyPassword): %s must have no more than 0700 permissions.\n", cfgfile);
             status = FC_ECONFIG;
             goto done;
         }
@@ -945,18 +946,34 @@ static fc_error_t initialize(struct optstruct *opts)
             if (optget(opts, "HTTPProxyPassword")->enabled) {
                 fcConfig.proxyPassword = optget(opts, "HTTPProxyPassword")->strarg;
             } else {
-                logg("HTTPProxyUsername requires HTTPProxyPassword\n");
+                logg(LOGG_INFO, "HTTPProxyUsername requires HTTPProxyPassword\n");
                 status = FC_ECONFIG;
                 goto done;
             }
         }
         if (optget(opts, "HTTPProxyPort")->enabled)
             fcConfig.proxyPort = (uint16_t)optget(opts, "HTTPProxyPort")->numarg;
-        logg("Connecting via %s\n", fcConfig.proxyServer);
+        logg(LOGG_INFO, "Connecting via %s\n", fcConfig.proxyServer);
     }
 
-    if (optget(opts, "HTTPUserAgent")->enabled)
-        fcConfig.userAgent = optget(opts, "HTTPUserAgent")->strarg;
+    if (optget(opts, "HTTPUserAgent")->enabled) {
+
+        if (!(optget(opts, "PrivateMirror")->enabled) &&
+            (optget(opts, "DatabaseMirror")->enabled) &&
+            (strstr(optget(opts, "DatabaseMirror")->strarg, "clamav.net"))) {
+            /*
+             * Using the official project CDN.
+             */
+            logg(LOGG_INFO, "In an effort to reduce CDN data costs, HTTPUserAgent may not be used when updating from clamav.net.\n");
+            logg(LOGG_INFO, "The HTTPUserAgent specified in your config will be ignored so that FreshClam is not blocked by the CDN.\n");
+            logg(LOGG_INFO, "If ClamAV's user agent is not allowed through your firewall/proxy, please contact your network administrator.\n\n");
+        } else {
+            /*
+             * Using some other CDN or private mirror.
+             */
+            fcConfig.userAgent = optget(opts, "HTTPUserAgent")->strarg;
+        }
+    }
 
     fcConfig.maxAttempts    = optget(opts, "MaxAttempts")->numarg;
     fcConfig.connectTimeout = optget(opts, "ConnectTimeout")->numarg;
@@ -968,7 +985,7 @@ static fc_error_t initialize(struct optstruct *opts)
      * Initilize libfreshclam.
      */
     if (FC_SUCCESS != (ret = fc_initialize(&fcConfig))) {
-        mprintf("!initialize: libfreshclam init failed.\n");
+        mprintf(LOGG_ERROR, "initialize: libfreshclam init failed.\n");
         status = ret;
         goto done;
     }
@@ -993,11 +1010,11 @@ done:
  *
  * TODO: Implement system to query list of available standard and optional databases.
  *
- * @param standardDatabases  [out] Standard database string list.
- * @param nStandardDatabases [out] Number of standard databases in list.
- * @param optionalDatabases  [out] Optional database string list.
- * @param nOptionalDatabases [out] Number of optional databases in list.
- * @return fc_error_t        FC_SUCCESS if all databases upddated successfully.
+ * @param[out] standardDatabases    Standard database string list.
+ * @param[out] nStandardDatabases   Number of standard databases in list.
+ * @param[out] optionalDatabases    Optional database string list.
+ * @param[out] nOptionalDatabases   Number of optional databases in list.
+ * @return fc_error_t               FC_SUCCESS if all databases upddated successfully.
  */
 fc_error_t get_official_database_lists(
     char ***standardDatabases,
@@ -1013,7 +1030,7 @@ fc_error_t get_official_database_lists(
     const char *hardcodedOptionalDatabaseList[] = {"safebrowsing", "test"};
 
     if ((NULL == standardDatabases) || (NULL == nStandardDatabases) || (NULL == optionalDatabases) || (NULL == nOptionalDatabases)) {
-        mprintf("!get_official_database_lists: Invalid arguments.\n");
+        mprintf(LOGG_ERROR, "get_official_database_lists: Invalid arguments.\n");
         goto done;
     }
 
@@ -1024,7 +1041,7 @@ fc_error_t get_official_database_lists(
 
     for (i = 0; i < sizeof(hardcodedStandardDatabaseList) / sizeof(hardcodedStandardDatabaseList[0]); i++) {
         if (FC_SUCCESS != (ret = string_list_add(hardcodedStandardDatabaseList[i], standardDatabases, nStandardDatabases))) {
-            logg("!Failed to add %s to list of standard databases.\n", hardcodedStandardDatabaseList[i]);
+            logg(LOGG_ERROR, "Failed to add %s to list of standard databases.\n", hardcodedStandardDatabaseList[i]);
             status = ret;
             goto done;
         }
@@ -1032,13 +1049,13 @@ fc_error_t get_official_database_lists(
 
     for (i = 0; i < sizeof(hardcodedOptionalDatabaseList) / sizeof(hardcodedOptionalDatabaseList[0]); i++) {
         if (FC_SUCCESS != (ret = string_list_add(hardcodedOptionalDatabaseList[i], optionalDatabases, nOptionalDatabases))) {
-            logg("!Failed to add %s to list of optional databases.\n", hardcodedOptionalDatabaseList[i]);
+            logg(LOGG_ERROR, "Failed to add %s to list of optional databases.\n", hardcodedOptionalDatabaseList[i]);
             status = ret;
             goto done;
         }
     }
 
-    logg("*Collected lists of official standard and optional databases.\n");
+    logg(LOGG_DEBUG, "Collected lists of official standard and optional databases.\n");
 
     status = FC_SUCCESS;
 
@@ -1073,8 +1090,8 @@ done:
  * @param nOptIns               Number of opt-in database strings in list.
  * @param optOutList            List of standard databases that are not desired.
  * @param nOptOuts              Number of opt-out database strings in list.
- * @param databaseList          [out] String list of desired databases.
- * @param nDatabases            [out] Number of desired databases in list.
+ * @param[out] databaseList     String list of desired databases.
+ * @param[out] nDatabases       Number of desired databases in list.
  * @return fc_error_t
  */
 fc_error_t select_from_official_databases(
@@ -1097,7 +1114,7 @@ fc_error_t select_from_official_databases(
     uint32_t i;
 
     if ((NULL == databaseList) || (0 == nDatabases)) {
-        mprintf("!select_from_official_databases: Invalid arguments.\n");
+        mprintf(LOGG_ERROR, "select_from_official_databases: Invalid arguments.\n");
         goto done;
     }
 
@@ -1105,12 +1122,12 @@ fc_error_t select_from_official_databases(
     *nDatabases   = 0;
 
     if ((0 < nOptIns) && (NULL == optInList)) {
-        mprintf("!select_from_official_databases: Invalid arguments. Number of opt-in databases does not match empty database array.\n");
+        mprintf(LOGG_ERROR, "select_from_official_databases: Invalid arguments. Number of opt-in databases does not match empty database array.\n");
         goto done;
     }
 
     if ((0 < nOptOuts) && (NULL == optOutList)) {
-        mprintf("!select_from_official_databases: Invalid arguments. Number of opt-out databases does not match empty database array.\n");
+        mprintf(LOGG_ERROR, "select_from_official_databases: Invalid arguments. Number of opt-out databases does not match empty database array.\n");
         goto done;
     }
 
@@ -1118,7 +1135,7 @@ fc_error_t select_from_official_databases(
      * Get lists of available databases.
      */
     if (FC_SUCCESS != (ret = get_official_database_lists(&standardDatabases, &nStandardDatabases, &optionalDatabases, &nOptionalDatabases))) {
-        logg("!Failed to get lists of official standard and optional databases.\n");
+        logg(LOGG_ERROR, "Failed to get lists of official standard and optional databases.\n");
         status = ret;
         goto done;
     }
@@ -1139,13 +1156,13 @@ fc_error_t select_from_official_databases(
         }
 
         if (skip) {
-            logg("*Opting out of standard database: %s\n", standardDatabases[i]);
+            logg(LOGG_DEBUG, "Opting out of standard database: %s\n", standardDatabases[i]);
             continue;
         }
 
-        logg("*Selecting standard database: %s\n", standardDatabases[i]);
+        logg(LOGG_DEBUG, "Selecting standard database: %s\n", standardDatabases[i]);
         if (FC_SUCCESS != (ret = string_list_add(standardDatabases[i], &selectedDatabases, &nSelectedDatabases))) {
-            logg("!Failed to add standard database %s to list of selected databases.\n", standardDatabases[i]);
+            logg(LOGG_ERROR, "Failed to add standard database %s to list of selected databases.\n", standardDatabases[i]);
             status = ret;
             goto done;
         }
@@ -1165,13 +1182,13 @@ fc_error_t select_from_official_databases(
         }
 
         if (!found) {
-            logg("^Desired optional database \"%s\" is not available.\n", optInList[i]);
+            logg(LOGG_WARNING, "Desired optional database \"%s\" is not available.\n", optInList[i]);
             continue;
         }
 
-        logg("*Selecting optional database: %s\n", optInList[i]);
+        logg(LOGG_DEBUG, "Selecting optional database: %s\n", optInList[i]);
         if (FC_SUCCESS != (ret = string_list_add(optInList[i], &selectedDatabases, &nSelectedDatabases))) {
-            logg("!Failed to add optional database %s to list of selected databases.\n", optInList[i]);
+            logg(LOGG_ERROR, "Failed to add optional database %s to list of selected databases.\n", optInList[i]);
             status = ret;
             goto done;
         }
@@ -1208,9 +1225,9 @@ done:
  *
  * @param specificDatabaseList  List of desired databases.
  * @param nSpecificDatabases    Number of databases in list.
- * @param databaseList          [out] String list of desired databases.
- * @param nDatabases            [out] Number of desired databases in list.
- * @param bCustom               [out] "custom" selected.
+ * @param[out] databaseList     String list of desired databases.
+ * @param[out] nDatabases       Number of desired databases in list.
+ * @param[out] bCustom          "custom" selected.
  * @return fc_error_t
  */
 fc_error_t select_specific_databases(
@@ -1234,7 +1251,7 @@ fc_error_t select_specific_databases(
     if ((NULL == specificDatabaseList) || (0 == nSpecificDatabases) ||
         (NULL == databaseList) || (0 == nDatabases) ||
         (NULL == bCustom)) {
-        mprintf("!select_from_official_databases: Invalid arguments.\n");
+        mprintf(LOGG_ERROR, "select_from_official_databases: Invalid arguments.\n");
         goto done;
     }
 
@@ -1248,7 +1265,7 @@ fc_error_t select_specific_databases(
      * Get lists of available databases.
      */
     if (FC_SUCCESS != (ret = get_official_database_lists(&standardDatabases, &nStandardDatabases, &optionalDatabases, &nOptionalDatabases))) {
-        logg("!Failed to get lists of official standard and optional databases.\n");
+        logg(LOGG_ERROR, "Failed to get lists of official standard and optional databases.\n");
         status = ret;
         goto done;
     }
@@ -1270,7 +1287,7 @@ fc_error_t select_specific_databases(
         for (j = 0; j < nStandardDatabases; j++) {
             if (0 == strcmp(specificDatabaseList[i], standardDatabases[j])) {
                 if (FC_SUCCESS != (ret = string_list_add(standardDatabases[j], &selectedDatabases, &nSelectedDatabases))) {
-                    logg("!Failed to add standard database %s to list of selected databases.\n", standardDatabases[j]);
+                    logg(LOGG_ERROR, "Failed to add standard database %s to list of selected databases.\n", standardDatabases[j]);
                     status = ret;
                     goto done;
                 }
@@ -1283,7 +1300,7 @@ fc_error_t select_specific_databases(
             for (j = 0; j < nOptionalDatabases; j++) {
                 if (0 == strcmp(specificDatabaseList[i], optionalDatabases[j])) {
                     if (FC_SUCCESS != (ret = string_list_add(optionalDatabases[j], &selectedDatabases, &nSelectedDatabases))) {
-                        logg("!Failed to add optional database %s to list of selected databases.\n", optionalDatabases[j]);
+                        logg(LOGG_ERROR, "Failed to add optional database %s to list of selected databases.\n", optionalDatabases[j]);
                         status = ret;
                         goto done;
                     }
@@ -1293,7 +1310,7 @@ fc_error_t select_specific_databases(
             }
         }
         if (!bFound) {
-            logg("!Requested database is not available: %s.\n", specificDatabaseList[i]);
+            logg(LOGG_ERROR, "Requested database is not available: %s.\n", specificDatabaseList[i]);
             status = FC_ECONFIG;
             goto done;
         }
@@ -1332,7 +1349,7 @@ static fc_error_t executeIfNewVersion(
     char *replace_version = NULL;
 
     if ((NULL == command) || (NULL == newVersion)) {
-        logg("!executeIfNewVersion: Invalid args\n");
+        logg(LOGG_ERROR, "executeIfNewVersion: Invalid args\n");
         status = FC_EARG;
         goto done;
     }
@@ -1351,7 +1368,7 @@ static fc_error_t executeIfNewVersion(
 
         while (*version) {
             if (!strchr("0123456789.", *version)) {
-                logg("!executeIfNewVersion: OnOutdatedExecute: Incorrect version number string\n");
+                logg(LOGG_ERROR, "executeIfNewVersion: OnOutdatedExecute: Incorrect version number string\n");
                 status = FC_EARG;
                 goto done;
             }
@@ -1359,7 +1376,7 @@ static fc_error_t executeIfNewVersion(
         }
         modifiedCommand = (char *)malloc(strlen(command) + strlen(version) + 10);
         if (NULL == modifiedCommand) {
-            logg("!executeIfNewVersion: Can't allocate memory for modifiedCommand\n");
+            logg(LOGG_ERROR, "executeIfNewVersion: Can't allocate memory for modifiedCommand\n");
             status = FC_EMEM;
             goto done;
         }
@@ -1439,17 +1456,17 @@ fc_error_t perform_database_update(
     STATBUF statbuf;
 
     if (NULL == serverList) {
-        mprintf("!perform_database_update: Invalid arguments.\n");
+        mprintf(LOGG_ERROR, "perform_database_update: Invalid arguments.\n");
         goto done;
     }
     if (((NULL == databaseList) || (0 == nDatabases)) &&
         ((NULL == urlDatabaseList) || (0 == nUrlDatabases))) {
-        mprintf("!perform_database_update: No databases requested.\n");
+        mprintf(LOGG_ERROR, "perform_database_update: No databases requested.\n");
         goto done;
     }
 
     time(&currtime);
-    logg("ClamAV update process started at %s", ctime(&currtime));
+    logg(LOGG_INFO, "ClamAV update process started at %s", ctime(&currtime));
 
     if (bPrune) {
         /*
@@ -1468,9 +1485,9 @@ fc_error_t perform_database_update(
      * Create a temp directory to use for the update process.
      */
     if (LSTAT(g_freshclamTempDirectory, &statbuf) == -1) {
-        if (0 != mkdir(g_freshclamTempDirectory, 0755)) {
-            logg("!Can't create temporary directory %s\n", g_freshclamTempDirectory);
-            logg("Hint: The database directory must be writable for UID %d or GID %d\n", getuid(), getgid());
+        if (0 != mkdir(g_freshclamTempDirectory, 0700)) {
+            logg(LOGG_ERROR, "Can't create temporary directory %s\n", g_freshclamTempDirectory);
+            logg(LOGG_INFO, "Hint: The database directory must be writable for UID %d or GID %d\n", getuid(), getgid());
             status = FC_EDBDIRACCESS;
             goto done;
         }
@@ -1478,7 +1495,7 @@ fc_error_t perform_database_update(
 
     if ((NULL != databaseList) && (0 < nDatabases)) {
         /*
-        * Download/update the desired official databases.
+         * Download/update the desired official databases.
          */
         ret = fc_update_databases(
             databaseList,
@@ -1491,7 +1508,7 @@ fc_error_t perform_database_update(
             (void *)fc_context,
             &nUpdated);
         if (FC_SUCCESS != ret) {
-            logg("!Database update process failed: %s (%d)\n", fc_strerror(ret), ret);
+            logg(LOGG_ERROR, "Database update process failed: %s\n", fc_strerror(ret));
             status = ret;
             goto done;
         }
@@ -1508,28 +1525,19 @@ fc_error_t perform_database_update(
             (void *)fc_context,
             &nUpdated);
         if (FC_SUCCESS != ret) {
-            logg("!Database update process failed: %s (%d)\n", fc_strerror(ret), ret);
+            logg(LOGG_ERROR, "Database update process failed: %s\n", fc_strerror(ret));
             status = ret;
             goto done;
         }
         nTotalUpdated += nUpdated;
 
-        logg("*Database update completed successfully.\n");
+        logg(LOGG_DEBUG, "Database update completed successfully.\n");
     }
 
     if (0 < nTotalUpdated) {
-#ifdef BUILD_CLAMD
-        if (NULL != notifyClamd)
+        if (NULL != notifyClamd) {
             notify(notifyClamd);
-#endif
-
-        if (NULL != onUpdateExecute) {
-            execute("OnUpdateExecute", onUpdateExecute, bDaemonized);
         }
-    }
-
-    if ((NULL != newVersion) && (NULL != onOutdatedExecute)) {
-        executeIfNewVersion(onOutdatedExecute, newVersion, bDaemonized);
     }
 
     status = FC_SUCCESS;
@@ -1542,6 +1550,20 @@ done:
             cli_rmdirs(g_freshclamTempDirectory);
         }
     }
+
+    if (FC_SUCCESS == status) {
+        /* Run Execute commands after we clean up the temp directory,
+         * in case they want us to EXIT */
+        if (0 < nTotalUpdated) {
+            if (NULL != onUpdateExecute) {
+                execute("OnUpdateExecute", onUpdateExecute, bDaemonized);
+            }
+        }
+        if ((NULL != newVersion) && (NULL != onOutdatedExecute)) {
+            executeIfNewVersion(onOutdatedExecute, newVersion, bDaemonized);
+        }
+    }
+
     if (NULL != dnsUpdateInfo) {
         free(dnsUpdateInfo);
     }
@@ -1574,6 +1596,11 @@ int main(int argc, char **argv)
 
     int bPrune = 1;
 
+#ifdef HAVE_PWD_H
+    const struct optstruct *logFileOpt = NULL;
+    const char *logFileName            = NULL;
+#endif /* HAVE_PWD_H */
+
     fc_ctx fc_context = {0};
 
 #ifndef _WIN32
@@ -1581,12 +1608,13 @@ int main(int argc, char **argv)
     struct sigaction oldact;
 #endif
     int i;
+    pid_t parentPid = getpid();
 
     if (check_flevel())
         exit(FC_EINIT);
 
     if ((opts = optparse(NULL, argc, argv, 1, OPT_FRESHCLAM, 0, NULL)) == NULL) {
-        mprintf("!Can't parse command line options\n");
+        mprintf(LOGG_ERROR, "Can't parse command line options\n");
         status = FC_EINIT;
         goto done;
     }
@@ -1596,6 +1624,22 @@ int main(int argc, char **argv)
         status = FC_SUCCESS;
         goto done;
     }
+
+#ifdef _WIN32
+
+    if (optget(opts, "install-service")->enabled) {
+        svc_install("freshclam", "ClamAV FreshClam",
+                    "Updates virus pattern database for ClamAV");
+        optfree(opts);
+        return 0;
+    }
+
+    if (optget(opts, "uninstall-service")->enabled) {
+        svc_uninstall("freshclam", 1);
+        optfree(opts);
+        return 0;
+    }
+#endif
 
     /* check foreground option from command line to override config file */
     for (i = 0; i < argc; i += 1) {
@@ -1633,7 +1677,7 @@ int main(int argc, char **argv)
         goto done;
     }
     if (optget(opts, "list-mirrors")->enabled) {
-        mprintf("^Deprecated option --list-mirrors. Individual mirrors are no longer tracked, as official signature distribution is now done through the CloudFlare CDN.\n");
+        mprintf(LOGG_WARNING, "Deprecated option --list-mirrors. Individual mirrors are no longer tracked, as official signature distribution is now done through the CloudFlare CDN.\n");
         status = FC_SUCCESS;
         goto done;
     }
@@ -1642,7 +1686,7 @@ int main(int argc, char **argv)
      * Collect list of database servers from DatabaseMirror(s) or PrivateMirror(s).
      */
     if (FC_SUCCESS != (ret = get_database_server_list(opts, &serverList, &nServers, &bPrivate))) {
-        mprintf("!Unable to find DatabaseMirror or PrivateMirror option(s) that specify database server FQDNs.\n");
+        mprintf(LOGG_ERROR, "Unable to find DatabaseMirror or PrivateMirror option(s) that specify database server FQDNs.\n");
         status = ret;
         goto done;
     }
@@ -1662,7 +1706,7 @@ int main(int argc, char **argv)
          * Get list of specific databases from command line args.
          */
         if (FC_SUCCESS != (ret = get_string_list(optget(opts, "update-db"), &specificDatabaseList, &nSpecificDatabases))) {
-            mprintf("!Error when attempting to read ExtraDatabase entries.\n");
+            mprintf(LOGG_ERROR, "Error when attempting to read ExtraDatabase entries.\n");
             status = ret;
             goto done;
         }
@@ -1679,7 +1723,7 @@ int main(int argc, char **argv)
             free_string_list(specificDatabaseList, nSpecificDatabases);
             specificDatabaseList = NULL;
 
-            mprintf("!Failed to select specific databases from available official databases.\n");
+            mprintf(LOGG_ERROR, "Failed to select specific databases from available official databases.\n");
             status = ret;
             goto done;
         }
@@ -1691,12 +1735,12 @@ int main(int argc, char **argv)
              * Collect list of "custom"/unofficial URL-based databases.
              */
             if (FC_SUCCESS != (ret = get_string_list(optget(opts, "DatabaseCustomURL"), &urlDatabaseList, &nUrlDatabases))) {
-                mprintf("!Error when attempting to read ExcludeDatabase entries.\n");
+                mprintf(LOGG_ERROR, "Error when attempting to read ExcludeDatabase entries.\n");
                 status = ret;
                 goto done;
             }
             if ((NULL == urlDatabaseList) || (0 == nUrlDatabases)) {
-                mprintf("!--update-db=custom requires at least one DatabaseCustomURL in freshclam.conf\n");
+                mprintf(LOGG_ERROR, "--update-db=custom requires at least one DatabaseCustomURL in freshclam.conf\n");
                 status = FC_ECONFIG;
                 goto done;
             }
@@ -1714,19 +1758,9 @@ int main(int argc, char **argv)
          * Collect list of database opt-ins.
          */
         if (FC_SUCCESS != (ret = get_string_list(optget(opts, "ExtraDatabase"), &optInList, &nOptIns))) {
-            mprintf("!Error when attempting to read ExtraDatabase entries.\n");
+            mprintf(LOGG_ERROR, "Error when attempting to read ExtraDatabase entries.\n");
             status = ret;
             goto done;
-        }
-        if (optget(opts, "SafeBrowsing")->enabled) {
-            if (FC_SUCCESS != (ret = string_list_add("safebrowsing", &optInList, &nOptIns))) {
-                free_string_list(optInList, nOptIns);
-                optInList = NULL;
-
-                mprintf("!Failed to add safebrowsing to list of opt-in databases.\n");
-                status = ret;
-                goto done;
-            }
         }
 
         /*
@@ -1736,7 +1770,7 @@ int main(int argc, char **argv)
             free_string_list(optInList, nOptIns);
             optInList = NULL;
 
-            mprintf("!Error when attempting to read ExcludeDatabase entries.\n");
+            mprintf(LOGG_ERROR, "Error when attempting to read ExcludeDatabase entries.\n");
             status = ret;
             goto done;
         }
@@ -1747,7 +1781,7 @@ int main(int argc, char **argv)
                 free_string_list(optOutList, nOptOuts);
                 optOutList = NULL;
 
-                mprintf("!Failed to add bytecode to list of opt-out databases.\n");
+                mprintf(LOGG_ERROR, "Failed to add bytecode to list of opt-out databases.\n");
                 status = ret;
                 goto done;
             }
@@ -1768,7 +1802,7 @@ int main(int argc, char **argv)
             free_string_list(optOutList, nOptOuts);
             optOutList = NULL;
 
-            mprintf("!Failed to select databases from list of official databases.\n");
+            mprintf(LOGG_ERROR, "Failed to select databases from list of official databases.\n");
             status = ret;
             goto done;
         }
@@ -1781,7 +1815,7 @@ int main(int argc, char **argv)
          * Collect list of "custom"/unofficial URL-based databases.
          */
         if (FC_SUCCESS != (ret = get_string_list(optget(opts, "DatabaseCustomURL"), &urlDatabaseList, &nUrlDatabases))) {
-            mprintf("!Error when attempting to read ExcludeDatabase entries.\n");
+            mprintf(LOGG_ERROR, "Error when attempting to read ExcludeDatabase entries.\n");
             status = ret;
             goto done;
         }
@@ -1794,7 +1828,7 @@ int main(int argc, char **argv)
      * Initialize libraries and configuration options.
      */
     if (FC_SUCCESS != initialize(opts)) {
-        mprintf("!Initialization error!\n");
+        mprintf(LOGG_ERROR, "Initialization error!\n");
         status = FC_EINIT;
         goto done;
     }
@@ -1833,7 +1867,7 @@ int main(int argc, char **argv)
             optget(opts, "NotifyClamd")->active ? optget(opts, "NotifyClamd")->strarg : NULL,
             &fc_context);
         if (FC_SUCCESS != ret) {
-            logg("!Update failed.\n");
+            logg(LOGG_ERROR, "Update failed.\n");
             status = ret;
             goto done;
         }
@@ -1860,14 +1894,14 @@ int main(int argc, char **argv)
         checks = optget(opts, "Checks")->numarg;
 
         if (checks <= 0) {
-            logg("^Number of checks must be a positive integer.\n");
+            logg(LOGG_WARNING, "Number of checks must be a positive integer.\n");
             status = FC_ECONFIG;
             goto done;
         }
 
         if (!optget(opts, "DNSDatabaseInfo")->enabled || optget(opts, "no-dns")->enabled) {
             if (checks > 50) {
-                logg("^Number of checks must be between 1 and 50.\n");
+                logg(LOGG_WARNING, "Number of checks must be between 1 and 50.\n");
                 status = FC_ECONFIG;
                 goto done;
             }
@@ -1882,8 +1916,8 @@ int main(int argc, char **argv)
 #ifndef _WIN32
         /* fork into background */
         if (g_foreground == 0) {
-            if (daemonize() == -1) {
-                logg("!daemonize() failed\n");
+            if (-1 == daemonize_parent_wait(NULL, NULL)) {
+                logg(LOGG_ERROR, "daemonize() failed\n");
                 status = FC_EFAILEDUPDATE;
                 goto done;
             }
@@ -1891,15 +1925,85 @@ int main(int argc, char **argv)
         }
 #endif
 
+#ifdef _WIN32
+        if (optget(opts, "service-mode")->enabled) {
+            mprintf_disabled = 1;
+            svc_register("freshclam");
+            svc_ready();
+        }
+#endif
+
         /* Write PID of daemon process to pidfile. */
         if ((opt = optget(opts, "PidFile"))->enabled) {
             g_pidfile = opt->strarg;
-            writepid(g_pidfile);
+            if (writepid(g_pidfile)) {
+                status = FC_EINIT;
+                goto done;
+            }
         }
+
+#ifndef _WIN32
+        /* Signal the parent process that we have successfully
+         * written the PidFile.  If it does not get this signal, it
+         * will wait for our exit status (and we don't exit in daemon mode).
+         */
+        if (parentPid != getpid()) { // we have been daemonized
+            daemonize_signal_parent(parentPid);
+        }
+#endif
+
+#ifdef HAVE_PWD_H
+        /*  Get the log file name to pass it into drop_privileges.  */
+        logFileOpt = optget(opts, "UpdateLogFile");
+        if (logFileOpt->enabled) {
+            logFileName = logFileOpt->strarg;
+        }
+
+        /*
+         * freshclam may have created the freshclam.dat file with as root
+         * if run in daemon-mode, so we should give ownership to the
+         * DatabaseOwner if we're supposed to drop privileges..
+         */
+        if ((0 == geteuid()) && (NULL != optget(opts, "DatabaseOwner")->strarg)) {
+            struct passwd *user = NULL;
+            STATBUF sb;
+
+            if ((user = getpwnam(optget(opts, "DatabaseOwner")->strarg)) == NULL) {
+                logg(LOGG_WARNING, "Can't get information about user %s.\n", optget(opts, "DatabaseOwner")->strarg);
+                fprintf(stderr, "ERROR: Can't get information about user %s.\n", optget(opts, "DatabaseOwner")->strarg);
+                status = FC_ECONFIG;
+                goto done;
+            }
+
+            /*Change ownership of the freshclam DAT file to the user we are going to switch to.*/
+            if (CLAMSTAT("freshclam.dat", &sb) != -1) {
+                int ret = lchown("freshclam.dat", user->pw_uid, user->pw_gid);
+                if (ret) {
+                    fprintf(stderr, "ERROR: lchown to user '%s' failed on freshclam.dat\n", user->pw_name);
+                    fprintf(stderr, "Error was '%s'\n", strerror(errno));
+                    logg(LOGG_WARNING, "lchown to user '%s' failed on freshclam.dat.  Error was '%s'\n",
+                         user->pw_name, strerror(errno));
+                    status = FC_ECONFIG;
+                    goto done;
+                }
+            }
+        }
+
+        /*
+         * freshclam shouldn't work with root privileges.
+         * Drop privileges to the DatabaseOwner user, if specified.
+         */
+        ret = drop_privileges(optget(opts, "DatabaseOwner")->strarg, logFileName);
+        if (0 != ret) {
+            logg(LOGG_ERROR, "Failed to switch to %s user.\n", optget(opts, "DatabaseOwner")->strarg);
+            status = FC_ECONFIG;
+            goto done;
+        }
+#endif /* HAVE_PWD_H */
 
         g_active_children = 0;
 
-        logg("#freshclam daemon %s (OS: " TARGET_OS_TYPE ", ARCH: " TARGET_ARCH_TYPE ", CPU: " TARGET_CPU_TYPE ")\n", get_version());
+        logg(LOGG_INFO_NF, "freshclam daemon %s (OS: " TARGET_OS_TYPE ", ARCH: " TARGET_ARCH_TYPE ", CPU: " TARGET_CPU_TYPE ")\n", get_version());
 
         while (!g_terminate) {
             ret = perform_database_update(
@@ -1919,7 +2023,7 @@ int main(int argc, char **argv)
                 optget(opts, "NotifyClamd")->active ? optget(opts, "NotifyClamd")->strarg : NULL,
                 &fc_context);
             if (FC_SUCCESS != ret) {
-                logg("!Update failed.\n");
+                logg(LOGG_ERROR, "Update failed.\n");
             }
 
 #ifndef _WIN32
@@ -1927,7 +2031,7 @@ int main(int argc, char **argv)
             alarm(0);
 #endif
 
-            if (ret > 1) {
+            if (ret > FC_UPTODATE) {
                 if ((opt = optget(opts, "OnErrorExecute"))->enabled)
                     arg = opt->strarg;
 
@@ -1935,9 +2039,17 @@ int main(int argc, char **argv)
                     execute("OnErrorExecute", arg, optget(opts, "daemon")->enabled);
 
                 arg = NULL;
+
+                if (FC_EFORBIDDEN == ret) {
+                    /* We're being actively blocked, which is a fatal error. Exit. */
+                    logg(LOGG_WARNING, "FreshClam was forbidden from downloading a database.\n");
+                    logg(LOGG_WARNING, "This is fatal. Retrying later won't help. Exiting now.\n");
+                    status = ret;
+                    goto done;
+                }
             }
 
-            logg("#--------------------------------------\n");
+            logg(LOGG_INFO_NF, "--------------------------------------\n");
 #ifdef SIGALRM
             sigaction(SIGALRM, &sigact, &oldact);
 #endif
@@ -1958,10 +2070,10 @@ int main(int argc, char **argv)
             } while (!g_terminate && (now < wakeup));
 
             if (g_terminate == -1) {
-                logg("Received signal: wake up\n");
+                logg(LOGG_INFO, "Received signal: wake up\n");
                 g_terminate = 0;
             } else if (g_terminate == -2) {
-                logg("Received signal: re-opening log file\n");
+                logg(LOGG_INFO, "Received signal: re-opening log file\n");
                 g_terminate = 0;
                 logg_close();
             }

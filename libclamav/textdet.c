@@ -1,7 +1,7 @@
 /*
  * Text detection based on ascmagic.c from the file(1) utility.
  *
- * Portions Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ * Portions Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  * Portions Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  * Copyright (c) Ian F. Darwin 1986-1995.
@@ -82,18 +82,9 @@ static int td_isascii(const unsigned char *buf, unsigned int len)
 {
     unsigned int i;
 
-    /* Check for the Byte-Order-Mark for UTF-8 */
-    if ((len >= 3) &&
-        (buf[0] == 0xEF) &&
-        (buf[1] == 0xBB) &&
-        (buf[2] == 0xBF))
-    {
-        return 0;
-    }
-
     /* Validate that the data all falls within the bounds of
-	 * plain ASCII, ISO-8859 text, and non-ISO extended ASCII (Mac, IBM PC)
-	 */
+     * plain ASCII, ISO-8859 text, and non-ISO extended ASCII (Mac, IBM PC)
+     */
     for (i = 0; i < len; i++)
         if (text_chars[buf[i]] == F)
             return 0;
@@ -108,9 +99,9 @@ static int td_isutf8(const unsigned char *buf, unsigned int len)
     for (i = 0; i < len; i++) {
         if ((buf[i] & 0x80) == 0) { /* 0xxxxxxx is plain ASCII */
             /*
-	     * Even if the whole file is valid UTF-8 sequences,
-	     * still reject it if it uses weird control characters.
-	     */
+             * Even if the whole file is valid UTF-8 sequences,
+             * still reject it if it uses weird control characters.
+             */
             if (text_chars[buf[i]] != T)
                 return 0;
 
@@ -201,6 +192,11 @@ cli_file_t cli_texttype(const unsigned char *buf, unsigned int len)
 {
     int ret;
 
+    /*
+     * @TODO: Add UTF8/16/32 BOM Detection to improve text type accuracy.
+     * Significant regression testing would be needed to ensure that re-typing
+     * files does not impact efficacy.
+     */
     if (td_isascii(buf, len)) {
         cli_dbgmsg("Recognized ASCII text\n");
         return CL_TYPE_TEXT_ASCII;

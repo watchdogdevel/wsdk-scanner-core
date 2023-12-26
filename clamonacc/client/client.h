@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2015-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2015-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, aCaB
@@ -24,20 +24,11 @@
 
 #include <curl/curl.h>
 
-#include "shared/optparser.h"
+#include "optparser.h"
 #include "../clamonacc.h"
 
 #define ONAS_DEFAULT_PING_INTERVAL 1
-#define ONAS_DEFAULT_PING_ATTEMPTS 30
-
-enum {
-    CONT,
-    MULTI,
-    STREAM,
-    FILDES,
-    ALLMATCH,
-    MAX_SCANTYPE = ALLMATCH
-};
+#define ONAS_DEFAULT_PING_ATTEMPTS 31
 
 void onas_print_server_version(struct onas_context **ctx);
 int onas_client_scan(const char *tcpaddr, int64_t portnum, int32_t scantype, uint64_t maxstream, const char *fname, int fd, int64_t timeout, STATBUF sb, int *infected, int *err, cl_error_t *ret_code);

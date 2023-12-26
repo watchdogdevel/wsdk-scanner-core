@@ -1,7 +1,7 @@
 /*
  *  ClamAV bytecode handler tool.
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -28,13 +28,17 @@
 #endif
 #include <stdlib.h>
 
+// libclamav
+#include "clamav.h"
+#include "dconf.h"
+#include "others.h"
 #include "bytecode.h"
 #include "bytecode_priv.h"
-#include "clamav.h"
-#include "shared/optparser.h"
-#include "shared/misc.h"
-#include "libclamav/dconf.h"
-#include "libclamav/others.h"
+#include "clamav_rust.h"
+
+// common
+#include "optparser.h"
+#include "misc.h"
 
 #include <fcntl.h>
 #include <stdlib.h>
@@ -49,7 +53,7 @@ static void help(void)
     printf("\n");
     printf("                       Clam AntiVirus: Bytecode Testing Tool %s\n", get_version());
     printf("           By The ClamAV Team: https://www.clamav.net/about.html#credits\n");
-    printf("           (C) 2020 Cisco Systems, Inc.\n");
+    printf("           (C) 2023 Cisco Systems, Inc.\n");
     printf("\n");
     printf("    clambc <file> [function] [param1 ...]\n");
     printf("\n");
@@ -66,6 +70,8 @@ static void help(void)
     printf("    --no-trace-showsource  -s         Don't show source line during tracing\n");
     printf("    --statistics=bytecode             Collect and print bytecode execution statistics\n");
     printf("    file                              File to test\n");
+    printf("\n");
+    printf("**Caution**: You should NEVER run bytecode signatures from untrusted sources.\nDoing so may result in arbitrary code execution.\n");
     printf("\n");
     return;
 }
@@ -362,6 +368,7 @@ int main(int argc, char *argv[])
         struct cl_engine *engine = cl_engine_new();
         fmap_t *map              = NULL;
         memset(&cctx, 0, sizeof(cctx));
+
         if (!engine) {
             fprintf(stderr, "Unable to create engine\n");
             optfree(opts);
@@ -387,13 +394,24 @@ int main(int argc, char *argv[])
             fprintf(stderr, "Out of memory\n");
             exit(3);
         }
-        ctx->ctx    = &cctx;
-        cctx.engine = engine;
-        cctx.fmap   = cli_calloc(sizeof(fmap_t *), engine->maxreclevel + 2);
-        if (!cctx.fmap) {
+        ctx->ctx      = &cctx;
+        cctx.engine   = engine;
+        cctx.evidence = evidence_new();
+
+        cctx.recursion_stack_size = cctx.engine->max_recursion_level;
+        cctx.recursion_stack      = cli_calloc(sizeof(recursion_level_t), cctx.recursion_stack_size);
+        if (!cctx.recursion_stack) {
             fprintf(stderr, "Out of memory\n");
             exit(3);
         }
+
+        // ctx was memset, so recursion_level starts at 0.
+        cctx.recursion_stack[cctx.recursion_level].fmap = map;
+        cctx.recursion_stack[cctx.recursion_level].type = CL_TYPE_ANY; /* ANY for the top level, because we don't yet know the type. */
+        cctx.recursion_stack[cctx.recursion_level].size = map->len;
+
+        cctx.fmap = cctx.recursion_stack[cctx.recursion_level].fmap;
+
         memset(&dbg_state, 0, sizeof(dbg_state));
         dbg_state.file     = "<libclamav>";
         dbg_state.line     = 0;
@@ -425,7 +443,7 @@ int main(int argc, char *argv[])
         }
 
         if ((opt = optget(opts, "input"))->enabled) {
-            fd = open(opt->strarg, O_RDONLY);
+            fd = open(opt->strarg, O_RDONLY | O_BINARY);
             if (fd == -1) {
                 fprintf(stderr, "Unable to open input file %s: %s\n", opt->strarg, strerror(errno));
                 optfree(opts);
@@ -461,7 +479,8 @@ int main(int argc, char *argv[])
         if (map)
             funmap(map);
         cl_engine_free(engine);
-        free(cctx.fmap);
+        free(cctx.recursion_stack);
+        evidence_free(cctx.evidence);
     }
     cli_bytecode_destroy(bc);
     cli_bytecode_done(&bcs);

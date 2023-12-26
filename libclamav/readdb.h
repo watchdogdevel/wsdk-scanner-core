@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *  Copyright (C) 2002-2007 Tomasz Kojm <tkojm@clamav.net>
  *
@@ -30,6 +30,7 @@
 #include "clamav.h"
 #include "str.h"
 #include "cvd.h"
+#include "matcher.h"
 
 #define MAX_LDB_SUBSIGS 64
 
@@ -123,9 +124,78 @@ struct cli_matcher;
 
 char *cli_virname(const char *virname, unsigned int official);
 
-cl_error_t cli_sigopts_handler(struct cli_matcher *root, const char *virname, const char *hexsig, uint8_t sigopts, uint16_t rtype, uint16_t type, const char *offset, uint8_t target, const uint32_t *lsigid, unsigned int options);
+/**
+ * @brief Parse & load a body-based pattern for a logical signature (LDB or Yara)
+ * that may have subsignature modifiers at the end.
+ *
+ * This function creates a new pattern with the required modification before calling
+ * cli_add_content_match_pattern() to load the content patterns to match with the AC matcher or BM matcher.
+ *
+ * For more info about subsignature modifiers: https://docs.clamav.net/manual/Signatures/LogicalSignatures.html#subsignature-modifiers
+ *
+ * @param root
+ * @param virname
+ * @param hexsig
+ * @param sigopts
+ * @param rtype
+ * @param type
+ * @param offset
+ * @param lsigid
+ * @param options
+ * @return cl_error_t
+ */
+cl_error_t cli_sigopts_handler(struct cli_matcher *root, const char *virname, const char *hexsig,
+                               uint8_t sigopts, uint16_t rtype, uint16_t type,
+                               const char *offset, const uint32_t *lsigid, unsigned int options);
 
-cl_error_t cli_parse_add(struct cli_matcher *root, const char *virname, const char *hexsig, uint8_t sigopts, uint16_t rtype, uint16_t type, const char *offset, uint8_t target, const uint32_t *lsigid, unsigned int options);
+/**
+ * @brief Parse body-based patterns that DO NOT have subsignature modifiers.
+ *
+ * This function will split up body-based signature patterns that have {n-m} and * wildcards
+ * into multiple subsignatures, adding each.
+ *
+ * @param root
+ * @param virname
+ * @param hexsig
+ * @param sigopts
+ * @param rtype
+ * @param type
+ * @param offset
+ * @param lsigid
+ * @param options
+ * @return cl_error_t
+ */
+cl_error_t cli_add_content_match_pattern(struct cli_matcher *root, const char *virname, const char *hexsig,
+                                         uint8_t sigopts, uint16_t rtype, uint16_t type,
+                                         const char *offset, const uint32_t *lsigid, unsigned int options);
+
+/**
+ * @brief Parse a subsignature from a logical signature.
+ *
+ * Called once for each subsignature in a logical signature.
+ * Not for use in other signature types (ndb, yara, etc).
+ *
+ * This function determines what type of subsiganture it is, whether that's:
+ * - a macro subsignature
+ * - a pcre subsignature
+ * - a byte compare subsignature
+ * - a fuzzy hash subsignature
+ * - or else treated as a file content matching subsignature.
+ *
+ * @param root
+ * @param virname
+ * @param hexsig
+ * @param offset
+ * @param lsigid    An array of 2 uint32_t numbers: lsig_id and subsig_id. May be NULL for testing.
+ * @param options
+ * @param current_subsig_index
+ * @param num_subsigs
+ * @param tdb
+ * @return cl_error_t
+ */
+cl_error_t readdb_parse_ldb_subsignature(struct cli_matcher *root, const char *virname, char *hexsig,
+                                         const char *offset, const uint32_t *lsigid, unsigned int options,
+                                         int current_subsig_index, int num_subsigs, struct cli_lsig_tdb *tdb);
 
 cl_error_t cli_load(const char *filename, struct cl_engine *engine, unsigned int *signo, unsigned int options, struct cli_dbio *dbio);
 

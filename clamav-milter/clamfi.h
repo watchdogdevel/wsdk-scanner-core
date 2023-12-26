@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Author: aCaB <acab@clamav.net>
@@ -22,12 +22,12 @@
 #ifndef _CLAMFI_H
 #define _CLAMFI_H
 
-#include "shared/optparser.h"
+#include "optparser.h"
 #include <libmilter/mfapi.h>
 
 extern uint64_t maxfilesize;
 extern int addxvirus;
-extern char xvirushdr[255];
+extern char xvirushdr[300];
 extern int multircpt;
 
 sfsistat clamfi_body(SMFICTX *ctx, unsigned char *bodyp, size_t len);

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2018-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2018-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Andrew Williams
  *
@@ -21,15 +21,6 @@
 #include "execs.h"
 #include <string.h>
 
-/**
- * Initialize a struct cli_exe_info so that it's ready to be populated
- * by the EXE header parsing functions (cli_peheader, cli_elfheader, and
- * cli_machoheader) and/or cli_exe_info_destroy.
- *
- * @param exeinfo a pointer to the struct cli_exe_info to initialize
- * @param offset the file offset corresponding to the start of the
- *        executable that exeinfo stores information about
- */
 void cli_exe_info_init(struct cli_exe_info *exeinfo, uint32_t offset)
 {
 
@@ -47,24 +38,18 @@ void cli_exe_info_init(struct cli_exe_info *exeinfo, uint32_t offset)
     ///* Initialize all of the members which are actually used by the matcher
     // * and by the bytecode runtime.  The rest is executable specific and
     // * we'll leave it to be populated by the exe parsing code. */
-    //exeinfo->offset = offset;
-    //exeinfo->sections = NULL;
-    //exeinfo->nsections = 0;
-    //exeinfo->ep = 0;
+    // exeinfo->offset = offset;
+    // exeinfo->sections = NULL;
+    // exeinfo->nsections = 0;
+    // exeinfo->ep = 0;
     ///* NOTE: These are PE-specific to an extent, but we should still
     // * initialize them for other exe types because they are used by
     // * the matcher/bytecode runtime. */
-    //exeinfo->hdr_size = 0;
-    //exeinfo->res_addr = 0;
-    //cli_hashset_init_noalloc(&(exeinfo->vinfo));
+    // exeinfo->hdr_size = 0;
+    // exeinfo->res_addr = 0;
+    // cli_hashset_init_noalloc(&(exeinfo->vinfo));
 }
 
-/**
- * Free resources associated with a struct cli_exe_info initialized
- * via cli_exe_info_init
- *
- * @param exeinfo a pointer to the struct cli_exe_info to destroy
- */
 void cli_exe_info_destroy(struct cli_exe_info *exeinfo)
 {
 

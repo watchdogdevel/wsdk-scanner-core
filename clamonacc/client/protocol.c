@@ -30,7 +30,7 @@
 #endif
 
 /* must be first because it may define _XOPEN_SOURCE */
-#include "shared/fdpassing.h"
+#include "fdpassing.h"
 #include <stdio.h>
 #include <curl/curl.h>
 #ifdef HAVE_UNISTD_H
@@ -53,15 +53,20 @@
 #include <netdb.h>
 #endif
 
-#include "libclamav/clamav.h"
-#include "libclamav/others.h"
-#include "shared/actions.h"
-#include "shared/output.h"
-#include "shared/misc.h"
+// libclamav
+#include "clamav.h"
+#include "others.h"
+
+// common
+#include "actions.h"
+#include "output.h"
+#include "misc.h"
+#include "clamdcom.h"
 
 #include "communication.h"
 #include "protocol.h"
 #include "client.h"
+#include "socket.h"
 
 static const char *scancmd[] = {"CONTSCAN", "MULTISCAN", "INSTREAM", "FILDES", "ALLMATCHSCAN"};
 
@@ -71,90 +76,94 @@ static int onas_send_stream(CURL *curl, const char *filename, int fd, int64_t ti
 {
     uint32_t buf[BUFSIZ / sizeof(uint32_t)];
     uint64_t len;
-    uint64_t todo  = maxstream;
     int ret        = 1;
     int close_flag = 0;
+    STATBUF statbuf;
+    uint64_t bytesRead     = 0;
+    const char zINSTREAM[] = "zINSTREAM";
 
-    if (0 == fd) {
-        if (filename) {
+    if (-1 == fd) {
+        if (NULL == filename) {
+            logg(LOGG_ERROR, "onas_send_stream: Invalid args, a filename or file descriptor must be provided.\n");
+            return 0;
+        } else {
             if ((fd = safe_open(filename, O_RDONLY | O_BINARY)) < 0) {
-                logg("~%s: Access denied. ERROR\n", filename);
+                logg(LOGG_DEBUG, "%s: Failed to open file. ERROR\n", filename);
                 return 0;
             }
-            //logg("DEBUG: >>>>> fd is %d\n", fd);
+            // logg(LOGG_INFO, "DEBUG: >>>>> fd is %d\n", fd);
             close_flag = 1;
-        } else {
-            fd = 0;
         }
     }
 
-    if (onas_sendln(curl, "zINSTREAM", 10, timeout)) {
+    if (FSTAT(fd, &statbuf)) {
+        logg(LOGG_ERROR, "onas_send_stream: Invalid args, bad file descriptor.\n");
         ret = -1;
         goto strm_out;
     }
 
-    while ((len = read(fd, &buf[1], sizeof(buf) - sizeof(uint32_t))) > 0) {
-        if ((uint64_t)len > todo) len = todo;
-        buf[0] = htonl(len);
-        if (onas_sendln(curl, (const char *)buf, len + sizeof(uint32_t), timeout)) {
-            ret = -1;
-            goto strm_out;
-        }
-        todo -= len;
-        if (!todo) {
-            len = 0;
-            break;
-        }
-    }
-
-    if (len) {
-        logg("!Failed to read from %s.\n", filename ? filename : "STDIN");
+    if (S_ISDIR(statbuf.st_mode)) {
         ret = 0;
         goto strm_out;
     }
+
+    if ((uint64_t)statbuf.st_size > maxstream) {
+        ret = 0;
+        goto strm_out;
+    }
+
+    if (onas_sendln(curl, zINSTREAM, sizeof(zINSTREAM), timeout)) {
+        ret = -1;
+        goto strm_out;
+    }
+
+    len    = statbuf.st_size;
+    buf[0] = htonl(len);
+    if (onas_sendln(curl, (const char *)buf, sizeof(uint32_t), timeout)) {
+        ret = -1;
+        goto strm_out;
+    }
+
+    while (bytesRead < len) {
+        ssize_t ret = read(fd, buf, sizeof(buf));
+        if (ret < 0) {
+            logg(LOGG_ERROR, "Failed to read from %s.\n", filename ? filename : "FD");
+            ret = -1;
+            goto strm_out;
+        } else if (0 == ret) {
+            break;
+        }
+        bytesRead += ret;
+
+        if (onas_sendln(curl, (const char *)buf, ret, timeout)) {
+            ret = -1;
+            goto strm_out;
+        }
+    }
+
     *buf = 0;
     onas_sendln(curl, (const char *)buf, 4, timeout);
 
 strm_out:
     if (close_flag) {
-        //logg("DEBUG: >>>>> closed fd %d\n", fd);
         close(fd);
     }
     return ret;
 }
 
 #ifdef HAVE_FD_PASSING
-/* Issues a FILDES command and pass a FD to clamd
- * Returns >0 on success, 0 soft fail, -1 hard fail */
-static int onas_send_fdpass(CURL *curl, const char *filename, int fd, int64_t timeout)
+static int onas_send_fdpass(int sockd, int fd)
 {
-    CURLcode result;
+
+    char dummy[] = "";
     struct iovec iov[1];
     struct msghdr msg;
     struct cmsghdr *cmsg;
     unsigned char fdbuf[CMSG_SPACE(sizeof(int))];
-    char dummy[]   = "";
-    int ret        = 1;
-    int close_flag = 0;
+    const char zFILDES[] = "zFILDES";
 
-    if (0 == fd) {
-        if (filename) {
-            if ((fd = open(filename, O_RDONLY)) < 0) {
-                logg("~%s: Access denied. ERROR\n", filename);
-                return 0;
-            }
-            close_flag = 1;
-        } else {
-            fd = 0;
-        }
-    }
-
-    result = onas_sendln(curl, "zFILDES", 8, timeout);
-
-    if (result) {
-        logg("*ClamProto: error sending w/ curl, %s\n", curl_easy_strerror(result));
-        ret = -1;
-        goto fd_out;
+    if (sendln(sockd, zFILDES, sizeof(zFILDES))) {
+        return -1;
     }
 
     iov[0].iov_base = dummy;
@@ -169,11 +178,48 @@ static int onas_send_fdpass(CURL *curl, const char *filename, int fd, int64_t ti
     cmsg->cmsg_level        = SOL_SOCKET;
     cmsg->cmsg_type         = SCM_RIGHTS;
     *(int *)CMSG_DATA(cmsg) = fd;
-    if (onas_sendln(curl, &msg, 0, timeout) == -1) {
-        logg("!FD send failed: %s\n", strerror(errno));
+
+    if (sendmsg(sockd, &msg, 0) == -1) {
+        logg(LOGG_ERROR, "FD send failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    return 1;
+}
+
+/* Issues a FILDES command and pass a FD to clamd
+ * Returns >0 on success, 0 soft fail, -1 hard fail */
+static int onas_fdpass(const char *filename, int fd, int sockd)
+{
+    int ret        = 1;
+    int close_flag = 0;
+
+    if (-1 == fd) {
+        if (filename) {
+            if ((fd = open(filename, O_RDONLY)) < 0) {
+                logg(LOGG_DEBUG, "%s: Failed to open file. ERROR\n", filename);
+                return 0;
+            }
+            close_flag = 1;
+        } else {
+            fd = -1;
+        }
+    }
+
+    if (sockd == -1) {
+        logg(LOGG_DEBUG, "ClamProto: error when getting socket descriptor\n");
         ret = -1;
         goto fd_out;
     }
+
+    ret = onas_send_fdpass(sockd, fd);
+
+    if (ret < 0) {
+        logg(LOGG_DEBUG, "ClamProto: error when fdpassing\n");
+        ret = -1;
+        goto fd_out;
+    }
+
 fd_out:
     if (close_flag) {
         close(fd);
@@ -190,29 +236,18 @@ int onas_dsresult(CURL *curl, int scantype, uint64_t maxstream, const char *file
 {
     int infected = 0, len = 0, beenthere = 0;
     char *bol, *eol;
-    struct RCVLN rcv;
+    struct onas_rcvln rcv;
     STATBUF sb;
+    int sockd                                                        = -1;
+    int (*recv_func)(struct onas_rcvln *, char **, char **, int64_t) = NULL;
 
-    onas_recvlninit(&rcv, curl);
+    sockd = onas_get_sockd();
 
-    cl_error_t ret;
-    char *real_filename = NULL;
-
-    if (filename) {
-        ret = cli_realpath((const char *) filename, &real_filename);
-        if (CL_SUCCESS != ret) {
-            logg("Failed to determine real filename of %s.\n", filename);
-            if (ret_code) {
-                *ret_code = CL_EACCES;
-            }
-            infected = -1;
-            goto done;
-        }
-        filename = real_filename;
-    }
-
-    if (ret_code) {
-        *ret_code = CL_SUCCESS;
+    onas_recvlninit(&rcv, curl, sockd);
+    if (rcv.sockd > 0) {
+        recv_func = &onas_fd_recvln;
+    } else {
+        recv_func = &onas_recvln;
     }
 
     switch (scantype) {
@@ -220,7 +255,7 @@ int onas_dsresult(CURL *curl, int scantype, uint64_t maxstream, const char *file
         case CONT:
         case ALLMATCH:
             if (!filename) {
-                logg("Filename cannot be NULL for MULTISCAN or CONTSCAN.\n");
+                logg(LOGG_INFO, "Filename cannot be NULL for MULTISCAN or CONTSCAN.\n");
                 if (ret_code) {
                     *ret_code = CL_ENULLARG;
                 }
@@ -229,7 +264,7 @@ int onas_dsresult(CURL *curl, int scantype, uint64_t maxstream, const char *file
             }
             len = strlen(filename) + strlen(scancmd[scantype]) + 3;
             if (!(bol = malloc(len))) {
-                logg("!Cannot allocate a command buffer: %s\n", strerror(errno));
+                logg(LOGG_ERROR, "Cannot allocate a command buffer: %s\n", strerror(errno));
                 if (ret_code) {
                     *ret_code = CL_EMEM;
                 }
@@ -255,21 +290,27 @@ int onas_dsresult(CURL *curl, int scantype, uint64_t maxstream, const char *file
 #ifdef HAVE_FD_PASSING
         case FILDES:
             /* NULL filename safe in send_fdpass() */
-            len = onas_send_fdpass(curl, filename, fd, timeout);
+            len = onas_fdpass(filename, fd, sockd);
             break;
 #endif
     }
 
     if (len <= 0) {
         *printok = 0;
-        if (errors)
+        if (errors && len < 0) {
+            /* Ignore error if len == 0 to reduce verbosity from file open()
+               "errors" where the file has been deleted before we have a chance
+               to scan it. */
             (*errors)++;
+        }
         infected = len;
         goto done;
     }
 
-    while ((len = onas_recvln(&rcv, &bol, &eol, timeout))) {
+    while ((len = (*recv_func)(&rcv, &bol, &eol, timeout))) {
+
         if (len == -1) {
+
             if (ret_code) {
                 *ret_code = CL_EREAD;
             }
@@ -278,7 +319,7 @@ int onas_dsresult(CURL *curl, int scantype, uint64_t maxstream, const char *file
         }
         beenthere = 1;
         if (!filename) {
-            logg("~%s\n", bol);
+            logg(LOGG_INFO, "%s\n", bol);
         }
         if (len > 7) {
             char *colon = strrchr(bol, ':');
@@ -297,10 +338,10 @@ int onas_dsresult(CURL *curl, int scantype, uint64_t maxstream, const char *file
             if (!colon) {
                 char *unkco = "UNKNOWN COMMAND";
                 if (!strncmp(bol, unkco, sizeof(unkco) - 1)) {
-                    logg("*clamd replied \"UNKNOWN COMMAND\". Command was %s\n",
+                    logg(LOGG_DEBUG, "clamd replied \"UNKNOWN COMMAND\". Command was %s\n",
                          (scantype < 0 || scantype > MAX_SCANTYPE) ? "unidentified" : scancmd[scantype]);
                 } else {
-                    logg("*Failed to parse reply: \"%s\"\n", bol);
+                    logg(LOGG_DEBUG, "Failed to parse reply: \"%s\"\n", bol);
                 }
 
                 if (ret_code) {
@@ -326,12 +367,12 @@ int onas_dsresult(CURL *curl, int scantype, uint64_t maxstream, const char *file
 
                 if (filename) {
                     if (scantype >= STREAM) {
-                        logg("~%s%s FOUND\n", filename, colon);
+                        logg(LOGG_INFO, "%s%s FOUND\n", filename, colon);
                         if (action) {
                             action(filename);
                         }
                     } else {
-                        logg("~%s FOUND\n", bol);
+                        logg(LOGG_INFO, "%s FOUND\n", bol);
                         *colon = '\0';
                         if (action) {
                             action(bol);
@@ -343,64 +384,54 @@ int onas_dsresult(CURL *curl, int scantype, uint64_t maxstream, const char *file
                     *ret_code = CL_VIRUS;
                 }
 
-            } else if (len > 49 && !memcmp(eol - 50, " lstat() failed: No such file or directory. ERROR", 49)) {
+            } else if ((len > 32 && !memcmp(eol - 33, "No such file or directory. ERROR", 32)) ||
+                       (len > 34 && !memcmp(eol - 35, "Can't open file or directory ERROR", 34))) {
                 if (errors) {
                     (*errors)++;
                 }
                 *printok = 0;
 
                 if (filename) {
-                    (scantype >= STREAM) ? logg("*%s%s\n", filename, colon) : logg("*%s\n", bol);
+                    (scantype >= STREAM) ? logg(LOGG_DEBUG, "%s%s\n", filename, colon) : logg(LOGG_DEBUG, "%s\n", bol);
                 }
 
                 if (ret_code) {
                     *ret_code = CL_ESTAT;
                 }
-            } else if (len > 41 && !memcmp(eol - 42, " lstat() failed: Permission denied. ERROR", 41)) {
+            } else if ((len > 21 && !memcmp(eol - 22, " Access denied. ERROR", 21)) ||
+                       (len > 23 && !memcmp(eol - 24, "Can't access file ERROR", 23)) ||
+                       (len > 41 && !memcmp(eol - 42, " lstat() failed: Permission denied. ERROR", 41))) {
                 if (errors) {
                     (*errors)++;
                 }
                 *printok = 0;
 
                 if (filename) {
-                    (scantype >= STREAM) ? logg("*%s%s\n", filename, colon) : logg("*%s\n", bol);
-                }
-
-                if (ret_code) {
-                    *ret_code = CL_ESTAT;
-                }
-            } else if (len > 21 && !memcmp(eol - 22, " Access denied. ERROR", 21)) {
-                if (errors) {
-                    (*errors)++;
-                }
-                *printok = 0;
-
-                if (filename) {
-                    (scantype >= STREAM) ? logg("*%s%s\n", filename, colon) : logg("*%s\n", bol);
+                    (scantype >= STREAM) ? logg(LOGG_INFO, "%s%s\n", filename, colon) : logg(LOGG_INFO, "%s\n", bol);
                 }
 
                 if (ret_code) {
                     *ret_code = CL_EACCES;
                 }
-            } else if (!memcmp(eol - 7, " ERROR", 6)) {
+            } else if (len > 6 && !memcmp(eol - 7, " ERROR", 6)) {
                 if (errors) {
                     (*errors)++;
                 }
                 *printok = 0;
 
                 if (filename) {
-                    (scantype >= STREAM) ? logg("~%s%s\n", filename, colon) : logg("~%s\n", bol);
+                    (scantype >= STREAM) ? logg(LOGG_INFO, "%s%s\n", filename, colon) : logg(LOGG_INFO, "%s\n", bol);
                 }
 
                 if (ret_code) {
-                    *ret_code = CL_ESTATE;
+                    *ret_code = CL_ERROR;
                 }
             }
         }
     }
     if (!beenthere) {
         if (!filename) {
-            logg("STDIN: noreply from clamd\n.");
+            logg(LOGG_INFO, "STDIN: noreply from clamd\n.");
             if (ret_code) {
                 *ret_code = CL_EACCES;
             }
@@ -408,7 +439,7 @@ int onas_dsresult(CURL *curl, int scantype, uint64_t maxstream, const char *file
             goto done;
         }
         if (CLAMSTAT(filename, &sb) == -1) {
-            logg("~%s: stat() failed with %s, clamd may not be responding\n",
+            logg(LOGG_INFO, "%s: stat() failed with %s, clamd may not be responding\n",
                  filename, strerror(errno));
             if (ret_code) {
                 *ret_code = CL_EACCES;
@@ -417,7 +448,7 @@ int onas_dsresult(CURL *curl, int scantype, uint64_t maxstream, const char *file
             goto done;
         }
         if (!S_ISDIR(sb.st_mode)) {
-            logg("~%s: no reply from clamd\n", filename);
+            logg(LOGG_INFO, "%s: no reply from clamd\n", filename);
             if (ret_code) {
                 *ret_code = CL_EACCES;
             }
@@ -427,8 +458,8 @@ int onas_dsresult(CURL *curl, int scantype, uint64_t maxstream, const char *file
     }
 
 done:
-    if (NULL != real_filename) {
-        free(real_filename);
+    if (sockd > 0) {
+        closesocket(sockd);
     }
     return infected;
 }

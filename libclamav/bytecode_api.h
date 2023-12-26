@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2019 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
 
  *  Authors: Török Edvin, Kevin Lin
@@ -73,10 +73,10 @@ enum BytecodeKind {
     /** specifies a PDF hook, executes at a predetermined point of PDF parsing for PDF files */
     BC_PDF,
     /** specifies a PE hook, executes at a predetermined point in PE parsing for PE files,
-      * both packed and unpacked files */
+     * both packed and unpacked files */
     BC_PE_ALL,
     /** specifies a PRECLASS hook, executes at the end of file property collection and
-      * operates on the original file targeted for property collection */
+     * operates on the original file targeted for property collection */
     BC_PRECLASS,
     /** specifies an ELF unpacker, executed on ELF files on a logical trigger */
     BC_ELF_UNPACKER,
@@ -90,10 +90,10 @@ enum BytecodeKind {
  * LibClamAV functionality level constants
  */
 enum FunctionalityLevels {
-    FUNC_LEVEL_096       = 51, /**< LibClamAV release 0.96.0: bytecode engine released */
-    FUNC_LEVEL_096_dev   = 52,
-    FUNC_LEVEL_096_1     = 53, /**< LibClamAV release 0.96.1: logical signature use of VI/macros
-                                * requires this minimum functionality level */
+    FUNC_LEVEL_096     = 51, /**< LibClamAV release 0.96.0: bytecode engine released */
+    FUNC_LEVEL_096_dev = 52,
+    FUNC_LEVEL_096_1   = 53, /**< LibClamAV release 0.96.1: logical signature use of VI/macros requires this minimum functionality level */
+
     FUNC_LEVEL_096_1_dev = 54,
     FUNC_LEVEL_096_2     = 54, /**< LibClamAV release 0.96.2: PDF Hooks require this minimum level */
     FUNC_LEVEL_096_2_dev = 55,
@@ -146,6 +146,32 @@ enum FunctionalityLevels {
 
     FUNC_LEVEL_0103_BETA = 120, /**< LibClamAV release 0.103.0-BETA */
     FUNC_LEVEL_0103      = 121, /**< LibClamAV release 0.103.0 */
+    FUNC_LEVEL_0103_1    = 122, /**< LibClamAV release 0.103.1 */
+    FUNC_LEVEL_0103_2    = 123, /**< LibClamAV release 0.103.2 */
+    FUNC_LEVEL_0103_3    = 124, /**< LibClamAV release 0.103.3 */
+    FUNC_LEVEL_0103_4    = 125, /**< LibClamAV release 0.103.4 */
+    FUNC_LEVEL_0103_5    = 126, /**< LibClamAV release 0.103.5 */
+    FUNC_LEVEL_0103_6    = 127, /**< LibClamAV release 0.103.6 */
+    FUNC_LEVEL_0103_7    = 128, /**< LibClamAV release 0.103.7 */
+    FUNC_LEVEL_0103_8    = 129, /**< LibClamAV release 0.103.8 */
+
+    FUNC_LEVEL_0104   = 140, /**< LibClamAV release 0.104.0 */
+    FUNC_LEVEL_0104_1 = 141, /**< LibClamAV release 0.104.1 */
+    FUNC_LEVEL_0104_2 = 142, /**< LibClamAV release 0.104.2 */
+    FUNC_LEVEL_0104_3 = 143, /**< LibClamAV release 0.104.3 */
+    FUNC_LEVEL_0104_4 = 144, /**< LibClamAV release 0.104.4 */
+
+    FUNC_LEVEL_0105   = 150, /**< LibClamAV release 0.105.0 */
+    FUNC_LEVEL_0105_1 = 151, /**< LibClamAV release 0.105.1 */
+    FUNC_LEVEL_0105_2 = 152, /**< LibClamAV release 0.105.2 */
+
+    FUNC_LEVEL_1_0   = 160, /**< LibClamAV release 1.0.0 */
+    FUNC_LEVEL_1_0_1 = 161, /**< LibClamAV release 1.0.1 */
+
+    FUNC_LEVEL_1_1 = 180, /**< LibClamAV release 1.1.0 */
+
+    FUNC_LEVEL_1_2   = 190, /**< LibClamAV release 1.2.0 */
+    FUNC_LEVEL_1_2_1 = 191, /**< LibClamAV release 1.2.1 */
 };
 
 /**
@@ -249,7 +275,7 @@ enum lzma_returncode {
  * Bzip2 return codes
  */
 enum bzip2_returncode {
-    BZIP2_OK               = 0,  /* Function returned without error */
+    BZIP2_OK               = 0, /* Function returned without error */
     BZIP2_SEQUENCE_ERROR   = -1,
     BZIP2_PARAM_ERROR      = -2,
     BZIP2_MEM_ERROR        = -3,
@@ -349,7 +375,7 @@ const uint16_t __clambc_kind;
  * @param[in] a 0xf00dbeef
  * @param[in] b 0xbeeff00d
  * @return 0x12345678 if parameters match, 0x55 otherwise
-*/
+ */
 uint32_t test1(uint32_t a, uint32_t b);
 
 /**
@@ -627,7 +653,7 @@ uint32_t buffer_pipe_read_avail(int32_t id);
   * @return pointer to buffer, or NULL if buffer has less than
   * specified amount
   */
-//uint8_t *buffer_pipe_read_get(int32_t id, uint32_t amount);
+// uint8_t *buffer_pipe_read_get(int32_t id, uint32_t amount);
 const uint8_t* buffer_pipe_read_get(int32_t id, uint32_t amount);
 
 /**
@@ -1140,7 +1166,7 @@ uint32_t pdf_getobjsize(int32_t objidx);
  * @param[in] amount - size returned by pdf_getobjsize (or smaller)
  * @return NULL - invalid objidx/amount
  * @return pointer - pointer to original object */
-//uint8_t *pdf_getobj(int32_t objidx, uint32_t amount);
+// uint8_t *pdf_getobj(int32_t objidx, uint32_t amount);
 const uint8_t* pdf_getobj(int32_t objidx, uint32_t amount);
 
 /**
@@ -1321,9 +1347,9 @@ int32_t json_get_boolean(int32_t objid);
  */
 int32_t json_get_int(int32_t objid);
 
-//int64_t json_get_int64(int32_t objid);
+// int64_t json_get_int64(int32_t objid);
 /* bytecode does not support double type */
-//double json_get_double(int32_t objid);
+// double json_get_double(int32_t objid);
 
 /* ----------------- END 0.98.4 APIs ---------------------------------- */
 /* ----------------- BEGIN 0.101.0 APIs ------------------------------- */
@@ -1333,36 +1359,36 @@ int32_t json_get_int(int32_t objid);
   * Check if any given scan option is enabled.
   * Returns non-zero if the following named options are set:
   *
-  * "general allmatch"                - all-match mode is enabled
-  * "general collect metadata"        - --gen-json is enabled
-  * "general heuristics"              - --gen-json is enabled
+  * "general allmatch"                  - all-match mode is enabled
+  * "general collect metadata"          - --gen-json is enabled
+  * "general heuristics"                - --gen-json is enabled
   *
-  * "parse archive"                   - archive parsing is enabled
-  * "parse pdf"                       - pdf parsing is enabled
-  * "parse swf"                       - swf parsing is enabled
-  * "parse hwp3"                      - hwp3 parsing is enabled
-  * "parse xmldocs"                   - xmldocs parsing is enabled
-  * "parse mail"                      - mail parsing is enabled
-  * "parse ole2"                      - ole2 parsing is enabled
-  * "parse html"                      - html parsing is enabled
-  * "parse pe"                        - pe parsing is enabled
+  * "parse archive"                     - archive parsing is enabled
+  * "parse pdf"                         - pdf parsing is enabled
+  * "parse swf"                         - swf parsing is enabled
+  * "parse hwp3"                        - hwp3 parsing is enabled
+  * "parse xmldocs"                     - xmldocs parsing is enabled
+  * "parse mail"                        - mail parsing is enabled
+  * "parse ole2"                        - ole2 parsing is enabled
+  * "parse html"                        - html parsing is enabled
+  * "parse pe"                          - pe parsing is enabled
   *
-  * "heuristic precedence"            - heuristic signatures are set to take precedence
-  * "heuristic broken"                - broken pe heuristic is enabled
-  * "heuristic exceeds max"           - heuristic for when max settings are exceeded is enabled
-  * "heuristic phishing ssl mismatch" - phishing ssl mismatch heuristic is enabled
-  * "heuristic phishing cloak"        - phishing cloak heuristic is enabled
-  * "heuristic macros"                - macros heuristic is enabled
-  * "heuristic encrypted"             - encrypted heuristic is enabled
-  * "heuristic partition intxn"       - macpartition intxnros heuristic is enabled
-  * "heuristic structured"            - structured heuristic is enabled
-  * "heuristic structured ssn normal" - structured ssn normal heuristic is enabled
+  * "heuristic precedence"              - heuristic signatures are set to take precedence
+  * "heuristic broken"                  - broken pe heuristic is enabled
+  * "heuristic exceeds max"             - heuristic for when max settings are exceeded is enabled
+  * "heuristic phishing ssl mismatch"   - phishing ssl mismatch heuristic is enabled
+  * "heuristic phishing cloak"          - phishing cloak heuristic is enabled
+  * "heuristic macros"                  - macros heuristic is enabled
+  * "heuristic encrypted"               - encrypted heuristic is enabled
+  * "heuristic partition intersection"  - macpartition intersectionros heuristic is enabled
+  * "heuristic structured"              - structured heuristic is enabled
+  * "heuristic structured ssn normal"   - structured ssn normal heuristic is enabled
   * "heuristic structured ssn stripped" - structured ssn stripped heuristic is enabled
   *
-  * "mail partial message"            - parsing of partial mail messages is enabled
+  * "mail partial message"              - parsing of partial mail messages is enabled
   *
-  * "dev collect sha"                 - --dev-collect-hashes is enabled
-  * "dev collect performance info"    - --dev-performance is enabled
+  * "dev collect sha"                   - --dev-collect-hashes is enabled
+  * "dev collect performance info"      - --dev-performance is enabled
   *
   * @param[in] scan_options enum value for desired scan option category.
   * @return CL_SCAN_<OPTION>_* flags
@@ -1376,7 +1402,7 @@ uint32_t engine_scan_options_ex(const uint8_t* option_name, uint32_t name_len);
 \group_adt
   * Initializes LZMA data structures for decompressing data
   * 'from_buffer' and writing uncompressed data 'to_buffer'.
-  * This function expects the LZMA data to be prefixed with an 'LZMA_ALONE' header: 
+  * This function expects the LZMA data to be prefixed with an 'LZMA_ALONE' header:
   * - One byte of lzma parameters lc, lp and pb converted into a byte value like this: lc + 9 * (5 * pb + lp).
   *   lc The number of high bits of the previous byte to use as a context for literal encoding.
   *   lp The number of low bits of the dictionary position to include in literal_pos_state.

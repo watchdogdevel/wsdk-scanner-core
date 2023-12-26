@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Nigel Horne
@@ -81,8 +81,8 @@ int tableInsert(table_t *table, const char *key, int value)
         table->tableLast = table->tableHead = (tableEntry *)cli_malloc(sizeof(tableEntry));
     else {
         /*
-		 * Re-use deleted items
-		 */
+         * Re-use deleted items
+         */
         if (table->flags & TABLE_HAS_DELETED_ENTRIES) {
             tableEntry *tableItem;
 

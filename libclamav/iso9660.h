@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2011-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB <acab@clamav.net>
@@ -24,6 +24,6 @@
 
 #include "others.h"
 
-int cli_scaniso(cli_ctx *ctx, size_t offset);
+cl_error_t cli_scaniso(cli_ctx *ctx, size_t offset);
 
 #endif

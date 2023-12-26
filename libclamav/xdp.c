@@ -52,7 +52,6 @@
 #include "scanners.h"
 #include "conv.h"
 #include "xdp.h"
-#include "bignum_fast.h"
 #include "filetypes.h"
 
 static char *dump_xdp(cli_ctx *ctx, const char *start, size_t sz);
@@ -94,7 +93,6 @@ cl_error_t cli_scanxdp(cli_ctx *ctx)
 {
 #if HAVE_LIBXML2
     xmlTextReaderPtr reader = NULL;
-    fmap_t *map             = *(ctx->fmap);
     const char *buf;
     const xmlChar *name, *value;
     char *decoded;
@@ -103,12 +101,12 @@ cl_error_t cli_scanxdp(cli_ctx *ctx)
     char *dumpname;
     size_t i;
 
-    buf = (const char *)fmap_need_off_once(map, map->offset, map->len);
+    buf = (const char *)fmap_need_off_once(ctx->fmap, 0, ctx->fmap->len);
     if (!(buf))
         return CL_EREAD;
 
     if (ctx->engine->keeptmp) {
-        dumpname = dump_xdp(ctx, buf, map->len);
+        dumpname = dump_xdp(ctx, buf, ctx->fmap->len);
         if (dumpname)
             free(dumpname);
     }
@@ -120,7 +118,7 @@ cl_error_t cli_scanxdp(cli_ctx *ctx)
      * silently ignore the error and return CL_SUCCESS so the filetyping code can
      * continue on.
      */
-    reader = xmlReaderForMemory(buf, (int)(map->len), "noname.xml", NULL, CLAMAV_MIN_XMLREADER_FLAGS);
+    reader = xmlReaderForMemory(buf, (int)(ctx->fmap->len), "noname.xml", NULL, CLAMAV_MIN_XMLREADER_FLAGS);
     if (!(reader))
         return CL_SUCCESS;
 
@@ -160,9 +158,9 @@ cl_error_t cli_scanxdp(cli_ctx *ctx)
                         break;
                     }
 
-                    rc = cli_magic_scan_buff(decoded, decodedlen, ctx, NULL);
+                    rc = cli_magic_scan_buff(decoded, decodedlen, ctx, NULL, LAYER_ATTRIBUTES_NONE);
                     free(decoded);
-                    if (rc != CL_SUCCESS || rc == CL_BREAK) {
+                    if (rc != CL_SUCCESS) {
                         xmlFree((void *)value);
                         break;
                     }

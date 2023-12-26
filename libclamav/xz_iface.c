@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2013 Sourcefire, Inc.
  *
  *  Authors: Steven Morgan (smorgan@sourcefire.com)
@@ -73,8 +73,10 @@ int cli_XzDecode(struct CLI_XZ *XZ)
 
     inbytes  = XZ->avail_in;
     outbytes = XZ->avail_out;
-    res      = XzUnpacker_Code(&XZ->state, XZ->next_out, &outbytes,
+
+    res = XzUnpacker_Code(&XZ->state, XZ->next_out, &outbytes,
                           XZ->next_in, &inbytes, CODER_FINISH_ANY, &XZ->status);
+
     XZ->avail_in -= inbytes;
     XZ->next_in += inbytes;
     XZ->avail_out -= outbytes;

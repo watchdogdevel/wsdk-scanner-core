@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2019-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2019-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Mickey Sola
  *
@@ -21,10 +21,12 @@
 #ifndef __ONAS_FAN_H
 #define __ONAS_FAN_H
 
-#include "../clamonacc.h"
-#include "libclamav/clamav.h"
+// libclamav
+#include "clamav.h"
 
-//void *onas_fan_th(void *arg);
+#include "../clamonacc.h"
+
+// void *onas_fan_th(void *arg);
 cl_error_t onas_setup_fanotif(struct onas_context **ctx);
 int onas_fan_eloop(struct onas_context **ctx);
 

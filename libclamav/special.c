@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Trog, Török Edvin
@@ -41,7 +41,7 @@
 #include "matcher.h"
 
 /* NOTE: Photoshop stores data in BIG ENDIAN format, this is the opposite
-	to virtually everything else */
+        to virtually everything else */
 
 #define special_endian_convert_16(v) be16_to_host(v)
 #define special_endian_convert_32(v) be32_to_host(v)
@@ -50,7 +50,7 @@ int cli_check_mydoom_log(cli_ctx *ctx)
 {
     const uint32_t *record;
     uint32_t check, key;
-    fmap_t *map         = *ctx->fmap;
+    fmap_t *map         = ctx->fmap;
     unsigned int blocks = map->len / (8 * 4);
 
     cli_dbgmsg("in cli_check_mydoom_log()\n");
@@ -89,155 +89,7 @@ int cli_check_mydoom_log(cli_ctx *ctx)
     if ((~check) != key)
         return CL_CLEAN;
 
-    return cli_append_virus(ctx, "Heuristics.Worm.Mydoom.M.log");
-}
-
-static int jpeg_check_photoshop_8bim(cli_ctx *ctx, off_t *off)
-{
-    const unsigned char *buf;
-    uint16_t ntmp;
-    uint8_t nlength, id[2];
-    uint32_t size;
-    off_t offset = *off;
-    int retval;
-    fmap_t *map = *ctx->fmap;
-
-    if (!(buf = fmap_need_off_once(map, offset, 4 + 2 + 1))) {
-        cli_dbgmsg("read bim failed\n");
-        return -1;
-    }
-    if (memcmp(buf, "8BIM", 4) != 0) {
-        cli_dbgmsg("missed 8bim\n");
-        return -1;
-    }
-
-    id[0] = (uint8_t)buf[4];
-    id[1] = (uint8_t)buf[5];
-    cli_dbgmsg("ID: 0x%.2x%.2x\n", id[0], id[1]);
-    nlength = buf[6];
-    ntmp    = nlength + ((((uint16_t)nlength) + 1) & 0x01);
-    offset += 4 + 2 + 1 + ntmp;
-
-    if (fmap_readn(map, &size, offset, 4) != 4) {
-        return -1;
-    }
-    size = special_endian_convert_32(size);
-    if (size == 0) {
-        return -1;
-    }
-    if ((size & 0x01) == 1) {
-        size++;
-    }
-
-    *off = offset + 4 + size;
-    /* Is it a thumbnail image: 0x0409 or 0x040c */
-    if ((id[0] == 0x04) && ((id[1] == 0x09) || (id[1] == 0x0c))) {
-        /* Yes */
-        cli_dbgmsg("found thumbnail\n");
-    } else {
-        /* No - Seek past record */
-        return 0;
-    }
-
-    /* Jump past header */
-    offset += 4 + 28;
-
-    retval = cli_check_jpeg_exploit(ctx, offset);
-    if (retval == 1) {
-        cli_dbgmsg("Exploit found in thumbnail\n");
-    }
-    return retval;
-}
-
-static int jpeg_check_photoshop(cli_ctx *ctx, off_t offset)
-{
-    int retval;
-    const unsigned char *buffer;
-    off_t old;
-    fmap_t *map = *ctx->fmap;
-
-    if (!(buffer = fmap_need_off_once(map, offset, 14))) {
-        return 0;
-    }
-
-    if (memcmp(buffer, "Photoshop 3.0", 14) != 0) {
-        return 0;
-    }
-    offset += 14;
-
-    cli_dbgmsg("Found Photoshop segment\n");
-    do {
-        old    = offset;
-        retval = jpeg_check_photoshop_8bim(ctx, &offset);
-        if (offset <= old)
-            break;
-    } while (retval == 0);
-
-    if (retval == -1) {
-        retval = 0;
-    }
-    return retval;
-}
-
-int cli_check_jpeg_exploit(cli_ctx *ctx, off_t offset)
-{
-    const unsigned char *buffer;
-    int retval;
-    fmap_t *map = *ctx->fmap;
-
-    cli_dbgmsg("in cli_check_jpeg_exploit()\n");
-    if (ctx->recursion > ctx->engine->maxreclevel)
-        return CL_EMAXREC;
-
-    if (!(buffer = fmap_need_off_once(map, offset, 2)))
-        return 0;
-    if ((buffer[0] != 0xff) || (buffer[1] != 0xd8)) {
-        return 0;
-    }
-    offset += 2;
-    for (;;) {
-        off_t new_off;
-        if (!(buffer = fmap_need_off_once(map, offset, 4))) {
-            return 0;
-        }
-        /* Check for multiple 0xFF values, we need to skip them */
-        if ((buffer[0] == 0xff) && (buffer[1] == 0xff)) {
-            offset++;
-            continue;
-        }
-        offset += 4;
-        if ((buffer[0] == 0xff) && (buffer[1] == 0xfe)) {
-            if (buffer[2] == 0x00) {
-                if ((buffer[3] == 0x00) || (buffer[3] == 0x01)) {
-                    return 1;
-                }
-            }
-        }
-        if (buffer[0] != 0xff) {
-            return -1;
-        }
-        if (buffer[1] == 0xda) {
-            /* End of Image marker */
-            return 0;
-        }
-
-        new_off = ((unsigned int)buffer[2] << 8) + buffer[3];
-        if (new_off < 2) {
-            return -1;
-        }
-        new_off -= 2;
-        new_off += offset;
-
-        if (buffer[1] == 0xed) {
-            /* Possible Photoshop file */
-            ctx->recursion++;
-            retval = jpeg_check_photoshop(ctx, offset);
-            ctx->recursion--;
-            if (retval != 0)
-                return retval;
-        }
-        offset = new_off;
-    }
+    return cli_append_potentially_unwanted(ctx, "Heuristics.Worm.Mydoom.M.log");
 }
 
 static uint32_t riff_endian_convert_32(uint32_t value, int big_endian)
@@ -296,10 +148,10 @@ static int riff_read_chunk(fmap_t *map, off_t *offset, int big_endian, int rec_l
         return 0;
     }
     /* FIXME: WTF!?
-	if (lseek(fd, offset, SEEK_SET) != offset) {
-		return 2;
-	}
-	*/
+        if (lseek(fd, offset, SEEK_SET) != offset) {
+                return 2;
+        }
+        */
     return 1;
 }
 
@@ -308,7 +160,7 @@ int cli_check_riff_exploit(cli_ctx *ctx)
     const uint32_t *buf;
     int big_endian, retval;
     off_t offset;
-    fmap_t *map = *ctx->fmap;
+    fmap_t *map = ctx->fmap;
 
     cli_dbgmsg("in cli_check_riff_exploit()\n");
 
@@ -472,11 +324,11 @@ int cli_detect_swizz(struct swizz_stats *stats)
             uint32_t v = gn[i];
             gn[i]      = (v << 15) / all;
             if (cli_debug_flag)
-                fprintf(stderr, "%lu, ", (unsigned long)gn[i]);
+                cli_eprintf("%lu, ", (unsigned long)gn[i]);
         }
         global_swizz = swizz_j48_global(gn) ? CL_VIRUS : CL_CLEAN;
         if (cli_debug_flag) {
-            fprintf(stderr, "\n");
+            cli_eprintf("\n");
             cli_dbgmsg("cli_detect_swizz: global: %s\n", global_swizz ? "suspicious" : "clean");
         }
     }

@@ -1,7 +1,7 @@
 /*
  * Extract component parts of MS XML files (e.g. MS Office 2003 XML Documents)
  *
- * Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ * Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  * Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  * Authors: Kevin Lin
@@ -238,7 +238,7 @@ cl_error_t cli_scanmsxml(cli_ctx *ctx)
         return CL_ENULLARG;
 
     memset(&cbdata, 0, sizeof(cbdata));
-    cbdata.map = *ctx->fmap;
+    cbdata.map = ctx->fmap;
 
     reader = xmlReaderForIO(msxml_read_cb, NULL, &cbdata, "msxml.xml", NULL, CLAMAV_MIN_XMLREADER_FLAGS);
     if (!reader) {

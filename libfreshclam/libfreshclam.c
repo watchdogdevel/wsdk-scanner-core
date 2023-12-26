@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *  Copyright (C) 2002-2007 Tomasz Kojm <tkojm@clamav.net>
  *
@@ -53,18 +53,22 @@
 #include <curl/curl.h>
 
 #include "target.h"
+
+// libclamav
 #include "clamav.h"
+#include "clamav_rust.h"
+#include "others.h"
+#include "regex_list.h"
+#include "str.h"
+
+// common
+#include "cert_util.h"
+#include "output.h"
+#include "misc.h"
+
 #include "libfreshclam.h"
 #include "libfreshclam_internal.h"
 #include "dns.h"
-
-#include "shared/cert_util.h"
-#include "shared/output.h"
-#include "shared/misc.h"
-
-#include "libclamav/others.h"
-#include "libclamav/regex_list.h"
-#include "libclamav/str.h"
 
 /*
  * Private functions
@@ -110,6 +114,10 @@ const char *fc_strerror(fc_error_t fcerror)
             return "Memory allocation error";
         case FC_EARG:
             return "Invalid argument(s)";
+        case FC_EFORBIDDEN:
+            return "Forbidden; Blocked by CDN";
+        case FC_ERETRYLATER:
+            return "Too many requests; Retry later";
         default:
             return "Unknown libfreshclam error code!";
     }
@@ -123,6 +131,12 @@ fc_error_t fc_initialize(fc_config *fcConfig)
     if (NULL == fcConfig) {
         printf("fc_initialize: Invalid arguments.\n");
         return status;
+    }
+
+    /* Rust logging initialization */
+    if (!clrs_log_init()) {
+        cli_dbgmsg("Unexpected problem occurred while setting up rust logging... continuing without rust logging. \
+                    Please submit an issue to https://github.com/Cisco-Talos/clamav");
     }
 
     /* Initilize libcurl */
@@ -145,8 +159,8 @@ fc_error_t fc_initialize(fc_config *fcConfig)
     /* Set a log file if requested, and is not already set */
     if ((NULL == logg_file) && (NULL != fcConfig->logFile)) {
         logg_file = cli_strdup(fcConfig->logFile);
-        if (0 != logg("#--------------------------------------\n")) {
-            mprintf("!Problem with internal logger (UpdateLogFile = %s).\n", logg_file);
+        if (0 != logg(LOGG_INFO_NF, "--------------------------------------\n")) {
+            mprintf(LOGG_ERROR, "Problem with internal logger (UpdateLogFile = %s).\n", logg_file);
             status = FC_ELOGGING;
             goto done;
         }
@@ -157,7 +171,7 @@ fc_error_t fc_initialize(fc_config *fcConfig)
     if (fcConfig->logFlags & FC_CONFIG_LOG_SYSLOG) {
         int logFacility = LOG_LOCAL6;
         if ((0 == logg_syslog) && (NULL != fcConfig->logFacility) && (-1 == (logFacility = logg_facility(fcConfig->logFacility)))) {
-            mprintf("!LogFacility: %s: No such facility.\n", fcConfig->logFacility);
+            mprintf(LOGG_ERROR, "LogFacility: %s: No such facility.\n", fcConfig->logFacility);
             status = FC_ELOGGING;
             goto done;
         }
@@ -170,9 +184,9 @@ fc_error_t fc_initialize(fc_config *fcConfig)
     /* Optional connection settings. */
     if (NULL != fcConfig->localIP) {
 #if !((LIBCURL_VERSION_MAJOR > 7) || ((LIBCURL_VERSION_MAJOR == 7) && (LIBCURL_VERSION_MINOR >= 33)))
-        mprintf("!The LocalIP feature was requested but this local IP support is not presently available.\n");
-        mprintf("!Your installation was built with libcurl version %u.%u.%u.\n", LIBCURL_VERSION_MAJOR, LIBCURL_VERSION_MINOR, LIBCURL_VERSION_PATCH);
-        mprintf("!LocalIP requires libcurl version 7.33.0 or higher and must include the c-ares optional dependency.\n");
+        mprintf(LOGG_ERROR, "The LocalIP feature was requested but this local IP support is not presently available.\n");
+        mprintf(LOGG_ERROR, "Your installation was built with libcurl version %u.%u.%u.\n", LIBCURL_VERSION_MAJOR, LIBCURL_VERSION_MINOR, LIBCURL_VERSION_PATCH);
+        mprintf(LOGG_ERROR, "LocalIP requires libcurl version 7.33.0 or higher and must include the c-ares optional dependency.\n");
 #else
         g_localIP = cli_strdup(fcConfig->localIP);
 #endif
@@ -225,12 +239,12 @@ fc_error_t fc_initialize(fc_config *fcConfig)
 
     /* Validate that the database directory exists, and store it. */
     if (LSTAT(g_databaseDirectory, &statbuf) == -1) {
-        logg("!Database directory does not exist: %s\n", g_databaseDirectory);
+        logg(LOGG_ERROR, "Database directory does not exist: %s\n", g_databaseDirectory);
         status = FC_EDIRECTORY;
         goto done;
     }
     if (!S_ISDIR(statbuf.st_mode)) {
-        logg("!Database directory is not a directory: %s\n", g_databaseDirectory);
+        logg(LOGG_ERROR, "Database directory is not a directory: %s\n", g_databaseDirectory);
         status = FC_EDIRECTORY;
         goto done;
     }
@@ -242,6 +256,17 @@ fc_error_t fc_initialize(fc_config *fcConfig)
     g_requestTimeout = fcConfig->requestTimeout;
 
     g_bCompressLocalDatabase = fcConfig->bCompressLocalDatabase;
+
+    /* Load or create freshclam.dat */
+    if (FC_SUCCESS != load_freshclam_dat()) {
+        logg(LOGG_DEBUG, "Failed to load freshclam.dat; will create a new freshclam.dat\n");
+
+        if (FC_SUCCESS != new_freshclam_dat()) {
+            logg(LOGG_WARNING, "Failed to create a new freshclam.dat!\n");
+            status = FC_EINIT;
+            goto done;
+        }
+    }
 
     status = FC_SUCCESS;
 
@@ -290,6 +315,10 @@ void fc_cleanup(void)
         free(g_tempDirectory);
         g_tempDirectory = NULL;
     }
+    if (NULL != g_freshclamDat) {
+        free(g_freshclamDat);
+        g_freshclamDat = NULL;
+    }
 }
 
 fc_error_t fc_prune_database_directory(char **databaseList, uint32_t nDatabases)
@@ -302,15 +331,15 @@ fc_error_t fc_prune_database_directory(char **databaseList, uint32_t nDatabases)
 
     /* Change directory to database directory */
     if (chdir(g_databaseDirectory)) {
-        logg("!Can't change dir to %s\n", g_databaseDirectory);
+        logg(LOGG_ERROR, "Can't change dir to %s\n", g_databaseDirectory);
         status = FC_EDIRECTORY;
         goto done;
     }
 
-    logg("*Current working dir is %s\n", g_databaseDirectory);
+    logg(LOGG_DEBUG, "Current working dir is %s\n", g_databaseDirectory);
 
     if (!(dir = opendir(g_databaseDirectory))) {
-        logg("!checkdbdir: Can't open directory %s\n", g_databaseDirectory);
+        logg(LOGG_ERROR, "checkdbdir: Can't open directory %s\n", g_databaseDirectory);
         status = FC_EDBDIRACCESS;
         goto done;
     }
@@ -329,9 +358,9 @@ fc_error_t fc_prune_database_directory(char **databaseList, uint32_t nDatabases)
                 }
                 if (!bFound) {
                     /* Prune CVD/CLD */
-                    mprintf("Pruning unwanted or deprecated database file %s.\n", dent->d_name);
+                    mprintf(LOGG_INFO, "Pruning unwanted or deprecated database file %s.\n", dent->d_name);
                     if (unlink(dent->d_name)) {
-                        mprintf("!Failed to prune unwanted database file %s, consider removing it manually.\n", dent->d_name);
+                        mprintf(LOGG_ERROR, "Failed to prune unwanted database file %s, consider removing it manually.\n", dent->d_name);
                         status = FC_EDBDIRACCESS;
                         goto done;
                     }
@@ -393,15 +422,19 @@ fc_error_t fc_test_database(const char *dbFilename, int bBytecodeEnabled)
     cl_error_t cl_ret;
 
     if ((NULL == dbFilename)) {
-        logg("^fc_test_database: Invalid arguments.\n");
+        logg(LOGG_WARNING, "fc_test_database: Invalid arguments.\n");
         goto done;
     }
 
-    logg("*Loading signatures from %s\n", dbFilename);
+    logg(LOGG_DEBUG, "Loading signatures from %s\n", dbFilename);
     if (NULL == (engine = cl_engine_new())) {
         status = FC_ETESTFAIL;
         goto done;
     }
+
+    // Disable cache as testing the database doesn't need caching,
+    // having cache will only waste time and memory.
+    engine->engine_options |= ENGINE_OPTIONS_DISABLE_CACHE;
 
     cl_engine_set_clcb_stats_submit(engine, NULL);
 
@@ -409,7 +442,7 @@ fc_error_t fc_test_database(const char *dbFilename, int bBytecodeEnabled)
                            dbFilename, engine, &newsigs,
                            CL_DB_PHISHING | CL_DB_PHISHING_URLS | CL_DB_BYTECODE |
                                CL_DB_PUA | CL_DB_ENHANCED))) {
-        logg("!Failed to load new database: %s\n", cl_strerror(cl_ret));
+        logg(LOGG_ERROR, "Failed to load new database: %s\n", cl_strerror(cl_ret));
         status = FC_ETESTFAIL;
         goto done;
     }
@@ -418,19 +451,19 @@ fc_error_t fc_test_database(const char *dbFilename, int bBytecodeEnabled)
                                                 engine, &engine->bcs,
                                                 engine->dconf->bytecode
                                                 /*FIXME: dconf has no sense here */)))) {
-        logg("!Failed to compile/load bytecode: %s\n", cl_strerror(cl_ret));
+        logg(LOGG_ERROR, "Failed to compile/load bytecode: %s\n", cl_strerror(cl_ret));
         status = FC_ETESTFAIL;
         goto done;
     }
-    logg("*Properly loaded %u signatures from %s\n", newsigs, dbFilename);
+    logg(LOGG_DEBUG, "Properly loaded %u signatures from %s\n", newsigs, dbFilename);
 
     status = FC_SUCCESS;
 
 done:
 
     if (NULL != engine) {
-        if (engine->domainlist_matcher && engine->domainlist_matcher->sha256_pfx_set.keys)
-            cli_hashset_destroy(&engine->domainlist_matcher->sha256_pfx_set);
+        if (engine->domain_list_matcher && engine->domain_list_matcher->sha256_pfx_set.keys)
+            cli_hashset_destroy(&engine->domain_list_matcher->sha256_pfx_set);
 
         cl_engine_free(engine);
     }
@@ -456,7 +489,7 @@ fc_error_t fc_dns_query_update_info(
 #endif /* HAVE_RESOLV_H */
 
     if ((NULL == dnsUpdateInfo) || (NULL == newVersion)) {
-        logg("^dns_query_update_info: Invalid arguments.\n");
+        logg(LOGG_WARNING, "dns_query_update_info: Invalid arguments.\n");
         status = FC_EARG;
         goto done;
     }
@@ -467,22 +500,22 @@ fc_error_t fc_dns_query_update_info(
 #ifdef HAVE_RESOLV_H
 
     if (dnsUpdateInfoServer == NULL) {
-        logg("^DNS Update Info disabled. Falling back to HTTP mode.\n");
+        logg(LOGG_WARNING, "DNS Update Info disabled. Falling back to HTTP mode.\n");
         goto done;
     }
 
     if (NULL == (dnsReply = dnsquery(dnsUpdateInfoServer, T_TXT, &ttl))) {
-        logg("^Invalid DNS reply. Falling back to HTTP mode.\n");
+        logg(LOGG_WARNING, "Invalid DNS reply. Falling back to HTTP mode.\n");
         goto done;
     }
 
-    logg("*TTL: %d\n", ttl);
+    logg(LOGG_DEBUG, "TTL: %d\n", ttl);
 
     /*
      * Check Record Time.
      */
     if (NULL == (reply_token = cli_strtok(dnsReply, DNS_UPDATEINFO_RECORDTIME, ":"))) {
-        logg("^Failed to find Record Time field in DNS Update Info.\n");
+        logg(LOGG_WARNING, "Failed to find Record Time field in DNS Update Info.\n");
         goto done;
     }
 
@@ -491,8 +524,8 @@ fc_error_t fc_dns_query_update_info(
     reply_token = NULL;
 
     time(&currentTime);
-    if ((int)currentTime - recordTime > 10800) {
-        logg("^DNS record is older than 3 hours.\n");
+    if ((int)currentTime - recordTime > DNS_WARNING_THRESHOLD_SECONDS) {
+        logg(LOGG_WARNING, "DNS record is older than %d hours.\n", DNS_WARNING_THRESHOLD_HOURS);
         goto done;
     }
 
@@ -500,7 +533,7 @@ fc_error_t fc_dns_query_update_info(
      * Check Version Warning Flag.
      */
     if (NULL == (reply_token = cli_strtok(dnsReply, DNS_UPDATEINFO_VERSIONWARNING, ":"))) {
-        logg("^Failed to find Version Warning Flag in DNS Update Info.\n");
+        logg(LOGG_WARNING, "Failed to find Version Warning Flag in DNS Update Info.\n");
         goto done;
     }
 
@@ -513,11 +546,11 @@ fc_error_t fc_dns_query_update_info(
      * Check the latest available ClamAV software version.
      */
     if (NULL == (reply_token = cli_strtok(dnsReply, DNS_UPDATEINFO_NEWVERSION, ":"))) {
-        logg("^Failed to find New Version field in DNS Update Info.\n");
+        logg(LOGG_WARNING, "Failed to find New Version field in DNS Update Info.\n");
         goto done;
     }
 
-    logg("*fc_dns_query_update_info: Software version from DNS: %s\n", reply_token);
+    logg(LOGG_DEBUG, "fc_dns_query_update_info: Software version from DNS: %s\n", reply_token);
 
     /*
      * Compare the latest available ClamAV version with this ClamAV version.
@@ -537,9 +570,9 @@ fc_error_t fc_dns_query_update_info(
             if ((suffix && (0 > version_string_compare(version_string, suffix - version_string, reply_token, strlen(reply_token)))) ||
                 (!suffix && (0 > version_string_compare(version_string, strlen(version_string), reply_token, strlen(reply_token))))) {
 
-                logg("^Your ClamAV installation is OUTDATED!\n");
-                logg("^Local version: %s Recommended version: %s\n", version_string, reply_token);
-                logg("DON'T PANIC! Read https://www.clamav.net/documents/upgrading-clamav\n");
+                logg(LOGG_WARNING, "Your ClamAV installation is OUTDATED!\n");
+                logg(LOGG_WARNING, "Local version: %s Recommended version: %s\n", version_string, reply_token);
+                logg(LOGG_INFO, "DON'T PANIC! Read https://docs.clamav.net/manual/Installing.html\n");
                 *newVersion = cli_strdup(reply_token);
             }
         }
@@ -582,7 +615,7 @@ fc_error_t fc_update_database(
     uint32_t i;
 
     if ((NULL == database) || (NULL == serverList) || (NULL == bUpdated)) {
-        logg("^fc_update_database: Invalid arguments.\n");
+        logg(LOGG_WARNING, "fc_update_database: Invalid arguments.\n");
         goto done;
     }
 
@@ -590,11 +623,11 @@ fc_error_t fc_update_database(
 
     /* Change directory to database directory */
     if (chdir(g_databaseDirectory)) {
-        logg("!Can't change dir to %s\n", g_databaseDirectory);
+        logg(LOGG_ERROR, "Can't change dir to %s\n", g_databaseDirectory);
         status = FC_EDIRECTORY;
         goto done;
     }
-    logg("*Current working dir is %s\n", g_databaseDirectory);
+    logg(LOGG_DEBUG, "Current working dir is %s\n", g_databaseDirectory);
 
     /*
      * Attempt to update official database using DatabaseMirrors or PrivateMirrors.
@@ -616,31 +649,84 @@ fc_error_t fc_update_database(
             switch (ret) {
                 case FC_SUCCESS: {
                     if (*bUpdated) {
-                        logg("*fc_update_database: %s updated.\n", dbFilename);
+                        logg(LOGG_DEBUG, "fc_update_database: %s updated.\n", dbFilename);
                     } else {
-                        logg("*fc_update_database: %s already up-to-date.\n", dbFilename);
+                        logg(LOGG_DEBUG, "fc_update_database: %s already up-to-date.\n", dbFilename);
                     }
                     goto success;
                 }
                 case FC_ECONNECTION:
                 case FC_EBADCVD:
-                case FC_EFAILEDGET:
-                case FC_EMIRRORNOTSYNC: {
+                case FC_EFAILEDGET: {
                     if (attempt < g_maxAttempts) {
-                        logg("Trying again in 5 secs...\n");
+                        logg(LOGG_INFO, "Trying again in 5 secs...\n");
                         sleep(5);
                     } else {
-                        logg("Giving up on %s...\n", serverList[i]);
+                        logg(LOGG_INFO, "Giving up on %s...\n", serverList[i]);
                         if (i == nServers - 1) {
-                            logg("!Update failed for database: %s\n", database);
+                            logg(LOGG_ERROR, "Update failed for database: %s\n", database);
                             status = ret;
                             goto done;
                         }
                     }
                     break;
                 }
+                case FC_EMIRRORNOTSYNC: {
+                    logg(LOGG_INFO, "Received an older %s CVD than was advertised. We'll retry so the incremental update will ensure we're up-to-date.\n", database);
+                    break;
+                }
+                case FC_EFORBIDDEN: {
+                    char retry_after_string[26];
+                    struct tm *tm_info;
+                    tm_info = localtime(&g_freshclamDat->retry_after);
+                    if (NULL == tm_info) {
+                        logg(LOGG_ERROR, "Failed to query the local time for the retry-after date!\n");
+                        status = FC_ERROR;
+                        goto done;
+                    }
+                    strftime(retry_after_string, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+                    logg(LOGG_WARNING, "FreshClam received error code 403 from the ClamAV Content Delivery Network (CDN).\n");
+                    logg(LOGG_INFO, "This could mean several things:\n");
+                    logg(LOGG_INFO, " 1. You are running an out-of-date version of ClamAV / FreshClam.\n");
+                    logg(LOGG_INFO, "    Ensure you are the most updated version by visiting https://www.clamav.net/downloads\n");
+                    logg(LOGG_INFO, " 2. Your network is explicitly denied by the FreshClam CDN.\n");
+                    logg(LOGG_INFO, "    In order to rectify this please check that you are:\n");
+                    logg(LOGG_INFO, "   a. Running an up-to-date version of FreshClam\n");
+                    logg(LOGG_INFO, "   b. Running FreshClam no more than once an hour\n");
+                    logg(LOGG_INFO, "   c. If you have checked (a) and (b), please open a ticket at\n");
+                    logg(LOGG_INFO, "      https://github.com/Cisco-Talos/clamav/issues\n");
+                    logg(LOGG_INFO, "      and we will investigate why your network is blocked.\n");
+                    logg(LOGG_WARNING, "You are on cool-down until after: %s\n", retry_after_string);
+                    status = ret;
+                    goto done;
+                    break;
+                }
+                case FC_ERETRYLATER: {
+                    char retry_after_string[26];
+                    struct tm *tm_info;
+                    tm_info = localtime(&g_freshclamDat->retry_after);
+                    if (NULL == tm_info) {
+                        logg(LOGG_ERROR, "Failed to query the local time for the retry-after date!\n");
+                        status = FC_ERROR;
+                        goto done;
+                    }
+                    strftime(retry_after_string, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+                    logg(LOGG_WARNING, "FreshClam received error code 429 from the ClamAV Content Delivery Network (CDN).\n");
+                    logg(LOGG_INFO, "This means that you have been rate limited by the CDN.\n");
+                    logg(LOGG_INFO, " 1. Run FreshClam no more than once an hour to check for updates.\n");
+                    logg(LOGG_INFO, "    FreshClam should check DNS first to see if an update is needed.\n");
+                    logg(LOGG_INFO, " 2. If you have more than 10 hosts on your network attempting to download,\n");
+                    logg(LOGG_INFO, "    it is recommended that you set up a private mirror on your network using\n");
+                    logg(LOGG_INFO, "    cvdupdate (https://pypi.org/project/cvdupdate/) to save bandwidth on the\n");
+                    logg(LOGG_INFO, "    CDN and your own network.\n");
+                    logg(LOGG_INFO, " 3. Please do not open a ticket asking for an exemption from the rate limit,\n");
+                    logg(LOGG_INFO, "    it will not be granted.\n");
+                    logg(LOGG_WARNING, "You are on cool-down until after: %s\n", retry_after_string);
+                    goto success;
+                    break;
+                }
                 default: {
-                    logg("!Unexpected error when attempting to update database: %s\n", database);
+                    logg(LOGG_ERROR, "Unexpected error when attempting to update %s: %s\n", database, fc_strerror(ret));
                     status = ret;
                     goto done;
                 }
@@ -679,11 +765,45 @@ fc_error_t fc_update_databases(
     uint32_t numUpdated = 0;
 
     if ((NULL == databaseList) || (0 == nDatabases) || (NULL == serverList) || (NULL == nUpdated)) {
-        logg("^fc_update_databases: Invalid arguments.\n");
+        logg(LOGG_WARNING, "fc_update_databases: Invalid arguments.\n");
         goto done;
     }
 
     *nUpdated = 0;
+
+    if (g_freshclamDat->retry_after > 0) {
+        if (g_freshclamDat->retry_after > time(NULL)) {
+            /* We're on cool-down, try again later. */
+            char retry_after_string[26];
+            struct tm *tm_info;
+            tm_info = localtime(&g_freshclamDat->retry_after);
+            if (NULL == tm_info) {
+                logg(LOGG_ERROR, "Failed to query the local time for the retry-after date!\n");
+                status = FC_ERROR;
+                goto done;
+            }
+            strftime(retry_after_string, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+            logg(LOGG_WARNING, "FreshClam previously received error code 429 or 403 from the ClamAV Content Delivery Network (CDN).\n");
+            logg(LOGG_INFO, "This means that you have been rate limited or blocked by the CDN.\n");
+            logg(LOGG_INFO, " 1. Verify that you're running a supported ClamAV version.\n");
+            logg(LOGG_INFO, "    See https://docs.clamav.net/faq/faq-eol.html for details.\n");
+            logg(LOGG_INFO, " 2. Run FreshClam no more than once an hour to check for updates.\n");
+            logg(LOGG_INFO, "    FreshClam should check DNS first to see if an update is needed.\n");
+            logg(LOGG_INFO, " 3. If you have more than 10 hosts on your network attempting to download,\n");
+            logg(LOGG_INFO, "    it is recommended that you set up a private mirror on your network using\n");
+            logg(LOGG_INFO, "    cvdupdate (https://pypi.org/project/cvdupdate/) to save bandwidth on the\n");
+            logg(LOGG_INFO, "    CDN and your own network.\n");
+            logg(LOGG_INFO, " 4. Please do not open a ticket asking for an exemption from the rate limit,\n");
+            logg(LOGG_INFO, "    it will not be granted.\n");
+            logg(LOGG_WARNING, "You are still on cool-down until after: %s\n", retry_after_string);
+            status = FC_SUCCESS;
+            goto done;
+        } else {
+            g_freshclamDat->retry_after = 0;
+            logg(LOGG_WARNING, "Cool-down expired, ok to try again.\n");
+            save_freshclam_dat();
+        }
+    }
 
     for (i = 0; i < nDatabases; i++) {
         if (FC_SUCCESS != (ret = fc_update_database(
@@ -695,7 +815,6 @@ fc_error_t fc_update_databases(
                                bScriptedUpdates,
                                context,
                                &bUpdated))) {
-            logg("^fc_update_databases: fc_update_database failed: %s (%d)\n", fc_strerror(ret), ret);
             status = ret;
             goto done;
         }
@@ -724,7 +843,7 @@ fc_error_t fc_download_url_database(
     char *dbFilename = NULL;
 
     if ((NULL == urlDatabase) || (NULL == bUpdated)) {
-        logg("^fc_download_url_database: Invalid arguments.\n");
+        logg(LOGG_WARNING, "fc_download_url_database: Invalid arguments.\n");
         goto done;
     }
 
@@ -732,11 +851,11 @@ fc_error_t fc_download_url_database(
 
     /* Change directory to database directory */
     if (chdir(g_databaseDirectory)) {
-        logg("!Can't change dir to %s\n", g_databaseDirectory);
+        logg(LOGG_ERROR, "Can't change dir to %s\n", g_databaseDirectory);
         status = FC_EDIRECTORY;
         goto done;
     }
-    logg("*Current working dir is %s\n", g_databaseDirectory);
+    logg(LOGG_DEBUG, "Current working dir is %s\n", g_databaseDirectory);
 
     /*
      * Attempt to update official database using DatabaseMirrors or PrivateMirrors.
@@ -755,9 +874,9 @@ fc_error_t fc_download_url_database(
         switch (ret) {
             case FC_SUCCESS: {
                 if (*bUpdated) {
-                    logg("*fc_download_url_database: %s updated.\n", dbFilename);
+                    logg(LOGG_DEBUG, "fc_download_url_database: %s updated.\n", dbFilename);
                 } else {
-                    logg("*fc_download_url_database: %s already up-to-date.\n", dbFilename);
+                    logg(LOGG_DEBUG, "fc_download_url_database: %s already up-to-date.\n", dbFilename);
                 }
                 goto success;
             }
@@ -765,17 +884,67 @@ fc_error_t fc_download_url_database(
             case FC_EBADCVD:
             case FC_EFAILEDGET: {
                 if (attempt < g_maxAttempts) {
-                    logg("Trying again in 5 secs...\n");
+                    logg(LOGG_INFO, "Trying again in 5 secs...\n");
                     sleep(5);
                 } else {
-                    logg("Update failed for custom database URL: %s\n", urlDatabase);
+                    logg(LOGG_INFO, "Update failed for custom database URL: %s\n", urlDatabase);
                     status = ret;
                     goto done;
                 }
                 break;
             }
+            case FC_EFORBIDDEN: {
+                char retry_after_string[26];
+                struct tm *tm_info;
+                tm_info = localtime(&g_freshclamDat->retry_after);
+                if (NULL == tm_info) {
+                    logg(LOGG_ERROR, "Failed to query the local time for the retry-after date!\n");
+                    status = FC_ERROR;
+                    goto done;
+                }
+                strftime(retry_after_string, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+                logg(LOGG_WARNING, "FreshClam received error code 403 from the ClamAV Content Delivery Network (CDN).\n");
+                logg(LOGG_INFO, "This could mean several things:\n");
+                logg(LOGG_INFO, " 1. You are running an out-of-date version of ClamAV / FreshClam.\n");
+                logg(LOGG_INFO, "    Ensure you are the most updated version by visiting https://www.clamav.net/downloads\n");
+                logg(LOGG_INFO, " 2. Your network is explicitly denied by the FreshClam CDN.\n");
+                logg(LOGG_INFO, "    In order to rectify this please check that you are:\n");
+                logg(LOGG_INFO, "   a. Running an up-to-date version of FreshClam\n");
+                logg(LOGG_INFO, "   b. Running FreshClam no more than once an hour\n");
+                logg(LOGG_INFO, "   c. If you have checked (a) and (b), please open a ticket at\n");
+                logg(LOGG_INFO, "      https://github.com/Cisco-Talos/clamav/issues\n");
+                logg(LOGG_INFO, "      and we will investigate why your network is blocked.\n");
+                logg(LOGG_WARNING, "You are on cool-down until after: %s\n", retry_after_string);
+                status = ret;
+                goto done;
+                break;
+            }
+            case FC_ERETRYLATER: {
+                char retry_after_string[26];
+                struct tm *tm_info;
+                tm_info = localtime(&g_freshclamDat->retry_after);
+                if (NULL == tm_info) {
+                    logg(LOGG_ERROR, "Failed to query the local time for the retry-after date!\n");
+                    status = FC_ERROR;
+                    goto done;
+                }
+                strftime(retry_after_string, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+                logg(LOGG_WARNING, "FreshClam received error code 429 from the ClamAV Content Delivery Network (CDN).\n");
+                logg(LOGG_INFO, "This means that you have been rate limited by the CDN.\n");
+                logg(LOGG_INFO, " 1. Run FreshClam no more than once an hour to check for updates.\n");
+                logg(LOGG_INFO, "    FreshClam should check DNS first to see if an update is needed.\n");
+                logg(LOGG_INFO, " 2. If you have more than 10 hosts on your network attempting to download,\n");
+                logg(LOGG_INFO, "    it is recommended that you set up a private mirror on your network using\n");
+                logg(LOGG_INFO, "    cvdupdate (https://pypi.org/project/cvdupdate/) to save bandwidth on the\n");
+                logg(LOGG_INFO, "    CDN and your own network.\n");
+                logg(LOGG_INFO, " 3. Please do not open a ticket asking for an exemption from the rate limit,\n");
+                logg(LOGG_INFO, "    it will not be granted.\n");
+                logg(LOGG_WARNING, "You are on cool-down until after: %s\n", retry_after_string);
+                goto success;
+                break;
+            }
             default: {
-                logg("Unexpected error when attempting to update from custom database URL: %s\n", urlDatabase);
+                logg(LOGG_INFO, "Unexpected error when attempting to update from custom database URL: %s\n", urlDatabase);
                 status = ret;
                 goto done;
             }
@@ -808,7 +977,7 @@ fc_error_t fc_download_url_databases(
     uint32_t i;
 
     if ((NULL == urlDatabaseList) || (0 == nUrlDatabases) || (NULL == nUpdated)) {
-        logg("^fc_download_url_databases: Invalid arguments.\n");
+        logg(LOGG_WARNING, "fc_download_url_databases: Invalid arguments.\n");
         goto done;
     }
 
@@ -819,7 +988,7 @@ fc_error_t fc_download_url_databases(
                                urlDatabaseList[i],
                                context,
                                &bUpdated))) {
-            logg("^fc_download_url_databases: fc_download_url_database failed: %s (%d)\n", fc_strerror(ret), ret);
+            logg(LOGG_WARNING, "fc_download_url_databases: fc_download_url_database failed: %s (%d)\n", fc_strerror(ret), ret);
             status = ret;
             goto done;
         }

@@ -1,7 +1,7 @@
 /*
  *  Support for matcher using PCRE
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Kevin Lin
@@ -192,7 +192,7 @@ void cli_pcre_perf_events_destroy()
 }
 
 /* PCRE MATCHER FUNCTIONS */
-int cli_pcre_init()
+cl_error_t cli_pcre_init()
 {
     return cli_pcre_init_internal();
 }
@@ -219,12 +219,13 @@ cl_error_t cli_pcre_addpatt(struct cli_matcher *root, const char *virname, const
         cflags = NULL;
     }
 
-    if (lsigid)
+    if (lsigid) {
         pm_dbgmsg("cli_pcre_addpatt: Adding /%s/%s%s triggered on (%s) as subsig %d for lsigid %d\n",
                   pattern, cflags ? " with flags " : "", cflags ? cflags : "", trigger, lsigid[1], lsigid[0]);
-    else
+    } else {
         pm_dbgmsg("cli_pcre_addpatt: Adding /%s/%s%s triggered on (%s) [no lsigid]\n",
                   pattern, cflags ? " with flags " : "", cflags ? cflags : "", trigger);
+    }
 
 #ifdef PCRE_BYPASS
     /* check for trigger bypass */
@@ -268,17 +269,7 @@ cl_error_t cli_pcre_addpatt(struct cli_matcher *root, const char *virname, const
         return CL_EMEM;
     }
 
-    pm->virname = (char *)CLI_MPOOL_VIRNAME(root->mempool, virname, options & CL_DB_OFFICIAL);
-    if (!pm->virname) {
-        cli_errmsg("cli_pcre_addpatt: Unable to allocate memory for virname or NULL virname\n");
-        cli_pcre_freemeta(root, pm);
-        MPOOL_FREE(root->mempool, pm);
-        return CL_EMEM;
-    }
-
     if (lsigid) {
-        root->ac_lsigtable[lsigid[0]]->virname = pm->virname;
-
         pm->lsigid[0] = 1;
         pm->lsigid[1] = lsigid[0];
         pm->lsigid[2] = lsigid[1];
@@ -342,8 +333,9 @@ cl_error_t cli_pcre_addpatt(struct cli_matcher *root, const char *virname, const
                       pm->flags & CLI_PCRE_GLOBAL ? "CLAMAV_GLOBAL " : "",
                       pm->flags & CLI_PCRE_ROLLING ? "CLAMAV_ROLLING " : "",
                       pm->flags & CLI_PCRE_ENCOMPASS ? "CLAMAV_ENCOMPASS " : "");
-        } else
+        } else {
             pm_dbgmsg("Matcher:  NONE\n");
+        }
 
         if (pm->pdata.options) {
 #if USING_PCRE2
@@ -367,8 +359,9 @@ cl_error_t cli_pcre_addpatt(struct cli_matcher *root, const char *virname, const
                       pm->pdata.options & PCRE_DOLLAR_ENDONLY ? "PCRE_DOLLAR_ENDONLY " : "",
                       pm->pdata.options & PCRE_UNGREEDY ? "PCRE_UNGREEDY " : "");
 #endif
-        } else
+        } else {
             pm_dbgmsg("Compiler: NONE\n");
+        }
     }
 
     /* add metadata to the performance tracker */
@@ -430,13 +423,13 @@ cl_error_t cli_pcre_build(struct cli_matcher *root, long long unsigned match_lim
 
         /* options override through metadata manipulation */
 #if USING_PCRE2
-        //pm->pdata.options |= PCRE2_NEVER_UTF; /* disables (?UTF*) potential security vuln */
-        //pm->pdata.options |= PCRE2_UCP;
-        //pm->pdata.options |= PCRE2_AUTO_CALLOUT; /* used with CALLOUT(-BACK) function */
+        // pm->pdata.options |= PCRE2_NEVER_UTF; /* disables (?UTF*) potential security vuln */
+        // pm->pdata.options |= PCRE2_UCP;
+        // pm->pdata.options |= PCRE2_AUTO_CALLOUT; /* used with CALLOUT(-BACK) function */
 #else
-        //pm->pdata.options |= PCRE_NEVER_UTF; /* implemented in 8.33, disables (?UTF*) potential security vuln */
-        //pm->pdata.options |= PCRE_UCP;/* implemented in 8.20 */
-        //pm->pdata.options |= PCRE_AUTO_CALLOUT; /* used with CALLOUT(-BACK) function */
+        // pm->pdata.options |= PCRE_NEVER_UTF; /* implemented in 8.33, disables (?UTF*) potential security vuln */
+        // pm->pdata.options |= PCRE_UCP;/* implemented in 8.20 */
+        // pm->pdata.options |= PCRE_AUTO_CALLOUT; /* used with CALLOUT(-BACK) function */
 #endif
 
         if (dconf && (dconf->pcre & PCRE_CONF_OPTIONS)) {
@@ -587,9 +580,9 @@ cl_error_t cli_pcre_scanbuf(const unsigned char *buffer, uint32_t length, const 
     unsigned int i, evalcnt = 0;
     uint64_t evalids = 0;
     uint32_t global, encompass, rolling;
-    int rc = 0, options = 0;
-    uint32_t offset       = 0;
-    uint8_t viruses_found = 0;
+    int rc          = 0;
+    int options     = 0;
+    uint32_t offset = 0;
 
     if ((root->pcre_metas == 0) || (!root->pcre_metatable) || (ctx && ctx->dconf && !(ctx->dconf->pcre & PCRE_CONF_SUPPORT)))
         return CL_SUCCESS;
@@ -732,21 +725,25 @@ cl_error_t cli_pcre_scanbuf(const unsigned char *buffer, uint32_t length, const 
                             ret = CL_EMEM;
                             break;
                         }
-                        newres->virname    = pm->virname;
+                        newres->virname    = "test";
                         newres->customdata = NULL; /* get value? */
                         newres->next       = *res;
                         newres->offset     = adjbuffer + p_res.match[0];
                         *res               = newres;
                     } else {
-                        ret           = CL_CLEAN;
-                        viruses_found = 1;
-                        if (ctx)
-                            ret = cli_append_virus(ctx, (const char *)pm->virname);
-                        if (virname)
-                            *virname = pm->virname;
-                        if (!ctx || !SCAN_ALLMATCHES)
-                            if (ret != CL_CLEAN)
+                        ret = CL_VIRUS;
+
+                        if (virname) {
+                            *virname = "test";
+                        }
+
+                        // ctx is not provided in the unit tests.
+                        if (ctx) {
+                            ret = cli_append_virus(ctx, "test");
+                            if (ret != CL_SUCCESS) {
                                 break;
+                            }
+                        }
                     }
                 }
             }
@@ -771,8 +768,6 @@ cl_error_t cli_pcre_scanbuf(const unsigned char *buffer, uint32_t length, const 
     /* free match results */
     cli_pcre_results_free(&p_res);
 
-    if (ret == CL_SUCCESS && viruses_found)
-        return CL_VIRUS;
     return ret;
 }
 
@@ -788,11 +783,6 @@ void cli_pcre_freemeta(struct cli_matcher *root, struct cli_pcre_meta *pm)
     if (pm->trigger) {
         MPOOL_FREE(root->mempool, pm->trigger);
         pm->trigger = NULL;
-    }
-
-    if (pm->virname) {
-        MPOOL_FREE(root->mempool, pm->virname);
-        pm->virname = NULL;
     }
 
     if (pm->statname) {
@@ -835,13 +825,13 @@ void cli_pcre_perf_events_destroy()
     return;
 }
 
-int cli_pcre_init()
+cl_error_t cli_pcre_init()
 {
     cli_errmsg("cli_pcre_init: Cannot initialize PCRE without PCRE support\n");
     return CL_SUCCESS;
 }
 
-int cli_pcre_build(struct cli_matcher *root, long long unsigned match_limit, long long unsigned recmatch_limit, const struct cli_dconf *dconf)
+cl_error_t cli_pcre_build(struct cli_matcher *root, long long unsigned match_limit, long long unsigned recmatch_limit, const struct cli_dconf *dconf)
 {
     UNUSEDPARAM(root);
     UNUSEDPARAM(match_limit);
@@ -852,7 +842,7 @@ int cli_pcre_build(struct cli_matcher *root, long long unsigned match_limit, lon
     return CL_SUCCESS;
 }
 
-int cli_pcre_scanbuf(const unsigned char *buffer, uint32_t length, const char **virname, struct cli_ac_result **res, const struct cli_matcher *root, struct cli_ac_data *mdata, const struct cli_pcre_off *data, cli_ctx *ctx)
+cl_error_t cli_pcre_scanbuf(const unsigned char *buffer, uint32_t length, const char **virname, struct cli_ac_result **res, const struct cli_matcher *root, struct cli_ac_data *mdata, const struct cli_pcre_off *data, cli_ctx *ctx)
 {
     UNUSEDPARAM(buffer);
     UNUSEDPARAM(length);
@@ -867,7 +857,7 @@ int cli_pcre_scanbuf(const unsigned char *buffer, uint32_t length, const char **
     return CL_SUCCESS;
 }
 
-int cli_pcre_recaloff(struct cli_matcher *root, struct cli_pcre_off *data, struct cli_target_info *info, cli_ctx *ctx)
+cl_error_t cli_pcre_recaloff(struct cli_matcher *root, struct cli_pcre_off *data, struct cli_target_info *info, cli_ctx *ctx)
 {
     UNUSEDPARAM(root);
     UNUSEDPARAM(info);

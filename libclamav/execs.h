@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -99,7 +99,7 @@ struct cli_exe_info {
 
     /** Size of the  header (aligned). This corresponds to
      *  SizeOfHeaders in the optional header
-    */
+     */
     uint32_t hdr_size;
 
     /** Hashset for versioninfo matching */
@@ -161,7 +161,23 @@ struct cli_exe_info {
     /***************** End PE-specific Section *****************/
 };
 
+/**
+ * Initialize a struct cli_exe_info so that it's ready to be populated
+ * by the EXE header parsing functions (cli_peheader, cli_elfheader, and
+ * cli_machoheader) and/or cli_exe_info_destroy.
+ *
+ * @param exeinfo a pointer to the struct cli_exe_info to initialize
+ * @param offset the file offset corresponding to the start of the
+ *               executable that exeinfo stores information about
+ */
 void cli_exe_info_init(struct cli_exe_info *exeinfo, uint32_t offset);
+
+/**
+ * Free resources associated with a struct cli_exe_info initialized
+ * via cli_exe_info_init
+ *
+ * @param exeinfo a pointer to the struct cli_exe_info to destroy
+ */
 void cli_exe_info_destroy(struct cli_exe_info *exeinfo);
 
 #endif

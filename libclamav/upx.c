@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Alberto Wu
@@ -32,7 +32,7 @@
                o Get imports via magic
                o Get imports via leascan
                o if (!pe) pe=scan4pe();
-	       o if (!pe) forgepe();
+               o if (!pe) forgepe();
 */
 
 /*

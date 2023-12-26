@@ -46,7 +46,7 @@ Skip printing OK files
 Sound bell on virus detection.
 .TP
 \fB\-\-tempdir=DIRECTORY\fR
-Create temporary files in DIRECTORY. Directory must be writable for the '@CLAMAVUSER@' user or unprivileged user running clamscan.
+Create temporary files in DIRECTORY. Directory must be writable for the '@CLAMAV_USER@' user or unprivileged user running clamscan.
 .TP
 \fB\-\-leave\-temps\fR
 Do not remove temporary files.
@@ -59,6 +59,9 @@ Load virus database from FILE or load all virus database files from DIR.
 .TP
 \fB\-\-official\-db\-only=[yes/no(*)]\fR
 Only load the official signatures published by the ClamAV project.
+.TP
+\fB\-\-fail\-if\-cvd\-older\-than=days\fR
+Return with a nonzero error code if the virus database is older than the specified number of days.
 .TP
 \fB\-l FILE, \-\-log=FILE\fR
 Save scan report to FILE.
@@ -85,10 +88,10 @@ Scan files listed line by line in FILE.
 Remove infected files. \fBBe careful!\fR
 .TP
 \fB\-\-move=DIRECTORY\fR
-Move infected files into DIRECTORY. Directory must be writable for the '@CLAMAVUSER@' user or unprivileged user running clamscan.
+Move infected files into DIRECTORY. Directory must be writable for the '@CLAMAV_USER@' user or unprivileged user running clamscan.
 .TP
 \fB\-\-copy=DIRECTORY\fR
-Copy infected files into DIRECTORY. Directory must be writable for the '@CLAMAVUSER@' user or unprivileged user running clamscan.
+Copy infected files into DIRECTORY. Directory must be writable for the '@CLAMAV_USER@' user or unprivileged user running clamscan.
 .TP
 \fB\-\-exclude=REGEX, \-\-exclude\-dir=REGEX\fR
 Don't scan file/directory names matching regular expression. These options can be used multiple times.
@@ -100,10 +103,10 @@ Only scan file/directory matching regular expression. These options can be used 
 With this option enabled ClamAV will load bytecode from the database. It is highly recommended you keep this option turned on, otherwise you may miss detections for many new viruses.
 .TP
 \fB\-\-bytecode\-unsigned[=yes/no(*)]\fR
-Allow loading bytecode from outside digitally signed .c[lv]d files.
+Allow loading bytecode from outside digitally signed .c[lv]d files. **Caution**: You should NEVER run bytecode signatures from untrusted sources. Doing so may result in arbitrary code execution.
 .TP
 \fB\-\-bytecode\-timeout=N\fR
-Set bytecode timeout in milliseconds (default: 5000 = 5s)
+Set bytecode timeout in milliseconds (default: 10000 = 10s)
 .TP
 \fB\-\-statistics[=none(*)/bytecode/pcre]\fR
 Collect and print execution statistics.
@@ -112,10 +115,10 @@ Collect and print execution statistics.
 Detect Possibly Unwanted Applications.
 .TP
 \fB\-\-exclude\-pua=CATEGORY\fR
-Exclude a specific PUA category. This option can be used multiple times. See https://www.clamav.net/documents/potentially-unwanted-applications-pua for the complete list of PUA
+Exclude a specific PUA category. This option can be used multiple times. See https://docs.clamav.net/faq/faq-pua.html for the complete list of PUA
 .TP
 \fB\-\-include\-pua=CATEGORY\fR
-Only include a specific PUA category. This option can be used multiple times. See https://www.clamav.net/documents/potentially-unwanted-applications-pua for the complete list of PUA
+Only include a specific PUA category. This option can be used multiple times. See https://docs.clamav.net/faq/faq-pua.html for the complete list of PUA
 .TP
 \fB\-\-detect\-structured[=yes/no(*)]\fR
 Use the DLP (Data Loss Prevention) module to detect SSN and Credit Card numbers inside documents/text files.
@@ -136,13 +139,13 @@ Scan mail files. If you turn off this option, the original files will still be s
 Enable email signature-based phishing detection.
 .TP
 \fB\-\-phishing\-scan\-urls[=yes(*)/no]\fR
-Enable URL signature-based phishing detection (Phishing.Heuristics.Email.*)
+Enable URL signature-based phishing detection (Heuristics.Phishing.Email.*)
 .TP
 \fB\-\-heuristic\-alerts[=yes(*)/no]\fR
 In some cases (eg. complex malware, exploits in graphic files, and others), ClamAV uses special algorithms to provide accurate detection. This option can be used to control the algorithmic detection.
 .TP
 \fB\-\-heuristic\-scan\-precedence[=yes/no(*)]\fR
-Allow heuristic match to take precedence. When enabled, if a heuristic scan (such as phishingScan) detects a possible virus/phish it will stop scan immediately. Recommended, saves CPU scan-time. When disabled, virus/phish detected by heuristic scans will be reported only at the end of a scan. If an archive contains both a heuristically detected  virus/phish, and a real malware, the real malware will be reported Keep this disabled if you intend to handle "*.Heuristics.*" viruses  differently from "real" malware. If a non-heuristically-detected virus (signature-based) is found first,  the scan is interrupted immediately, regardless of this config option.
+Allow heuristic match to take precedence. When enabled, if a heuristic scan (such as phishingScan) detects a possible virus/phish it will stop scan immediately. Recommended, saves CPU scan-time. When disabled, virus/phish detected by heuristic scans will be reported only at the end of a scan. If an archive contains both a heuristically detected  virus/phish, and a real malware, the real malware will be reported Keep this disabled if you intend to handle "Heuristics.*" viruses  differently from "real" malware. If a non-heuristically-detected virus (signature-based) is found first,  the scan is interrupted immediately, regardless of this config option.
 .TP
 \fB\-\-normalize[=yes(*)/no]\fR
 Normalize (compress whitespace, downcase, etc.) html, script, and text files. Use normalize=no for yara compatibility.
@@ -201,39 +204,45 @@ Alert on emails containing cloaked URLs (might lead to some false positives).
 \fB\-\-alert\-partition\-intersection[=yes/no(*)]\fR
 Detect partition intersections in raw disk images using heuristics.
 .TP
+\fB\-\-nocerts\fR
+Disable authenticode certificate chain verification in PE files.
+.TP
+\fB\-\-dumpcerts\fR
+Dump authenticode certificate chain in PE files.
+.TP
 \fB\-\-max\-scantime=#n\fR
 The maximum time to scan before giving up. The value is in milliseconds. The value of 0 disables the limit. This option protects your system against DoS attacks (default: 120000 = 120s or 2min)
 .TP
 \fB\-\-max\-filesize=#n\fR
-Extract and scan at most #n bytes from each archive. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number. This option protects your system against DoS attacks (default: 25 MB, max: <4 GB)
+Extract and scan at most #n bytes from each archive. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number. This option protects your system against DoS attacks (default: 100 MB, max: 2 GB)
 .TP
 \fB\-\-max\-scansize=#n\fR
-Extract and scan at most #n bytes from each archive. The size the archive plus the sum of the sizes of all files within archive count toward the scan size. For example, a 1M uncompressed archive containing a single 1M inner file counts as 2M toward max-scansize. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number. This option protects your system against DoS attacks (default: 100 MB, max: <4 GB)
+Extract and scan at most #n bytes from each archive. The size the archive plus the sum of the sizes of all files within archive count toward the scan size. For example, a 1M uncompressed archive containing a single 1M inner file counts as 2M toward max-scansize. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number. This option protects your system against DoS attacks (default: 400 MB)
 .TP
 \fB\-\-max\-files=#n\fR
 Extract at most #n files from each scanned file (when this is an archive, a document or another kind of container). This option protects your system against DoS attacks (default: 10000)
 .TP
 \fB\-\-max\-recursion=#n\fR
-Set archive recursion level limit. This option protects your system against DoS attacks (default: 16).
+Set archive recursion level limit. This option protects your system against DoS attacks (default: 17).
 .TP
 \fB\-\-max\-dir\-recursion=#n\fR
 Maximum depth directories are scanned at (default: 15).
 
 .TP
 \fB\-\-max\-embeddedpe=#n\fR
-Maximum size file to check for embedded PE. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number (default: 10 MB, max: <4 GB).
+Maximum size file to check for embedded PE. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number (default: 40 MB).
 .TP
 \fB\-\-max\-htmlnormalize=#n\fR
-Maximum size of HTML file to normalize. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number (default: 10 MB, max: <4 GB).
+Maximum size of HTML file to normalize. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number (default: 40 MB).
 .TP
 \fB\-\-max\-htmlnotags=#n\fR
-Maximum size of normalized HTML file to scan. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number (default: 2 MB, max: <4 GB).
+Maximum size of normalized HTML file to scan. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number (default: 8 MB).
 .TP
 \fB\-\-max\-scriptnormalize=#n\fR
-Maximum size of script file to normalize. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number (default: 5 MB, max: <4 GB).
+Maximum size of script file to normalize. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number (default: 20 MB).
 .TP
 \fB\-\-max\-ziptypercg=#n\fR
-Maximum size zip to type reanalyze. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number (default: 1 MB, max: <4 GB).
+Maximum size zip to type reanalyze. You may pass the value in kilobytes in format xK or xk, or megabytes in format xM or xm, where x is a number (default: 1 MB).
 .TP
 \fB\-\-max\-partitions=#n\fR
 This option sets the maximum number of partitions of a raw disk image to be scanned. This must be a positive integer (default: 50).
@@ -251,10 +260,17 @@ Maximum calls to the PCRE match function (default: 100000).
 Maximum recursive calls to the PCRE match function (default: 2000).
 .TP
 \fB\-\-pcre-max-filesize=#n\fR
-Maximum size file to perform PCRE subsig matching (default: 25 MB, max: <4 GB).
+Maximum size file to perform PCRE subsig matching (default: 100 MB).
 .TP
 \fB\-\-disable\-cache\fR
 Disable caching and cache checks for hash sums of scanned files.
+
+.SH "ENVIRONMENT VARIABLES"
+.LP
+clamscan uses the following environment variables:
+.TP
+LD_LIBRARY_PATH - May be used on startup to find the libclamunrar_iface shared library module to enable RAR archive support.
+
 .SH "EXAMPLES"
 .LP
 .TP

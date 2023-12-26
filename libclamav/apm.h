@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2014-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2014-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Kevin Lin <klin@sourcefire.com>
  *
@@ -25,7 +25,7 @@
 #include "clamav-config.h"
 #endif
 
-#include "clamav-types.h"
+#include "clamav.h"
 #include "others.h"
 
 #define APM_FALLBACK_SECTOR_SIZE 512
@@ -63,7 +63,7 @@ struct apm_driver_desc_entry {
     uint32_t block __attribute__((packed));
     uint16_t size __attribute__((packed));
     uint16_t type __attribute__((packed));
-}; //NOTE may need to be renamed
+}; // NOTE may need to be renamed
 
 /* 512(82)-byte driver descriptor map (Block0), big endian */
 struct apm_driver_desc_map {
@@ -112,6 +112,6 @@ struct apm_partition_info {
 #pragma pack
 #endif
 
-int cli_scanapm(cli_ctx *ctx);
+cl_error_t cli_scanapm(cli_ctx *ctx);
 
 #endif

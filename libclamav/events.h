@@ -1,7 +1,7 @@
 /*
  *  (bytecode) events
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2010-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -106,6 +106,7 @@ int cli_event_errors(cli_events_t *ctx);
 
 enum perfev {
     PERFT_SCAN,
+    PERFT_INSPECT,
     PERFT_PRECB,
     PERFT_POSTCB,
     PERFT_CACHE,

@@ -1,7 +1,7 @@
 /*
  *  Load, verify and execute ClamAV bytecode.
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -242,16 +242,16 @@ struct cli_bc_ctx {
 #endif
 };
 struct cli_all_bc;
-int cli_vm_execute(const struct cli_bc *bc, struct cli_bc_ctx *ctx, const struct cli_bc_func *func, const struct cli_bc_inst *inst);
+cl_error_t cli_vm_execute(const struct cli_bc *bc, struct cli_bc_ctx *ctx, const struct cli_bc_func *func, const struct cli_bc_inst *inst);
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int cli_vm_execute_jit(const struct cli_all_bc *bcs, struct cli_bc_ctx *ctx, const struct cli_bc_func *func);
-int cli_bytecode_prepare_jit(struct cli_all_bc *bc);
-int cli_bytecode_init_jit(struct cli_all_bc *bc, unsigned dconfmask);
-int cli_bytecode_done_jit(struct cli_all_bc *bc, int partial);
+cl_error_t cli_vm_execute_jit(const struct cli_all_bc *bcs, struct cli_bc_ctx *ctx, const struct cli_bc_func *func);
+cl_error_t cli_bytecode_prepare_jit(struct cli_all_bc *bc);
+cl_error_t cli_bytecode_init_jit(struct cli_all_bc *bc, unsigned dconfmask);
+cl_error_t cli_bytecode_done_jit(struct cli_all_bc *bc, int partial);
 
 #ifdef __cplusplus
 }

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Author: Tomasz Kojm <tkojm@clamav.net>
@@ -37,18 +37,21 @@
 #include <sys/stat.h>
 #include <dirent.h>
 
-#include "shared/optparser.h"
-#include "shared/misc.h"
-
 #include "clamav-config.h"
-#include "libclamav/str.h"
-#include "libclamav/clamav.h"
-#include "libclamav/others.h"
-#include "libclamav/readdb.h"
-#include "libclamav/bytecode.h"
-#include "libclamav/bytecode_detect.h"
 #include "target.h"
+
+// libclamav
+#include "clamav.h"
+#include "str.h"
+#include "others.h"
+#include "readdb.h"
+#include "bytecode.h"
+#include "bytecode_detect.h"
 #include "fpu.h"
+
+// common
+#include "optparser.h"
+#include "misc.h"
 
 #ifndef _WIN32
 extern const struct clam_option *clam_options;
@@ -204,7 +207,7 @@ static void help(void)
     printf("\n");
     printf("                       Clam AntiVirus: Configuration Tool %s\n", get_version());
     printf("           By The ClamAV Team: https://www.clamav.net/about.html#credits\n");
-    printf("           (C) 2020 Cisco Systems, Inc.\n");
+    printf("           (C) 2023 Cisco Systems, Inc.\n");
     printf("\n");
     printf("    --help                 -h         Show this help\n");
     printf("    --version              -V         Show version\n");
@@ -479,7 +482,7 @@ int main(int argc, char **argv)
 #endif
     if (have_rar)
         printf("RAR ");
-    if (have_clamjit)
+    if (have_clamjit())
         printf("JIT");
     printf("\n");
 

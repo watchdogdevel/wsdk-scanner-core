@@ -1,7 +1,7 @@
 /*
  *  Gather statistics from performance sensitive code.
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -100,7 +100,7 @@ static void cli_perf_print(void)
     const double MEGA    = 1024 * 1024.0;
 
     /* in multiscan mode multiple threads can output, so output a unique id
-	 * here*/
+     * here*/
     printf("PERF: %p\n", &cli_perf_registered);
     for (i = 0; i < __LAST_SUMABLE; i++) {
         printf("PERF: %s: %g MB", perf_log_names_sum[i], cli_perf_sum[i] / MEGA);

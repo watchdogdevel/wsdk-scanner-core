@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB <acab@clamav.net>
@@ -626,7 +626,7 @@ void *mpool_malloc(struct MP *mp, size_t size)
 
     /*  check_all(mp); */
     if (!size || sbits == FRAGSBITS) {
-        cli_errmsg("mpool_malloc(): Attempt to allocate %lu bytes. Please report to https://bugzilla.clamav.net\n", (unsigned long)size);
+        cli_errmsg("mpool_malloc(): Attempt to allocate %lu bytes. Please report to https://github.com/Cisco-Talos/clamav/issues\n", (unsigned long)size);
         return NULL;
     }
 
@@ -651,7 +651,7 @@ void *mpool_malloc(struct MP *mp, size_t size)
     }
 
     if (!(needed = from_bits(sbits))) {
-        cli_errmsg("mpool_malloc(): Attempt to allocate %lu bytes. Please report to https://bugzilla.clamav.net\n", (unsigned long)size);
+        cli_errmsg("mpool_malloc(): Attempt to allocate %lu bytes. Please report to https://github.com/Cisco-Talos/clamav/issues\n", (unsigned long)size);
         return NULL;
     }
 
@@ -697,9 +697,10 @@ static void *allocbase_fromfrag(struct FRAG *f)
 
 void mpool_free(struct MP *mp, void *ptr)
 {
-    struct FRAG *f = (struct FRAG *)((char *)ptr - FRAG_OVERHEAD);
-    unsigned int sbits;
+    struct FRAG *f     = NULL;
+    unsigned int sbits = 0;
     if (!ptr) return;
+    f = (struct FRAG *)((char *)ptr - FRAG_OVERHEAD);
 
 #ifdef CL_DEBUG
     assert(f->magic == MPOOLMAGIC && "Attempt to mpool_free a pointer we did not allocate!");
@@ -729,13 +730,14 @@ void *mpool_calloc(struct MP *mp, size_t nmemb, size_t size)
 
 void *mpool_realloc(struct MP *mp, void *ptr, size_t size)
 {
-    struct FRAG *f = (struct FRAG *)((char *)ptr - FRAG_OVERHEAD);
-    size_t csize;
-    void *new_ptr;
+    struct FRAG *f = NULL;
+    size_t csize   = 0;
+    void *new_ptr  = NULL;
     if (!ptr) return mpool_malloc(mp, size);
+    f = (struct FRAG *)((char *)ptr - FRAG_OVERHEAD);
 
     if (!size || !(csize = from_bits(f->u.a.sbits))) {
-        cli_errmsg("mpool_realloc(): Attempt to allocate %lu bytes. Please report to https://bugzilla.clamav.net\n", (unsigned long)size);
+        cli_errmsg("mpool_realloc(): Attempt to allocate %lu bytes. Please report to https://github.com/Cisco-Talos/clamav/issues\n", (unsigned long)size);
         return NULL;
     }
     csize -= FRAG_OVERHEAD + f->u.a.padding;
@@ -789,7 +791,7 @@ char *cli_mpool_strdup(mpool_t *mp, const char *s)
     size_t strsz;
 
     if (s == NULL) {
-        cli_errmsg("cli_mpool_strdup(): s == NULL. Please report to https://bugzilla.clamav.net\n");
+        cli_errmsg("cli_mpool_strdup(): s == NULL. Please report to https://github.com/Cisco-Talos/clamav/issues\n");
         return NULL;
     }
 
@@ -808,7 +810,7 @@ char *cli_mpool_strndup(mpool_t *mp, const char *s, size_t n)
     size_t strsz;
 
     if (s == NULL) {
-        cli_errmsg("cli_mpool_strndup(): s == NULL. Please report to https://bugzilla.clamav.net\n");
+        cli_errmsg("cli_mpool_strndup(): s == NULL. Please report to https://github.com/Cisco-Talos/clamav/issues\n");
         return NULL;
     }
 

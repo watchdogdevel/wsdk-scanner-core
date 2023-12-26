@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Nigel Horne
@@ -43,6 +43,7 @@
 #include <unistd.h>
 #endif
 
+#include "clamav.h"
 #include "others.h"
 #include "mbox.h"
 #include "matcher.h"
@@ -176,7 +177,7 @@ blobGetFilename(const blob *b)
 int blobAddData(blob *b, const unsigned char *data, size_t len)
 {
 #if HAVE_CLI_GETPAGESIZE
-    static int pagesize;
+    static int pagesize = 0;
     int growth;
 #endif
 
@@ -191,25 +192,25 @@ int blobAddData(blob *b, const unsigned char *data, size_t len)
 
     if (b->isClosed) {
         /*
-		 * Should be cli_dbgmsg, but I want to see them for now,
-		 * and cli_dbgmsg doesn't support debug levels
-		 */
+         * Should be cli_dbgmsg, but I want to see them for now,
+         * and cli_dbgmsg doesn't support debug levels
+         */
         cli_warnmsg("Reopening closed blob\n");
         b->isClosed = 0;
     }
     /*
-	 * The payoff here is between reducing the number of calls to
-	 * malloc/realloc and not overallocating memory. A lot of machines
-	 * are more tight with memory than one may imagine which is why
-	 * we don't just allocate a *huge* amount and be done with it. Closing
-	 * the blob helps because that reclaims memory. If you know the maximum
-	 * size of a blob before you start adding data, use blobGrow() that's
-	 * the most optimum
-	 */
+     * The payoff here is between reducing the number of calls to
+     * malloc/realloc and not overallocating memory. A lot of machines
+     * are more tight with memory than one may imagine which is why
+     * we don't just allocate a *huge* amount and be done with it. Closing
+     * the blob helps because that reclaims memory. If you know the maximum
+     * size of a blob before you start adding data, use blobGrow() that's
+     * the most optimum
+     */
 #if HAVE_CLI_GETPAGESIZE
     if (pagesize == 0) {
         pagesize = cli_getpagesize();
-        if (pagesize == 0)
+        if (pagesize <= 0)
             pagesize = 4096;
     }
     growth = pagesize;
@@ -217,7 +218,7 @@ int blobAddData(blob *b, const unsigned char *data, size_t len)
         growth = ((len / pagesize) + 1) * pagesize;
 
     /*cli_dbgmsg("blobGrow: b->size %lu, b->len %lu, len %lu, growth = %u\n",
-		b->size, b->len, len, growth);*/
+                b->size, b->len, len, growth);*/
 
     if (b->data == NULL) {
         assert(b->len == 0);
@@ -225,6 +226,10 @@ int blobAddData(blob *b, const unsigned char *data, size_t len)
 
         b->size = growth;
         b->data = cli_malloc(growth);
+        if (NULL == b->data) {
+            b->size = 0;
+            return -1;
+        }
     } else if (b->size < b->len + (off_t)len) {
         unsigned char *p = cli_realloc(b->data, b->size + growth);
 
@@ -241,6 +246,10 @@ int blobAddData(blob *b, const unsigned char *data, size_t len)
 
         b->size = (off_t)len * 4;
         b->data = cli_malloc(b->size);
+        if (NULL == b->data) {
+            b->size = 0;
+            return -1;
+        }
     } else if (b->size < b->len + (off_t)len) {
         unsigned char *p = cli_realloc(b->data, b->size + (len * 4));
 
@@ -255,6 +264,9 @@ int blobAddData(blob *b, const unsigned char *data, size_t len)
     if (b->data) {
         memcpy(&b->data[b->len], data, len);
         b->len += (off_t)len;
+    } else {
+        b->size = 0;
+        return -1;
     }
     return 0;
 }
@@ -296,9 +308,9 @@ void blobClose(blob *b)
     }
 
     /*
-	 * Nothing more is going to be added to this blob. If it'll save more
-	 * than a trivial amount (say 64 bytes) of memory, shrink the allocation
-	 */
+     * Nothing more is going to be added to this blob. If it'll save more
+     * than a trivial amount (say 64 bytes) of memory, shrink the allocation
+     */
     if ((b->size - b->len) >= 64) {
         if (b->len == 0) { /* Not likely */
             free(b->data);
@@ -309,8 +321,9 @@ void blobClose(blob *b)
         } else {
             unsigned char *ptr = cli_realloc(b->data, b->len);
 
-            if (ptr == NULL)
+            if (ptr == NULL) {
                 return;
+            }
 
             cli_dbgmsg("blobClose: recovered %lu bytes from %lu\n",
                        (unsigned long)(b->size - b->len),
@@ -362,9 +375,9 @@ int blobGrow(blob *b, size_t len)
 
     if (b->isClosed) {
         /*
-		 * Should be cli_dbgmsg, but I want to see them for now,
-		 * and cli_dbgmsg doesn't support debug levels
-		 */
+         * Should be cli_dbgmsg, but I want to see them for now,
+         * and cli_dbgmsg doesn't support debug levels
+         */
         cli_warnmsg("Growing closed blob\n");
         b->isClosed = 0;
     }
@@ -467,11 +480,11 @@ void fileblobDestroy(fileblob *fb)
     } else if (fb->b.data) {
         free(fb->b.data);
         if (fb->b.name) {
-            cli_errmsg("fileblobDestroy: %s not saved: report to https://bugzilla.clamav.net\n",
+            cli_errmsg("fileblobDestroy: %s not saved: report to https://github.com/Cisco-Talos/clamav/issues\n",
                        (fb->fullname) ? fb->fullname : fb->b.name);
             free(fb->b.name);
         } else
-            cli_errmsg("fileblobDestroy: file not saved (%lu bytes): report to https://bugzilla.clamav.net\n",
+            cli_errmsg("fileblobDestroy: file not saved (%lu bytes): report to https://github.com/Cisco-Talos/clamav/issues\n",
                        (unsigned long)fb->b.len);
     }
     if (fb->fullname)
@@ -529,9 +542,9 @@ void fileblobSetFilename(fileblob *fb, const char *dir, const char *filename)
     blobSetFilename(&fb->b, dir, filename);
 
     /*
-	 * Reload the filename, it may be different from the one we've
-	 * asked for, e.g. '/'s taken out
-	 */
+     * Reload the filename, it may be different from the one we've
+     * asked for, e.g. '/'s taken out
+     */
     filename = blobGetFilename(&fb->b);
 
     assert(filename != NULL);
@@ -585,7 +598,6 @@ int fileblobAddData(fileblob *fb, const unsigned char *data, size_t len)
                 fb->bytes_scanned += (unsigned long)len;
 
                 if ((len > 5) && cli_updatelimits(ctx, len) == CL_CLEAN && (cli_scan_buff(data, (unsigned int)len, 0, ctx->virname, ctx->engine, CL_TYPE_BINARY_DATA, NULL) == CL_VIRUS)) {
-                    cli_dbgmsg("fileblobAddData: found %s\n", cli_get_last_virus_str(ctx->virname));
                     fb->isInfected = 1;
                 }
             }
@@ -620,12 +632,10 @@ void fileblobSetCTX(fileblob *fb, cli_ctx *ctx)
  *	CL_CLEAN means unknown
  *	CL_VIRUS means infected
  */
-int fileblobScan(const fileblob *fb)
+cl_error_t fileblobScan(const fileblob *fb)
 {
-    int rc;
-    cli_ctx *ctx = fb->ctx;
+    cl_error_t rc;
     STATBUF sb;
-    int virus_found = 0;
 
     if (fb->isInfected)
         return CL_VIRUS;
@@ -643,18 +653,17 @@ int fileblobScan(const fileblob *fb)
     fflush(fb->fp);
     lseek(fb->fd, 0, SEEK_SET);
     FSTAT(fb->fd, &sb);
-    if (cli_matchmeta(fb->ctx, fb->b.name, sb.st_size, sb.st_size, 0, 0, 0, NULL) == CL_VIRUS) {
-        if (!SCAN_ALLMATCHES)
-            return CL_VIRUS;
-        virus_found = 1;
+
+    rc = cli_matchmeta(fb->ctx, fb->b.name, sb.st_size, sb.st_size, 0, 0, 0, NULL);
+    if (rc != CL_SUCCESS) {
+        return rc;
     }
 
-    rc = cli_magic_scan_desc(fb->fd, fb->fullname, fb->ctx, fb->b.name);
-    if (rc == CL_VIRUS || virus_found != 0) {
-        cli_dbgmsg("%s is infected\n", fb->fullname);
-        return CL_VIRUS;
+    rc = cli_magic_scan_desc(fb->fd, fb->fullname, fb->ctx, fb->b.name, LAYER_ATTRIBUTES_NONE);
+    if (rc != CL_SUCCESS) {
+        return rc;
     }
-    cli_dbgmsg("%s is clean\n", fb->fullname);
+
     return CL_BREAK;
 }
 
@@ -676,8 +685,9 @@ void sanitiseName(char *name)
 {
     char c;
     while ((c = *name)) {
-        if (c != '.' && c != '_' && (c > 'z' || c < '0' || (c > '9' && c < 'A') || (c > 'Z' && c < 'a')))
+        if (c != '.' && c != '_' && (c > 'z' || c < '0' || (c > '9' && c < 'A') || (c > 'Z' && c < 'a'))) {
             *name = '_';
+        }
         name++;
     }
 }

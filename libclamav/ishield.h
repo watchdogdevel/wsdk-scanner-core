@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB <acab@clamav.net>
@@ -24,7 +24,7 @@
 
 #include "others.h"
 
-int cli_scanishield_msi(cli_ctx *ctx, off_t off);
-int cli_scanishield(cli_ctx *ctx, off_t off, size_t sz);
+cl_error_t cli_scanishield_msi(cli_ctx *ctx, off_t off);
+cl_error_t cli_scanishield(cli_ctx *ctx, off_t off, size_t sz);
 
 #endif

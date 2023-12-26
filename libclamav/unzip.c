@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Alberto Wu
@@ -62,6 +62,10 @@
 #define ZIP_MAGIC_FILE_BEGIN_SPLIT_OR_SPANNED       (0x08074b50)
 // clang-format on
 
+// Non-malicious zips in enterprise critical JAR-ZIPs have been observed with a 1-byte overlap.
+// The goal with overlap detection is to alert on non-recursive zip bombs, so this tiny overlap isn't a concern.
+// We'll allow a 2-byte overlap so we don't alert on such zips.
+#define ZIP_RECORD_OVERLAP_FUDGE_FACTOR 2
 #define ZIP_MAX_NUM_OVERLAPPING_FILES 5
 
 #define ZIP_CRC32(r, c, b, l) \
@@ -111,10 +115,11 @@ static cl_error_t unz(
     cli_ctx *ctx,
     char *tmpd,
     zip_cb zcb,
-    const char *original_filename)
+    const char *original_filename,
+    bool decrypted)
 {
-    char obuf[BUFSIZ];
-    char *tempfile = NULL;
+    char obuf[BUFSIZ] = {0};
+    char *tempfile    = NULL;
     int out_file, ret = CL_CLEAN;
     int res        = 1;
     size_t written = 0;
@@ -142,7 +147,8 @@ static cl_error_t unz(
             if (csize < usize) {
                 unsigned int fake = *num_files_unzipped + 1;
                 cli_dbgmsg("cli_unzip: attempting to inflate stored file with inconsistent size\n");
-                if ((ret = unz(src, csize, usize, ALG_DEFLATE, 0, &fake, ctx, tmpd, zcb, original_filename)) == CL_CLEAN) {
+                if (CL_CLEAN == (ret = unz(src, csize, usize, ALG_DEFLATE, 0, &fake, ctx,
+                                           tmpd, zcb, original_filename, decrypted))) {
                     (*num_files_unzipped)++;
                     res = fake - (*num_files_unzipped);
                 } else
@@ -150,7 +156,8 @@ static cl_error_t unz(
             }
             if (res == 1) {
                 if (ctx->engine->maxfilesize && csize > ctx->engine->maxfilesize) {
-                    cli_dbgmsg("cli_unzip: trimming output size to maxfilesize (%lu)\n", (long unsigned int)ctx->engine->maxfilesize);
+                    cli_dbgmsg("cli_unzip: trimming output size to maxfilesize (%lu)\n",
+                               (long unsigned int)ctx->engine->maxfilesize);
                     csize = ctx->engine->maxfilesize;
                 }
                 if (cli_writen(out_file, src, csize) != csize)
@@ -350,7 +357,7 @@ static cl_error_t unz(
             close(out_file);
             return CL_ESEEK;
         }
-        ret = zcb(out_file, tempfile, ctx, original_filename);
+        ret = zcb(out_file, tempfile, ctx, original_filename, decrypted);
         close(out_file);
         if (!ctx->engine->keeptmp)
             if (cli_unlink(tempfile)) ret = CL_EUNLINK;
@@ -480,11 +487,11 @@ static inline cl_error_t zdecrypt(
 
             if (LOCAL_HEADER_flags & F_USEDD) {
                 cli_dbgmsg("cli_unzip: decrypt - (v%u) >> 0x0000%02x%02x 0x%x (moddate)\n", LOCAL_HEADER_version, a, b, LOCAL_HEADER_mtime);
-                if ((b | (a << 8)) == (LOCAL_HEADER_mtime & 0xffff))
+                if ((uint32_t)(b | (a << 8)) == (LOCAL_HEADER_mtime & 0xffff))
                     v = 1;
             } else {
                 cli_dbgmsg("cli_unzip: decrypt - (v%u) >> 0x0000%02x%02x 0x%x (crc32)\n", LOCAL_HEADER_version, encryption_header[SIZEOF_ENCRYPTION_HEADER - 1], encryption_header[SIZEOF_ENCRYPTION_HEADER - 2], LOCAL_HEADER_crc32);
-                if ((b | (a << 8)) == ((LOCAL_HEADER_crc32 >> 16) & 0xffff))
+                if ((uint32_t)(b | (a << 8)) == ((LOCAL_HEADER_crc32 >> 16) & 0xffff))
                     v = 1;
             }
         }
@@ -552,7 +559,8 @@ static inline cl_error_t zdecrypt(
             }
 
             /* call unz on decrypted output */
-            ret = unz(dcypt_zip, csize - SIZEOF_ENCRYPTION_HEADER, usize, LOCAL_HEADER_method, LOCAL_HEADER_flags, num_files_unzipped, ctx, tmpd, zcb, original_filename);
+            ret = unz(dcypt_zip, csize - SIZEOF_ENCRYPTION_HEADER, usize, LOCAL_HEADER_method, LOCAL_HEADER_flags,
+                      num_files_unzipped, ctx, tmpd, zcb, original_filename, true);
 
             /* clean-up and return */
             funmap(dcypt_map);
@@ -614,8 +622,10 @@ static unsigned int parse_local_file_header(
     char name[256];
     char *original_filename = NULL;
     uint32_t csize, usize;
-    int virus_found = 0;
     unsigned int size_of_fileheader_and_data = 0;
+
+    uint32_t nsize  = 0;
+    const char *src = NULL;
 
     if (!(local_header = fmap_need_off(map, loff, SIZEOF_LOCAL_HEADER))) {
         cli_dbgmsg("cli_unzip: local header - out of file\n");
@@ -633,36 +643,37 @@ static unsigned int parse_local_file_header(
     zip = local_header + SIZEOF_LOCAL_HEADER;
     zsize -= SIZEOF_LOCAL_HEADER;
 
+    memset(name, '\0', 256);
+
     if (zsize <= LOCAL_HEADER_flen) {
         cli_dbgmsg("cli_unzip: local header - fname out of file\n");
         fmap_unneed_off(map, loff, SIZEOF_LOCAL_HEADER);
         goto done;
     }
-    if (ctx->engine->cdb || cli_debug_flag || ctx->engine->keeptmp || ctx->options->general & CL_SCAN_GENERAL_COLLECT_METADATA) {
-        uint32_t nsize = (LOCAL_HEADER_flen >= sizeof(name)) ? sizeof(name) - 1 : LOCAL_HEADER_flen;
-        const char *src;
-        if (nsize && (src = fmap_need_ptr_once(map, zip, nsize))) {
-            memcpy(name, zip, nsize);
-            name[nsize] = '\0';
-            if (CL_SUCCESS != cli_basename(name, nsize, &original_filename)) {
-                original_filename = NULL;
-            }
-        } else
-            name[0] = '\0';
+
+    nsize = (LOCAL_HEADER_flen >= sizeof(name)) ? sizeof(name) - 1 : LOCAL_HEADER_flen;
+    src   = fmap_need_ptr_once(map, zip, nsize);
+    if (nsize && (NULL != src)) {
+        memcpy(name, zip, nsize);
+        name[nsize] = '\0';
+        if (CL_SUCCESS != cli_basename(name, nsize, &original_filename)) {
+            original_filename = NULL;
+        }
+    } else {
+        name[0] = '\0';
     }
+
     zip += LOCAL_HEADER_flen;
     zsize -= LOCAL_HEADER_flen;
 
     cli_dbgmsg("cli_unzip: local header - ZMDNAME:%d:%s:%u:%u:%x:%u:%u:%u\n",
-               ((LOCAL_HEADER_flags & F_ENCR) != 0), name, LOCAL_HEADER_usize, LOCAL_HEADER_csize, LOCAL_HEADER_crc32, LOCAL_HEADER_method, file_count, ctx->recursion);
+               ((LOCAL_HEADER_flags & F_ENCR) != 0), name, LOCAL_HEADER_usize, LOCAL_HEADER_csize, LOCAL_HEADER_crc32, LOCAL_HEADER_method, file_count, ctx->recursion_level);
     /* ZMDfmt virname:encrypted(0-1):filename(exact|*):usize(exact|*):csize(exact|*):crc32(exact|*):method(exact|*):fileno(exact|*):maxdepth(exact|*) */
 
     /* Scan file header metadata. */
     if (cli_matchmeta(ctx, name, LOCAL_HEADER_csize, LOCAL_HEADER_usize, (LOCAL_HEADER_flags & F_ENCR) != 0, file_count, LOCAL_HEADER_crc32, NULL) == CL_VIRUS) {
         *ret = CL_VIRUS;
-        if (!SCAN_ALLMATCHES)
-            goto done;
-        virus_found = 1;
+        goto done;
     }
 
     if (LOCAL_HEADER_flags & F_MSKED) {
@@ -673,13 +684,14 @@ static unsigned int parse_local_file_header(
     }
 
     if (detect_encrypted && (LOCAL_HEADER_flags & F_ENCR) && SCAN_HEURISTIC_ENCRYPTED_ARCHIVE) {
+        cl_error_t fp_check;
         cli_dbgmsg("cli_unzip: Encrypted files found in archive.\n");
-        *ret = cli_append_virus(ctx, "Heuristics.Encrypted.Zip");
-        if ((*ret == CL_VIRUS && !SCAN_ALLMATCHES) || *ret != CL_CLEAN) {
+        fp_check = cli_append_potentially_unwanted(ctx, "Heuristics.Encrypted.Zip");
+        if (fp_check != CL_SUCCESS) {
+            *ret = fp_check;
             fmap_unneed_off(map, loff, SIZEOF_LOCAL_HEADER);
             goto done;
         }
-        virus_found = 1;
     }
 
     if (LOCAL_HEADER_flags & F_USEDD) {
@@ -720,7 +732,8 @@ static unsigned int parse_local_file_header(
                     *ret = zdecrypt(zip, csize, usize, local_header, num_files_unzipped, ctx, tmpd, zcb, original_filename);
             } else {
                 if (fmap_need_ptr_once(map, zip, csize))
-                    *ret = unz(zip, csize, usize, LOCAL_HEADER_method, LOCAL_HEADER_flags, num_files_unzipped, ctx, tmpd, zcb, original_filename);
+                    *ret = unz(zip, csize, usize, LOCAL_HEADER_method, LOCAL_HEADER_flags, num_files_unzipped,
+                               ctx, tmpd, zcb, original_filename, false);
             }
         } else {
             if ((NULL == original_filename) ||
@@ -734,6 +747,8 @@ static unsigned int parse_local_file_header(
             record->method              = LOCAL_HEADER_method;
             record->flags               = LOCAL_HEADER_flags;
             record->encrypted           = (LOCAL_HEADER_flags & F_ENCR) ? 1 : 0;
+
+            *ret = CL_SUCCESS;
         }
 
         zip += csize;
@@ -766,9 +781,6 @@ done:
     if (NULL != original_filename) {
         free(original_filename);
     }
-
-    if ((NULL != ret) && (0 != virus_found))
-        *ret = CL_VIRUS;
 
     return size_of_fileheader_and_data;
 }
@@ -804,14 +816,26 @@ parse_central_directory_file_header(
     struct zip_record *record)
 {
     char name[256];
-    int last = 0;
-    const uint8_t *central_header;
-    int virus_found = 0;
+    int last                      = 0;
+    const uint8_t *central_header = NULL;
+
+    *ret = CL_EPARSE;
+
+    if (cli_checktimelimit(ctx) != CL_SUCCESS) {
+        cli_dbgmsg("cli_unzip: central header - Time limit reached (max: %u)\n", ctx->engine->maxscantime);
+        last = 1;
+        *ret = CL_ETIMEOUT;
+        goto done;
+    }
 
     if (!(central_header = fmap_need_off(map, coff, SIZEOF_CENTRAL_HEADER)) || CENTRAL_HEADER_magic != ZIP_MAGIC_CENTRAL_DIRECTORY_RECORD_BEGIN) {
-        if (central_header) fmap_unneed_ptr(map, central_header, SIZEOF_CENTRAL_HEADER);
+        if (central_header) {
+            fmap_unneed_ptr(map, central_header, SIZEOF_CENTRAL_HEADER);
+            central_header = NULL;
+        }
         cli_dbgmsg("cli_unzip: central header - wrkcomplete\n");
-        return 0;
+        last = 1;
+        goto done;
     }
     coff += SIZEOF_CENTRAL_HEADER;
 
@@ -821,6 +845,7 @@ parse_central_directory_file_header(
     if (zsize - coff <= CENTRAL_HEADER_flen) {
         cli_dbgmsg("cli_unzip: central header - fname out of file\n");
         last = 1;
+        goto done;
     }
 
     name[0] = '\0';
@@ -836,8 +861,11 @@ parse_central_directory_file_header(
     coff += CENTRAL_HEADER_flen;
 
     /* requests do not supply a ctx; also prevent multiple scans */
-    if (ctx && cli_matchmeta(ctx, name, CENTRAL_HEADER_csize, CENTRAL_HEADER_usize, (CENTRAL_HEADER_flags & F_ENCR) != 0, file_count, CENTRAL_HEADER_crc32, NULL) == CL_VIRUS)
-        virus_found = 1;
+    if (ctx && (CL_VIRUS == cli_matchmeta(ctx, name, CENTRAL_HEADER_csize, CENTRAL_HEADER_usize, (CENTRAL_HEADER_flags & F_ENCR) != 0, file_count, CENTRAL_HEADER_crc32, NULL))) {
+        last = 1;
+        *ret = CL_VIRUS;
+        goto done;
+    }
 
     if (zsize - coff <= CENTRAL_HEADER_extra_len && !last) {
         cli_dbgmsg("cli_unzip: central header - extra out of file\n");
@@ -884,11 +912,14 @@ parse_central_directory_file_header(
                 }
             }
         }
+        *ret = CL_SUCCESS;
     }
 
-    if (virus_found == 1)
-        *ret = CL_VIRUS;
-    fmap_unneed_ptr(map, central_header, SIZEOF_CENTRAL_HEADER);
+done:
+    if (NULL != central_header) {
+        fmap_unneed_ptr(map, central_header, SIZEOF_CENTRAL_HEADER);
+    }
+
     return (last ? 0 : coff);
 }
 
@@ -898,7 +929,7 @@ parse_central_directory_file_header(
  * @param first
  * @param second
  * @return int 1 if first record's offset is higher than second's.
- * @return int 0 if first and second reocrd offsets are equal.
+ * @return int 0 if first and second record offsets are equal.
  * @return int -1 if first record's offset is less than second's.
  */
 static int sort_by_file_offset(const void *first, const void *second)
@@ -957,6 +988,7 @@ cl_error_t index_the_central_directory(
     struct zip_record *curr_record   = NULL;
     struct zip_record *prev_record   = NULL;
     uint32_t num_overlapping_files   = 0;
+    bool exceeded_max_files          = false;
 
     if (NULL == catalogue || NULL == num_records) {
         cli_errmsg("index_the_central_directory: Invalid NULL arguments\n");
@@ -976,16 +1008,33 @@ cl_error_t index_the_central_directory(
 
     cli_dbgmsg("cli_unzip: checking for non-recursive zip bombs...\n");
 
-    while (0 != (coff = parse_central_directory_file_header(map,
-                                                            coff,
-                                                            fsize,
-                                                            NULL, // num_files_unziped not required
-                                                            index + 1,
-                                                            &ret,
-                                                            ctx,
-                                                            NULL, // tmpd not required
-                                                            NULL,
-                                                            &(zip_catalogue[records_count])))) {
+    do {
+        coff = parse_central_directory_file_header(map,
+                                                   coff,
+                                                   fsize,
+                                                   NULL, // num_files_unziped not required
+                                                   index + 1,
+                                                   &ret,
+                                                   ctx,
+                                                   NULL, // tmpd not required
+                                                   NULL,
+                                                   &(zip_catalogue[records_count]));
+
+        if (CL_EPARSE != ret) {
+            // Found a record.
+            records_count++;
+        }
+
+        if (0 == coff) {
+            // No more files (previous was last).
+            break;
+        }
+
+        if (ret == CL_VIRUS) {
+            status = CL_VIRUS;
+            goto done;
+        }
+
         index++;
 
         if (cli_checktimelimit(ctx) != CL_SUCCESS) {
@@ -997,11 +1046,15 @@ cl_error_t index_the_central_directory(
         /* stop checking file entries if we'll exceed maxfiles */
         if (ctx->engine->maxfiles && records_count >= ctx->engine->maxfiles) {
             cli_dbgmsg("cli_unzip: Files limit reached (max: %u)\n", ctx->engine->maxfiles);
+            cli_append_potentially_unwanted_if_heur_exceedsmax(ctx, "Heuristics.Limits.Exceeded.MaxFiles");
+            exceeded_max_files = true; // Set a bool so we can return the correct status code later.
+                                       // We still need to scan the files we found while reviewing the file records up to this limit.
             break;
         }
-        records_count++;
 
         if (records_count % ZIP_RECORDS_CHECK_BLOCKSIZE == 0) {
+            struct zip_record *zip_catalogue_new = NULL;
+
             cli_dbgmsg("   cli_unzip: Exceeded zip record block size, allocating more space...\n");
 
             /* allocate more space for zip records */
@@ -1012,15 +1065,23 @@ cl_error_t index_the_central_directory(
                 goto done;
             }
 
-            zip_catalogue = cli_realloc2(zip_catalogue, sizeof(struct zip_record) * ZIP_RECORDS_CHECK_BLOCKSIZE * (num_record_blocks + 1));
-            if (NULL == zip_catalogue) {
+            zip_catalogue_new = cli_realloc(zip_catalogue, sizeof(struct zip_record) * ZIP_RECORDS_CHECK_BLOCKSIZE * (num_record_blocks + 1));
+            if (NULL == zip_catalogue_new) {
                 status = CL_EMEM;
                 goto done;
             }
+            zip_catalogue     = zip_catalogue_new;
+            zip_catalogue_new = NULL;
+
             num_record_blocks++;
             /* zero out the memory for the new records */
             memset(&(zip_catalogue[records_count]), 0, sizeof(struct zip_record) * (ZIP_RECORDS_CHECK_BLOCKSIZE * num_record_blocks - records_count));
         }
+    } while (1);
+
+    if (ret == CL_VIRUS) {
+        status = CL_VIRUS;
+        goto done;
     }
 
     if (records_count > 1) {
@@ -1036,16 +1097,24 @@ cl_error_t index_the_central_directory(
             prev_record = &(zip_catalogue[index - 1]);
             curr_record = &(zip_catalogue[index]);
 
+            uint32_t prev_record_size = prev_record->local_header_size + prev_record->compressed_size;
+            uint32_t curr_record_size = curr_record->local_header_size + curr_record->compressed_size;
+            uint32_t prev_record_end;
+            uint32_t curr_record_end;
+
             /* Check for integer overflow in 32bit size & offset values */
-            if ((UINT32_MAX - (prev_record->local_header_size + prev_record->compressed_size) < prev_record->local_header_offset) ||
-                (UINT32_MAX - (curr_record->local_header_size + curr_record->compressed_size) < curr_record->local_header_offset)) {
+            if ((UINT32_MAX - prev_record_size < prev_record->local_header_offset) ||
+                (UINT32_MAX - curr_record_size < curr_record->local_header_offset)) {
                 cli_dbgmsg("cli_unzip: Integer overflow detected; invalid data sizes in zip file headers.\n");
                 status = CL_EFORMAT;
                 goto done;
             }
 
-            if (((curr_record->local_header_offset >= prev_record->local_header_offset) && (curr_record->local_header_offset < prev_record->local_header_offset + prev_record->local_header_size + prev_record->compressed_size)) ||
-                ((prev_record->local_header_offset >= curr_record->local_header_offset) && (prev_record->local_header_offset < curr_record->local_header_offset + curr_record->local_header_size + curr_record->compressed_size))) {
+            prev_record_end = prev_record->local_header_offset + prev_record_size;
+            curr_record_end = curr_record->local_header_offset + curr_record_size;
+
+            if (((curr_record->local_header_offset >= prev_record->local_header_offset) && (curr_record->local_header_offset + ZIP_RECORD_OVERLAP_FUDGE_FACTOR < prev_record_end)) ||
+                ((prev_record->local_header_offset >= curr_record->local_header_offset) && (prev_record->local_header_offset + ZIP_RECORD_OVERLAP_FUDGE_FACTOR < curr_record_end))) {
                 /* Overlapping file detected */
                 num_overlapping_files++;
 
@@ -1055,12 +1124,12 @@ cl_error_t index_the_central_directory(
                     cli_dbgmsg("cli_unzip: Ignoring duplicate file entry @ 0x%x.\n", curr_record->local_header_offset);
                 } else {
                     cli_dbgmsg("cli_unzip: Overlapping files detected.\n");
-                    cli_dbgmsg("    previous file end:  %u\n", prev_record->local_header_offset + prev_record->local_header_size + prev_record->compressed_size);
+                    cli_dbgmsg("    previous file end:  %u\n", prev_record_end);
                     cli_dbgmsg("    current file start: %u\n", curr_record->local_header_offset);
 
                     if (ZIP_MAX_NUM_OVERLAPPING_FILES < num_overlapping_files) {
                         if (SCAN_HEURISTICS) {
-                            status = cli_append_virus(ctx, "Heuristics.Zip.OverlappingFiles");
+                            status = cli_append_potentially_unwanted(ctx, "Heuristics.Zip.OverlappingFiles");
                         } else {
                             status = CL_EFORMAT;
                         }
@@ -1085,8 +1154,19 @@ done:
 
     if (CL_SUCCESS != status) {
         if (NULL != zip_catalogue) {
+            size_t i;
+            for (i = 0; i < records_count; i++) {
+                if (NULL != zip_catalogue[i].original_filename) {
+                    free(zip_catalogue[i].original_filename);
+                    zip_catalogue[i].original_filename = NULL;
+                }
+            }
             free(zip_catalogue);
             zip_catalogue = NULL;
+        }
+
+        if (exceeded_max_files) {
+            status = CL_EMAXFILES;
         }
     }
 
@@ -1098,10 +1178,9 @@ cl_error_t cli_unzip(cli_ctx *ctx)
     unsigned int file_count = 0, num_files_unzipped = 0;
     cl_error_t ret = CL_CLEAN;
     uint32_t fsize, lhoff = 0, coff = 0;
-    fmap_t *map = *ctx->fmap;
+    fmap_t *map = ctx->fmap;
     char *tmpd  = NULL;
     const char *ptr;
-    int virus_found = 0;
 #if HAVE_JSON
     int toval = 0;
 #endif
@@ -1127,7 +1206,7 @@ cl_error_t cli_unzip(cli_ctx *ctx)
             continue;
         if (cli_readint32(ptr) == ZIP_MAGIC_CENTRAL_DIRECTORY_RECORD_END) {
             uint32_t chptr = cli_readint32(&ptr[16]);
-            if (!CLI_ISCONTAINED(0, fsize, chptr, SIZEOF_CENTRAL_HEADER)) continue;
+            if (!CLI_ISCONTAINED_0_TO(fsize, chptr, SIZEOF_CENTRAL_HEADER)) continue;
             coff = chptr;
             break;
         }
@@ -1192,18 +1271,27 @@ cl_error_t cli_unzip(cli_ctx *ctx)
                         ctx,
                         tmpd,
                         zip_scan_cb,
-                        zip_catalogue[i].original_filename);
+                        zip_catalogue[i].original_filename,
+                        false);
             }
 
             file_count++;
+
             if (ctx->engine->maxfiles && num_files_unzipped >= ctx->engine->maxfiles) {
+                // Note: this check piggybacks on the MaxFiles setting, but is not actually
+                //   scanning these files or incrementing the ctx->scannedfiles count
+                // This check is also redundant. zip_scan_cb == cli_magic_scan_desc,
+                //   so we will also check and update the limits for the actual number of scanned
+                //   files inside cli_magic_scan()
                 cli_dbgmsg("cli_unzip: Files limit reached (max: %u)\n", ctx->engine->maxfiles);
+                cli_append_potentially_unwanted_if_heur_exceedsmax(ctx, "Heuristics.Limits.Exceeded.MaxFiles");
                 ret = CL_EMAXFILES;
             }
 
             if (cli_checktimelimit(ctx) != CL_SUCCESS) {
                 cli_dbgmsg("cli_unzip: Time limit reached (max: %u)\n", ctx->engine->maxscantime);
                 ret = CL_ETIMEOUT;
+                goto done;
             }
 
 #if HAVE_JSON
@@ -1211,23 +1299,22 @@ cl_error_t cli_unzip(cli_ctx *ctx)
                 ret = CL_ETIMEOUT;
             }
 #endif
-            if (ret != CL_CLEAN) {
-                if (ret == CL_VIRUS && SCAN_ALLMATCHES) {
-                    ret         = CL_CLEAN;
-                    virus_found = 1;
-                } else {
-                    break;
-                }
+            if (ret != CL_SUCCESS) {
+                break;
             }
         }
     } else {
         cli_dbgmsg("cli_unzip: central not found, using localhdrs\n");
     }
 
-    if (virus_found == 1) {
-        ret = CL_VIRUS;
+    if (CL_SUCCESS != ret) {
+        // goto done right away if there was a timeout, an alert, etc.
+        // This is slightly redundant since the while loop will only happen
+        // if ret == CL_SUCCESS but it's more explicit.
+        goto done;
     }
-    if (num_files_unzipped <= (file_count / 4)) { /* FIXME: make up a sane ratio or remove the whole logic */
+
+    if (0 < num_files_unzipped && num_files_unzipped <= (file_count / 4)) { /* FIXME: make up a sane ratio or remove the whole logic */
         file_count = 0;
         while ((ret == CL_CLEAN) &&
                (lhoff < fsize) &&
@@ -1245,12 +1332,15 @@ cl_error_t cli_unzip(cli_ctx *ctx)
                                                      NULL)))) {
             file_count++;
             lhoff += coff;
-            if (SCAN_ALLMATCHES && ret == CL_VIRUS) {
-                ret         = CL_CLEAN;
-                virus_found = 1;
-            }
+
             if (ctx->engine->maxfiles && num_files_unzipped >= ctx->engine->maxfiles) {
+                // Note: this check piggybacks on the MaxFiles setting, but is not actually
+                //   scanning these files or incrementing the ctx->scannedfiles count
+                // This check is also redundant. zip_scan_cb == cli_magic_scan_desc,
+                //   so we will also check and update the limits for the actual number of scanned
+                //   files inside cli_magic_scan()
                 cli_dbgmsg("cli_unzip: Files limit reached (max: %u)\n", ctx->engine->maxfiles);
+                cli_append_potentially_unwanted_if_heur_exceedsmax(ctx, "Heuristics.Limits.Exceeded.MaxFiles");
                 ret = CL_EMAXFILES;
             }
 #if HAVE_JSON
@@ -1282,9 +1372,6 @@ done:
         free(tmpd);
     }
 
-    if (ret == CL_CLEAN && virus_found)
-        ret = CL_VIRUS;
-
     return ret;
 }
 
@@ -1294,7 +1381,7 @@ cl_error_t unzip_single_internal(cli_ctx *ctx, off_t local_header_offset, zip_cb
 
     unsigned int num_files_unzipped = 0;
     uint32_t fsize;
-    fmap_t *map = *ctx->fmap;
+    fmap_t *map = ctx->fmap;
 
     cli_dbgmsg("in cli_unzip_single\n");
     fsize = (uint32_t)(map->len - local_header_offset);
@@ -1366,9 +1453,9 @@ cl_error_t unzip_search(cli_ctx *ctx, fmap_t *map, struct zip_requests *requests
         return CL_ENULLARG;
     }
 
-    /* get priority to given map over *ctx->fmap */
+    /* get priority to given map over ctx->fmap */
     if (ctx && !map)
-        zmap = *ctx->fmap;
+        zmap = ctx->fmap;
     fsize = zmap->len;
     if (sizeof(off_t) != sizeof(uint32_t) && fsize != zmap->len) {
         cli_dbgmsg("unzip_search: file too big\n");
@@ -1384,7 +1471,7 @@ cl_error_t unzip_search(cli_ctx *ctx, fmap_t *map, struct zip_requests *requests
             continue;
         if (cli_readint32(ptr) == ZIP_MAGIC_CENTRAL_DIRECTORY_RECORD_END) {
             uint32_t chptr = cli_readint32(&ptr[16]);
-            if (!CLI_ISCONTAINED(0, fsize, chptr, SIZEOF_CENTRAL_HEADER)) continue;
+            if (!CLI_ISCONTAINED_0_TO(fsize, chptr, SIZEOF_CENTRAL_HEADER)) continue;
             coff = chptr;
             break;
         }
@@ -1408,7 +1495,10 @@ cl_error_t unzip_search(cli_ctx *ctx, fmap_t *map, struct zip_requests *requests
 
             file_count++;
             if (ctx && ctx->engine->maxfiles && file_count >= ctx->engine->maxfiles) {
+                // Note: this check piggybacks on the MaxFiles setting, but is not actually
+                //   scanning these files or incrementing the ctx->scannedfiles count
                 cli_dbgmsg("cli_unzip: Files limit reached (max: %u)\n", ctx->engine->maxfiles);
+                cli_append_potentially_unwanted_if_heur_exceedsmax(ctx, "Heuristics.Limits.Exceeded.MaxFiles");
                 ret = CL_EMAXFILES;
             }
 #if HAVE_JSON

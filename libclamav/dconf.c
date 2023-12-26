@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -106,6 +106,7 @@ static struct dconf_module modules[] = {
     {"ARCHIVE", "GPT", ARCH_CONF_GPT, 1},
     {"ARCHIVE", "APM", ARCH_CONF_APM, 1},
     {"ARCHIVE", "EGG", ARCH_CONF_EGG, 1},
+    {"ARCHIVE", "UDF", ARCH_CONF_UDF, 1},
 
     {"DOCUMENT", "HTML", DOC_CONF_HTML, 1},
     {"DOCUMENT", "RTF", DOC_CONF_RTF, 1},
@@ -134,6 +135,7 @@ static struct dconf_module modules[] = {
     {"OTHER", "LZW", OTHER_CONF_LZW, 1},
     {"OTHER", "GIF", OTHER_CONF_GIF, 1},
     {"OTHER", "PNG", OTHER_CONF_PNG, 1},
+    {"OTHER", "TIFF", OTHER_CONF_TIFF, 1},
 
     {"PHISHING", "ENGINE", PHISHING_CONF_ENGINE, 1},
     {"PHISHING", "ENTCONV", PHISHING_CONF_ENTCONV, 1},
@@ -169,27 +171,21 @@ struct cli_dconf *cli_dconf_init(void)
         if (!strcmp(modules[i].mname, "PE")) {
             if (modules[i].state)
                 dconf->pe |= modules[i].bflag;
-
         } else if (!strcmp(modules[i].mname, "ELF")) {
             if (modules[i].state)
                 dconf->elf |= modules[i].bflag;
-
         } else if (!strcmp(modules[i].mname, "MACHO")) {
             if (modules[i].state)
                 dconf->macho |= modules[i].bflag;
-
         } else if (!strcmp(modules[i].mname, "ARCHIVE")) {
             if (modules[i].state)
                 dconf->archive |= modules[i].bflag;
-
         } else if (!strcmp(modules[i].mname, "DOCUMENT")) {
             if (modules[i].state)
                 dconf->doc |= modules[i].bflag;
-
         } else if (!strcmp(modules[i].mname, "MAIL")) {
             if (modules[i].state)
                 dconf->mail |= modules[i].bflag;
-
         } else if (!strcmp(modules[i].mname, "OTHER")) {
             if (modules[i].state)
                 dconf->other |= modules[i].bflag;

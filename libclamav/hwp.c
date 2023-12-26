@@ -1,7 +1,7 @@
 /*
  * HWP Stuff
  *
- * Copyright (C) 2015-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ * Copyright (C) 2015-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  * Authors: Kevin Lin
  *
@@ -59,17 +59,17 @@
 #if HWP5_DEBUG
 #define hwp5_debug(...) cli_dbgmsg(__VA_ARGS__)
 #else
-#define hwp5_debug(...) ;
+#define hwp5_debug(...) {};
 #endif
 #if HWP3_DEBUG
 #define hwp3_debug(...) cli_dbgmsg(__VA_ARGS__)
 #else
-#define hwp3_debug(...) ;
+#define hwp3_debug(...) {};
 #endif
 #if HWPML_DEBUG
 #define hwpml_debug(...) cli_dbgmsg(__VA_ARGS__)
 #else
-#define hwpml_debug(...) ;
+#define hwpml_debug(...) {};
 #endif
 
 typedef cl_error_t (*hwp_cb)(void *cbdata, int fd, const char *filepath, cli_ctx *ctx);
@@ -175,7 +175,7 @@ static cl_error_t decompress_and_callback(cli_ctx *ctx, fmap_t *input, size_t at
         ret = cb(cbdata, ofd, tmpname, ctx);
     } else {
         /* default to scanning what we got */
-        ret = cli_magic_scan_desc(ofd, tmpname, ctx, NULL);
+        ret = cli_magic_scan_desc(ofd, tmpname, ctx, NULL, LAYER_ATTRIBUTES_NONE);
     }
 
     /* clean-up */
@@ -278,7 +278,7 @@ static char *convert_hstr_to_utf8(const char *begin, size_t sz, const char *pare
 /*** HWPOLE2 ***/
 cl_error_t cli_scanhwpole2(cli_ctx *ctx)
 {
-    fmap_t *map = *ctx->fmap;
+    fmap_t *map = ctx->fmap;
     uint32_t usize, asize;
 
     asize = (uint32_t)(map->len - sizeof(usize));
@@ -293,8 +293,8 @@ cl_error_t cli_scanhwpole2(cli_ctx *ctx)
     else
         cli_dbgmsg("HWPOLE2: Matched uncompressed prefix and size: %u == %u\n", usize, asize);
 
-    return cli_magic_scan_nested_fmap_type(map, 4, 0, ctx, CL_TYPE_ANY, NULL);
-    //return cli_magic_scan_nested_fmap_type(map, 4, 0, ctx, CL_TYPE_OLE2);
+    return cli_magic_scan_nested_fmap_type(map, 4, 0, ctx,
+                                           CL_TYPE_ANY, NULL, LAYER_ATTRIBUTES_NONE);
 }
 
 /*** HWP5 ***/
@@ -313,9 +313,6 @@ cl_error_t cli_hwp5header(cli_ctx *ctx, hwp5_header_t *hwp5)
             cli_errmsg("HWP5.x: No memory for Hwp5Header object\n");
             return CL_EMEM;
         }
-
-        /* magic */
-        cli_jsonstr(header, "Magic", (char *)hwp5->signature);
 
         /* version */
         cli_jsonint(header, "RawVersion", hwp5->version);
@@ -377,7 +374,7 @@ static cl_error_t hwp5_cb(void *cbdata, int fd, const char *filepath, cli_ctx *c
     if (fd < 0 || !ctx)
         return CL_ENULLARG;
 
-    return cli_magic_scan_desc(fd, filepath, ctx, NULL);
+    return cli_magic_scan_desc(fd, filepath, ctx, NULL, LAYER_ATTRIBUTES_NONE);
 }
 
 cl_error_t cli_scanhwp5_stream(cli_ctx *ctx, hwp5_header_t *hwp5, char *name, int fd, const char *filepath)
@@ -397,7 +394,7 @@ cl_error_t cli_scanhwp5_stream(cli_ctx *ctx, hwp5_header_t *hwp5, char *name, in
 
             if (hwp5->flags & HWP5_PASSWORD) {
                 cli_dbgmsg("HWP5.x: Password encrypted stream, scanning as-is\n");
-                return cli_magic_scan_desc(fd, filepath, ctx, name);
+                return cli_magic_scan_desc(fd, filepath, ctx, name, LAYER_ATTRIBUTES_NONE);
             }
 
             if (hwp5->flags & HWP5_COMPRESSED) {
@@ -440,17 +437,17 @@ cl_error_t cli_scanhwp5_stream(cli_ctx *ctx, hwp5_header_t *hwp5, char *name, in
     }
 
     /* normal streams */
-    return cli_magic_scan_desc(fd, filepath, ctx, name);
+    return cli_magic_scan_desc(fd, filepath, ctx, name, LAYER_ATTRIBUTES_NONE);
 }
 
 /*** HWP3 ***/
 
 /* all fields use little endian and unicode encoding, if appliable */
 
-//File Identification Information - (30 total bytes)
+// File Identification Information - (30 total bytes)
 #define HWP3_IDENTITY_INFO_SIZE 30
 
-//Document Information - (128 total bytes)
+// Document Information - (128 total bytes)
 #define HWP3_DOCINFO_SIZE 128
 
 #define DI_WRITEPROT 24    /* offset 24 (4 bytes) - write protection */
@@ -468,7 +465,7 @@ struct hwp3_docinfo {
     uint16_t di_infoblksize;
 };
 
-//Document Summary - (1008 total bytes)
+// Document Summary - (1008 total bytes)
 #define HWP3_DOCSUMMARY_SIZE 1008
 struct hwp3_docsummary_entry {
     size_t offset;
@@ -486,7 +483,7 @@ struct hwp3_docsummary_entry {
     {896, "Etc2"}};
 #define NUM_DOCSUMMARY_FIELDS sizeof(hwp3_docsummary_fields) / sizeof(struct hwp3_docsummary_entry)
 
-//Document Paragraph Information - (43 or 230 total bytes)
+// Document Paragraph Information - (43 or 230 total bytes)
 #define HWP3_PARAINFO_SIZE_S 43
 #define HWP3_PARAINFO_SIZE_L 230
 #define HWP3_LINEINFO_SIZE 14
@@ -515,8 +512,8 @@ static inline cl_error_t parsehwp3_docinfo(cli_ctx *ctx, size_t offset, struct h
     const uint8_t *hwp3_ptr;
     cl_error_t iret;
 
-    //TODO: use fmap_readn?
-    if (!(hwp3_ptr = fmap_need_off_once(*ctx->fmap, offset, HWP3_DOCINFO_SIZE))) {
+    // TODO: use fmap_readn?
+    if (!(hwp3_ptr = fmap_need_off_once(ctx->fmap, offset, HWP3_DOCINFO_SIZE))) {
         cli_errmsg("HWP3.x: Failed to read fmap for hwp docinfo\n");
         return CL_EMAP;
     }
@@ -570,7 +567,7 @@ static inline cl_error_t parsehwp3_docinfo(cli_ctx *ctx, size_t offset, struct h
 
         /* Printed File Name */
         str = convert_hstr_to_utf8((char *)(hwp3_ptr + DI_PNAME), 40, "HWP3.x", &iret);
-        if (!str || (iret == CL_EMEM))
+        if (!str)
             return CL_EMEM;
 
         if (iret == CL_VIRUS)
@@ -582,7 +579,7 @@ static inline cl_error_t parsehwp3_docinfo(cli_ctx *ctx, size_t offset, struct h
 
         /* Annotation */
         str = convert_hstr_to_utf8((char *)(hwp3_ptr + DI_ANNOTE), 24, "HWP3.x", &iret);
-        if (!str || (iret == CL_EMEM))
+        if (!str)
             return CL_EMEM;
 
         if (iret == CL_VIRUS)
@@ -610,7 +607,7 @@ static inline cl_error_t parsehwp3_docsummary(cli_ctx *ctx, size_t offset)
     if (!SCAN_COLLECT_METADATA)
         return CL_SUCCESS;
 
-    if (!(hwp3_ptr = fmap_need_off_once(*ctx->fmap, offset, HWP3_DOCSUMMARY_SIZE))) {
+    if (!(hwp3_ptr = fmap_need_off_once(ctx->fmap, offset, HWP3_DOCSUMMARY_SIZE))) {
         cli_errmsg("HWP3.x: Failed to read fmap for hwp docinfo\n");
         return CL_EMAP;
     }
@@ -623,7 +620,7 @@ static inline cl_error_t parsehwp3_docsummary(cli_ctx *ctx, size_t offset)
 
     for (i = 0; i < NUM_DOCSUMMARY_FIELDS; i++) {
         str = convert_hstr_to_utf8((char *)(hwp3_ptr + hwp3_docsummary_fields[i].offset), 112, "HWP3.x", &iret);
-        if (!str || (iret == CL_EMEM))
+        if (!str)
             return CL_EMEM;
 
         if (iret == CL_VIRUS) {
@@ -1521,14 +1518,14 @@ static inline cl_error_t parsehwp3_infoblk_1(cli_ctx *ctx, fmap_t *dmap, size_t 
     cl_error_t ret = CL_SUCCESS;
 
     uint32_t infoid, infolen;
-    fmap_t *map = (dmap ? dmap : *ctx->fmap);
+    fmap_t *map = (dmap ? dmap : ctx->fmap);
     int i, count;
     long long unsigned infoloc = (long long unsigned)(*offset);
 #if HWP3_DEBUG
     char field[HWP3_FIELD_LENGTH];
 #endif
 #if HAVE_JSON
-    json_object *infoblk_1, *contents, *counter, *entry;
+    json_object *infoblk_1, *contents = NULL, *counter, *entry = NULL;
 #endif
 
     hwp3_debug("HWP3.x: Information Block @ offset %llu\n", infoloc);
@@ -1645,7 +1642,8 @@ static inline cl_error_t parsehwp3_infoblk_1(cli_ctx *ctx, fmap_t *dmap, size_t 
 #endif
             /* 32 bytes for extra data fields */
             if (infolen > 0)
-                ret = cli_magic_scan_nested_fmap_type(map, *offset + 32, infolen - 32, ctx, CL_TYPE_ANY, NULL);
+                ret = cli_magic_scan_nested_fmap_type(map, *offset + 32, infolen - 32, ctx,
+                                                      CL_TYPE_ANY, NULL, LAYER_ATTRIBUTES_NONE);
             break;
         case 2: /* OLE2 Data */
             hwp3_debug("HWP3.x: Information Block[%llu]: TYPE: OLE2 Data\n", infoloc);
@@ -1654,7 +1652,8 @@ static inline cl_error_t parsehwp3_infoblk_1(cli_ctx *ctx, fmap_t *dmap, size_t 
                 cli_jsonstr(entry, "Type", "OLE2 Data");
 #endif
             if (infolen > 0)
-                ret = cli_magic_scan_nested_fmap_type(map, *offset, infolen, ctx, CL_TYPE_ANY, NULL);
+                ret = cli_magic_scan_nested_fmap_type(map, *offset, infolen, ctx,
+                                                      CL_TYPE_ANY, NULL, LAYER_ATTRIBUTES_NONE);
             break;
         case 3: /* Hypertext/Hyperlink Information */
             hwp3_debug("HWP3.x: Information Block[%llu]: TYPE: Hypertext/Hyperlink Information\n", infoloc);
@@ -1682,7 +1681,8 @@ static inline cl_error_t parsehwp3_infoblk_1(cli_ctx *ctx, fmap_t *dmap, size_t 
                 hwp3_debug("HWP3.x: Information Block[%llu]: %d: NAME: %s\n", infoloc, i, field);
 #endif
                 /* scanning macros - TODO - check numbers */
-                ret = cli_magic_scan_nested_fmap_type(map, *offset + (617 * i) + 288, 325, ctx, CL_TYPE_ANY, NULL);
+                ret = cli_magic_scan_nested_fmap_type(map, *offset + (617 * i) + 288, 325, ctx,
+                                                      CL_TYPE_ANY, NULL, LAYER_ATTRIBUTES_NONE);
             }
             break;
         case 4: /* Presentation Information */
@@ -1719,7 +1719,8 @@ static inline cl_error_t parsehwp3_infoblk_1(cli_ctx *ctx, fmap_t *dmap, size_t 
 #endif
             /* 324 bytes for extra data fields */
             if (infolen > 0)
-                ret = cli_magic_scan_nested_fmap_type(map, *offset + 324, infolen - 324, ctx, CL_TYPE_ANY, NULL);
+                ret = cli_magic_scan_nested_fmap_type(map, *offset + 324, infolen - 324, ctx,
+                                                      CL_TYPE_ANY, NULL, LAYER_ATTRIBUTES_NONE);
             break;
         case 0x100: /* Table Extension */
             hwp3_debug("HWP3.x: Information Block[%llu]: TYPE: Table Extension\n", infoloc);
@@ -1740,7 +1741,8 @@ static inline cl_error_t parsehwp3_infoblk_1(cli_ctx *ctx, fmap_t *dmap, size_t 
         default:
             cli_warnmsg("HWP3.x: Information Block[%llu]: TYPE: UNKNOWN(%u)\n", infoloc, infoid);
             if (infolen > 0)
-                ret = cli_magic_scan_nested_fmap_type(map, *offset, infolen, ctx, CL_TYPE_ANY, NULL);
+                ret = cli_magic_scan_nested_fmap_type(map, *offset, infolen, ctx,
+                                                      CL_TYPE_ANY, NULL, LAYER_ATTRIBUTES_NONE);
     }
 
     *offset += infolen;
@@ -1755,7 +1757,7 @@ static cl_error_t hwp3_cb(void *cbdata, int fd, const char *filepath, cli_ctx *c
     int i, p = 0, last = 0;
     uint16_t nstyles;
 #if HAVE_JSON
-    json_object *fonts;
+    json_object *fonts = NULL;
 #endif
 
     UNUSEDPARAM(filepath);
@@ -1783,7 +1785,7 @@ static cl_error_t hwp3_cb(void *cbdata, int fd, const char *filepath, cli_ctx *c
     } else {
         hwp3_debug("HWP3.x: Document Content Stream starts @ offset %zu\n", offset);
 
-        map  = *ctx->fmap;
+        map  = ctx->fmap;
         dmap = NULL;
     }
 
@@ -1859,15 +1861,10 @@ static cl_error_t hwp3_cb(void *cbdata, int fd, const char *filepath, cli_ctx *c
     while (!last && ((ret = parsehwp3_infoblk_1(ctx, map, &offset, &last)) == CL_SUCCESS)) continue;
 
     /* scan the uncompressed stream - both compressed and uncompressed cases [ALLMATCH] */
-    if ((ret == CL_SUCCESS) || ((SCAN_ALLMATCHES) && (ret == CL_VIRUS))) {
-        cl_error_t subret = ret;
-        size_t dlen       = offset - start;
+    if (ret == CL_SUCCESS) {
+        size_t dlen = offset - start;
 
-        ret = cli_magic_scan_nested_fmap_type(map, start, dlen, ctx, CL_TYPE_ANY, NULL);
-        //ret = cli_magic_scan_nested_fmap_type(map, 0, 0, ctx, CL_TYPE_ANY);
-
-        if (ret == CL_SUCCESS)
-            ret = subret;
+        ret = cli_magic_scan_nested_fmap_type(map, start, dlen, ctx, CL_TYPE_ANY, NULL, LAYER_ATTRIBUTES_NONE);
     }
 
     if (dmap)
@@ -1881,13 +1878,10 @@ cl_error_t cli_scanhwp3(cli_ctx *ctx)
 
     struct hwp3_docinfo docinfo;
     size_t offset = 0, new_offset = 0;
-    fmap_t *map = *ctx->fmap;
+    fmap_t *map = ctx->fmap;
 
 #if HAVE_JSON
     /*
-    // magic
-    cli_jsonstr(header, "Magic", hwp5->signature);
-
     // version
     cli_jsonint(header, "RawVersion", hwp5->version);
     */
@@ -1921,7 +1915,7 @@ cl_error_t cli_scanhwp3(cli_ctx *ctx)
     }
 
     if (docinfo.di_compressed)
-        ret = decompress_and_callback(ctx, *ctx->fmap, offset, 0, "HWP3.x", hwp3_cb, NULL);
+        ret = decompress_and_callback(ctx, ctx->fmap, offset, 0, "HWP3.x", hwp3_cb, NULL);
     else
         ret = hwp3_cb(&offset, 0, ctx->sub_filepath, ctx);
 
@@ -1978,7 +1972,7 @@ static cl_error_t hwpml_scan_cb(void *cbdata, int fd, const char *filepath, cli_
     if (fd < 0 || !ctx)
         return CL_ENULLARG;
 
-    return cli_magic_scan_desc(fd, filepath, ctx, NULL);
+    return cli_magic_scan_desc(fd, filepath, ctx, NULL, LAYER_ATTRIBUTES_NONE);
 }
 
 static cl_error_t hwpml_binary_cb(int fd, const char *filepath, cli_ctx *ctx, int num_attribs, struct attrib_entry *attribs, void *cbdata)
@@ -2014,7 +2008,7 @@ static cl_error_t hwpml_binary_cb(int fd, const char *filepath, cli_ctx *ctx, in
     /* decode the binary data if needed - base64 */
     if (enc < 0) {
         cli_errmsg("HWPML: Unrecognized encoding method\n");
-        return cli_magic_scan_desc(fd, filepath, ctx, NULL);
+        return cli_magic_scan_desc(fd, filepath, ctx, NULL, LAYER_ATTRIBUTES_NONE);
     } else if (enc == 1) {
         STATBUF statbuf;
         fmap_t *input;
@@ -2046,7 +2040,7 @@ static cl_error_t hwpml_binary_cb(int fd, const char *filepath, cli_ctx *ctx, in
         funmap(input);
         if (!decoded) {
             cli_errmsg("HWPML: Failed to get base64 decode binary data\n");
-            return cli_magic_scan_desc(fd, filepath, ctx, NULL);
+            return cli_magic_scan_desc(fd, filepath, ctx, NULL, LAYER_ATTRIBUTES_NONE);
         }
 
         /* open file for writing and scanning */
@@ -2125,7 +2119,7 @@ cl_error_t cli_scanhwpml(cli_ctx *ctx)
         return CL_ENULLARG;
 
     memset(&cbdata, 0, sizeof(cbdata));
-    cbdata.map = *ctx->fmap;
+    cbdata.map = ctx->fmap;
 
     reader = xmlReaderForIO(msxml_read_cb, NULL, &cbdata, "hwpml.xml", NULL, CLAMAV_MIN_XMLREADER_FLAGS);
     if (!reader) {

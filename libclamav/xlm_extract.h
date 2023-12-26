@@ -1,7 +1,7 @@
 /*
  *  Extract XLM (Excel 4.0) macro source code for component MS Office Documents
  *
- *  Copyright (C) 2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2020-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Jonas Zaddach
  *
@@ -21,7 +21,7 @@
  */
 
 /**
- * Throughout this file, I refer to the Microsoft Office Excel 97 - 2007 Binary File Format (.xls) Specification, which can be found 
+ * Throughout this file, I refer to the Microsoft Office Excel 97 - 2007 Binary File Format (.xls) Specification, which can be found
  * here: http://download.microsoft.com/download/5/0/1/501ED102-E53F-4CE0-AA6B-B0F93629DDC6/Office/Excel97-2007BinaryFileFormat(xls)Specification.pdf
  */
 
@@ -32,8 +32,17 @@
 #include "clamav-types.h"
 #include "uniq.h"
 
-//Page 58 CONTINUE record Microsoft Office Excel97-2007Binary File Format (.xls) Specification
+// Page 58 CONTINUE record Microsoft Office Excel97-2007Binary File Format (.xls) Specification
 #define BIFF8_MAX_RECORD_LENGTH 8228
 
-cl_error_t cli_xlm_extract_macros(const char *dir, cli_ctx *ctx, struct uniq *U, char *hash, uint32_t which);
+typedef enum biff8_opcode {
+    OPC_FORMULA         = 0x06,
+    OPC_NAME            = 0x18,
+    OPC_CONTINUE        = 0x3C,
+    OPC_BOUNDSHEET      = 0x85,
+    OPC_MSODRAWINGGROUP = 0xEB,
+    OPC_STRING          = 0x207,
+} biff8_opcode;
+
+cl_error_t cli_extract_xlm_macros_and_images(const char *dir, cli_ctx *ctx, char *hash, uint32_t which);
 #endif

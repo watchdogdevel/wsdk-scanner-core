@@ -1,7 +1,7 @@
 /*
  *  Javascript normalizer.
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -69,10 +69,8 @@ typedef struct scanner {
     enum tokenizer_state last_state;
 } * yyscan_t;
 
-typedef int YY_BUFFER_STATE;
-
 static int yylex(YYSTYPE *lvalp, yyscan_t);
-static YY_BUFFER_STATE yy_scan_bytes(const char *, size_t, yyscan_t scanner);
+static void yy_scan_bytes(const char *, size_t, yyscan_t scanner);
 static const char *yyget_text(yyscan_t scanner);
 static int yyget_leng(yyscan_t scanner);
 static int yylex_init(yyscan_t *ptr_yy_globals);
@@ -248,9 +246,9 @@ static struct scope *scope_done(struct scope *s)
 
 static const char *scope_declare(struct scope *s, const char *token, const size_t len, struct parser_state *state)
 {
-    const struct cli_element *el = cli_hashtab_insert(&s->id_map, token, len, state->var_uniq++);
+    const struct cli_element *el = cli_hashtab_insert(&s->id_map, token, len, (const cli_element_data)(state->var_uniq++));
     /* cli_hashtab_insert either finds an already existing entry, or allocates a
-	 * new one, we return the allocated string */
+     * new one, we return the allocated string */
     return el ? el->key : NULL;
 }
 
@@ -259,28 +257,28 @@ static const char *scope_use(struct scope *s, const char *token, const size_t le
     const struct cli_element *el = cli_hashtab_find(&s->id_map, token, len);
     if (el) {
         /* identifier already found in current scope,
-		 * return here to avoid overwriting uniq id */
+         * return here to avoid overwriting uniq id */
         return el->key;
     }
     /* identifier not yet in current scope's hashtab, add with ID -1.
-	 * Later if we find a declaration it will automatically assign a uniq ID
-	 * to it. If not, we'll know that we have to push ID == -1 tokens to an
-	 * outer scope.*/
-    el = cli_hashtab_insert(&s->id_map, token, len, -1);
+     * Later if we find a declaration it will automatically assign a uniq ID
+     * to it. If not, we'll know that we have to push ID == -1 tokens to an
+     * outer scope.*/
+    el = cli_hashtab_insert(&s->id_map, token, len, (const cli_element_data)-1);
     return el ? el->key : NULL;
 }
 
-static long scope_lookup(struct scope *s, const char *token, const size_t len)
+static size_t scope_lookup(struct scope *s, const char *token, const size_t len)
 {
     while (s) {
         const struct cli_element *el = cli_hashtab_find(&s->id_map, token, len);
-        if (el && el->data != -1) {
-            return el->data;
+        if (el && (size_t)el->data != (size_t)-1) {
+            return (size_t)el->data;
         }
         /* not found in current scope, try in outer scope */
         s = s->parent;
     }
-    return -1;
+    return (size_t)-1;
 }
 
 static cl_error_t tokens_ensure_capacity(struct tokens *tokens, size_t cap)
@@ -381,12 +379,12 @@ static char output_token(const yystype *token, struct scope *scope, struct buf *
         case TOK_IDENTIFIER_NAME:
             output_space(lastchar, 'a', out);
             if (s) {
-                long id = scope_lookup(scope, s, strlen(s));
-                if (id == -1) {
+                size_t id = scope_lookup(scope, s, strlen(s));
+                if (id == (size_t)-1) {
                     /* identifier not normalized */
                     buf_outs(s, out);
                 } else {
-                    snprintf(sbuf, sizeof(sbuf), "n%03ld", id);
+                    snprintf(sbuf, sizeof(sbuf), "n%03zu", id);
                     buf_outs(sbuf, out);
                 }
             }
@@ -471,22 +469,44 @@ static void scope_free_all(struct scope *p)
 }
 
 size_t cli_strtokenize(char *buffer, const char delim, const size_t token_count, const char **tokens);
-static int match_parameters(const yystype *tokens, const char **param_names, size_t count)
+
+static int match_parameters(const yystype *tokens, size_t num_tokens, const char **param_names, size_t num_param_names)
 {
-    size_t i, j = 0;
-    if (tokens[0].type != TOK_PAR_OPEN)
+    size_t token_idx = 1;
+    size_t names_idx = 0;
+
+    if (tokens[0].type != TOK_PAR_OPEN) {
         return -1;
-    i = 1;
-    while (count--) {
-        const char *token_val = TOKEN_GET(&tokens[i], cstring);
-        if (tokens[i].type != TOK_IDENTIFIER_NAME ||
-            !token_val ||
-            strcmp(token_val, param_names[j++]))
+    }
+    if (token_idx >= num_tokens) {
+        return -1;
+    }
+
+    while (names_idx < num_param_names) {
+        num_param_names--;
+
+        const char *token_val = TOKEN_GET(&tokens[token_idx], cstring);
+        if (token_val == NULL) {
             return -1;
-        ++i;
-        if ((count && tokens[i].type != TOK_COMMA) || (!count && tokens[i].type != TOK_PAR_CLOSE))
+        }
+
+        if ((token_idx >= num_tokens) ||
+            (tokens[token_idx].type != TOK_IDENTIFIER_NAME)) {
             return -1;
-        ++i;
+        }
+        token_idx++;
+
+        if ((0 != strcmp(token_val, param_names[names_idx]))) {
+            return -1;
+        }
+        names_idx++;
+
+        if ((token_idx >= num_tokens) ||
+            (num_param_names > 0 && tokens[token_idx].type != TOK_COMMA) ||
+            (num_param_names == 0 && tokens[token_idx].type != TOK_PAR_CLOSE)) {
+            return -1;
+        }
+        token_idx++;
     }
     return 0;
 }
@@ -564,7 +584,6 @@ static void decode_de(yystype *params[], struct text_buffer *txtbuf)
     const char *o;
     const char **tokens;
 
-    memset(txtbuf, 0, sizeof(*txtbuf));
     if (!p || !k)
         return;
     for (o = k; *o; o++)
@@ -622,6 +641,8 @@ static void handle_de(yystype *tokens, size_t start, const size_t cnt, const cha
     size_t i, nesting = 1, j;
     yystype *parameters[6];
     const size_t parameters_cnt = 6;
+    yystype *first              = NULL;
+    yystype *last               = NULL;
 
     for (i = start; i < cnt; i++) {
         if (tokens[i].type == TOK_FUNCTION) {
@@ -649,13 +670,19 @@ static void handle_de(yystype *tokens, size_t start, const size_t cnt, const cha
                 for (j = 0; j < parameters_cnt && i < cnt; j++) {
                     parameters[j] = &tokens[i++];
                     if (j != parameters_cnt - 1)
-                        while (tokens[i].type != TOK_COMMA && i < cnt) i++;
+                        while (i < cnt && tokens[i].type != TOK_COMMA) i++;
                     else
-                        while (tokens[i].type != TOK_PAR_CLOSE && i < cnt) i++;
+                        while (i < cnt && tokens[i].type != TOK_PAR_CLOSE) i++;
                     i++;
                 }
-                if (j == parameters_cnt)
+                if (j == parameters_cnt) {
+                    if (NULL == first) {
+                        first = parameters[0];
+                    }
+                    last = parameters[parameters_cnt - 1];
+
                     decode_de(parameters, &res->txtbuf);
+                }
             }
         }
     } else {
@@ -666,23 +693,32 @@ static void handle_de(yystype *tokens, size_t start, const size_t cnt, const cha
         for (j = 0; j < parameters_cnt && i < cnt; j++) {
             parameters[j] = &tokens[i++];
             if (j != parameters_cnt - 1)
-                while (tokens[i].type != TOK_COMMA && i < cnt) i++;
+                while (i < cnt && tokens[i].type != TOK_COMMA) i++;
             else
-                while (tokens[i].type != TOK_PAR_CLOSE && i < cnt) i++;
+                while (i < cnt && tokens[i].type != TOK_PAR_CLOSE) i++;
             i++;
         }
-        if (j == parameters_cnt)
+        if (j == parameters_cnt) {
+            if (NULL == first) {
+                first = parameters[0];
+            }
+            last = parameters[parameters_cnt - 1];
+
             decode_de(parameters, &res->txtbuf);
+        }
     }
-    if (parameters[0] && parameters[parameters_cnt - 1]) {
-        res->pos_begin = parameters[0] - tokens;
-        res->pos_end   = parameters[parameters_cnt - 1] - tokens + 1;
-        if (tokens[res->pos_end].type == TOK_BRACKET_OPEN &&
+    if (first && last) {
+        res->pos_begin = first - tokens;
+        res->pos_end   = last - tokens + 1;
+        if (res->pos_end + 2 < cnt &&
+            tokens[res->pos_end].type == TOK_BRACKET_OPEN &&
             tokens[res->pos_end + 1].type == TOK_BRACKET_CLOSE &&
-            tokens[res->pos_end + 2].type == TOK_PAR_CLOSE)
+            tokens[res->pos_end + 2].type == TOK_PAR_CLOSE) {
             res->pos_end += 3; /* {}) */
-        else
-            res->pos_end++; /* ) */
+        } else if (res->pos_end < cnt) {
+            /* ) */
+            res->pos_end++;
+        }
     }
 }
 
@@ -751,6 +787,10 @@ static void handle_df(const yystype *tokens, size_t start, struct decode_result 
 static void handle_eval(struct tokens *tokens, size_t start, struct decode_result *res)
 {
     res->txtbuf.data = TOKEN_GET(&tokens->data[start], string);
+
+    if (start + 1 >= tokens->cnt)
+        return;
+
     if (res->txtbuf.data && tokens->data[start + 1].type == TOK_PAR_CLOSE) {
         TOKEN_SET(&tokens->data[start], string, NULL);
         res->txtbuf.pos = strlen(res->txtbuf.data);
@@ -800,6 +840,7 @@ static void run_decoders(struct parser_state *state)
     for (i = 0; i < tokens->cnt; i++) {
         const char *cstring = TOKEN_GET(&tokens->data[i], cstring);
         struct decode_result res;
+        memset(&(res.txtbuf), 0, sizeof(res.txtbuf));
         res.pos_begin = res.pos_end = 0;
         res.append                  = 0;
         if (tokens->data[i].type == TOK_FUNCTION && i + 13 < tokens->cnt) {
@@ -810,7 +851,8 @@ static void run_decoders(struct parser_state *state)
                 name    = cstring;
                 ++i;
             }
-            if (match_parameters(&tokens->data[i], de_packer_3, sizeof(de_packer_3) / sizeof(de_packer_3[0])) != -1 || match_parameters(&tokens->data[i], de_packer_2, sizeof(de_packer_2) / sizeof(de_packer_2[0])) != -1) {
+            if (-1 != match_parameters(&tokens->data[i], tokens->cnt, de_packer_3, sizeof(de_packer_3) / sizeof(de_packer_3[0])) ||
+                -1 != match_parameters(&tokens->data[i], tokens->cnt, de_packer_2, sizeof(de_packer_2) / sizeof(de_packer_2[0]))) {
                 /* find function decl. end */
                 handle_de(tokens->data, i, tokens->cnt, name, &res);
             }
@@ -818,7 +860,7 @@ static void run_decoders(struct parser_state *state)
                    cstring &&
                    !strcmp("dF", cstring) && tokens->data[i + 1].type == TOK_PAR_OPEN) {
             /* TODO: also match signature of dF function (possibly
-		   * declared using unescape */
+             * declared using unescape */
 
             handle_df(tokens->data, i + 2, &res);
         } else if (i + 2 < tokens->cnt && tokens->data[i].type == TOK_IDENTIFIER_NAME &&
@@ -839,7 +881,7 @@ static void run_decoders(struct parser_state *state)
                 cli_js_process_buffer(state, res.txtbuf.data, res.txtbuf.pos);
                 --state->rec;
             }
-            free(res.txtbuf.data);
+            FREE(res.txtbuf.data);
             /* state->tokens still refers to the embedded/nested context here */
             if (!res.append) {
                 if (CL_EARG == replace_token_range(&parent_tokens, res.pos_begin, res.pos_end, &state->tokens)) {
@@ -901,7 +943,7 @@ void cli_js_parse_done(struct parser_state *state)
     }
 
     /* we had to close unfinished strings, parenthesis,
-	 * so that the folders/decoders can run properly */
+     * so that the folders/decoders can run properly */
     run_folders(&state->tokens);
     run_decoders(state);
 
@@ -919,7 +961,7 @@ void cli_js_output(struct parser_state *state, const char *tempdir)
     snprintf(filename, 1024, "%s" PATHSEP "javascript", tempdir);
 
     buf.pos   = 0;
-    buf.outfd = open(filename, O_CREAT | O_WRONLY, 0600);
+    buf.outfd = open(filename, O_CREAT | O_WRONLY | O_BINARY, 0600);
     if (buf.outfd < 0) {
         cli_errmsg(MODULE "cannot open output file for writing: %s\n", filename);
         return;
@@ -972,19 +1014,20 @@ void cli_js_destroy(struct parser_state *state)
 void cli_js_process_buffer(struct parser_state *state, const char *buf, size_t n)
 {
     struct scope *current = state->current;
-    YYSTYPE val;
+    YYSTYPE val           = {0};
     int yv;
-    YY_BUFFER_STATE yyb;
 
     if (!state->global) {
         /* this state has either not been initialized,
-		 * or cli_js_parse_done() was already called on it */
+         * or cli_js_parse_done() was already called on it */
         cli_warnmsg(MODULE "invalid state\n");
         return;
     }
-    yyb = yy_scan_bytes(buf, n, state->scanner);
-    memset(&val, 0, sizeof(val));
+
+    yy_scan_bytes(buf, n, state->scanner);
+
     val.vtype = vtype_undefined;
+
     /* on EOF yylex will return 0 */
     while ((yv = yylex(&val, state->scanner)) != 0) {
         const char *text;
@@ -1000,7 +1043,7 @@ void cli_js_process_buffer(struct parser_state *state, const char *buf, size_t n
                 leng = yyget_leng(state->scanner);
                 if (current->last_token == TOK_DOT) {
                     /* this is a member name, don't normalize
-					*/
+                     */
                     TOKEN_SET(&val, string, cli_strdup(text));
                     val.type = TOK_UNNORM_IDENTIFIER;
                 } else {
@@ -1057,9 +1100,9 @@ void cli_js_process_buffer(struct parser_state *state, const char *buf, size_t n
                     case WaitParameterList:
                     case InsideFunctionDecl:
                         /* in a syntactically correct
-						 * file, we would already be in
-						 * the Base state when we see a {
-						 */
+                         * file, we would already be in
+                         * the Base state when we see a {
+                         */
                         current->fsm_state = Base;
                         /* fall-through */
                     case InsideVar:
@@ -1080,7 +1123,7 @@ void cli_js_process_buffer(struct parser_state *state, const char *buf, size_t n
                 if (!current->blocks) {
                     if (current->parent) {
                         /* add dummy FUNCTION token to
-						 * mark function end */
+                         * mark function end */
                         TOKEN_SET(&val, cstring, "}");
                         add_token(state, &val);
                         TOKEN_SET(&val, scope, NULL);
@@ -1105,17 +1148,17 @@ void cli_js_process_buffer(struct parser_state *state, const char *buf, size_t n
             case TOK_COMMA:
                 if (current->fsm_state == InsideInitializer && current->brackets == 0 && current->blocks == 0) {
                     /* initializer ended only if we
-					 * encountered a comma, and [] are
-					 * balanced.
-					 * This avoids switching state on:
-					 * var x = [4,y,u];*/
+                     * encountered a comma, and [] are
+                     * balanced.
+                     * This avoids switching state on:
+                     * var x = [4,y,u];*/
                     current->fsm_state = InsideVar;
                 }
                 break;
             case TOK_SEMICOLON:
                 if (current->brackets == 0 && current->blocks == 0) {
                     /* avoid switching state on unbalanced []:
-					 * var x = [test;testi]; */
+                     * var x = [test;testi]; */
                     current->fsm_state = Base;
                 }
                 break;
@@ -1660,7 +1703,7 @@ static int parseOperator(YYSTYPE *lvalp, yyscan_t scanner)
 {
     size_t len = MIN(5, scanner->insize - scanner->pos);
     while (len) {
-        const struct operator*kw = in_op_set(&scanner->in[scanner->pos], len);
+        const struct operator* kw = in_op_set(&scanner->in[scanner->pos], len);
         if (kw) {
             TOKEN_SET(lvalp, cstring, kw->name);
             scanner->pos += len;
@@ -1688,14 +1731,14 @@ static int yylex_destroy(yyscan_t scanner)
     return 0;
 }
 
-static int yy_scan_bytes(const char *p, size_t len, yyscan_t scanner)
+static void yy_scan_bytes(const char *p, size_t len, yyscan_t scanner)
 {
     scanner->in         = p;
     scanner->insize     = len;
     scanner->pos        = 0;
     scanner->lastpos    = -1;
     scanner->last_state = Dummy;
-    return 0;
+    return;
 }
 
 static const char *yyget_text(yyscan_t scanner)
@@ -1724,7 +1767,7 @@ static int yylex(YYSTYPE *lvalp, yyscan_t scanner)
             scanner->pos++;
         }
         /* its not necesarely an infloop if it changed
-		 * state, and it shouldn't infloop between states */
+         * state, and it shouldn't infloop between states */
     }
     scanner->lastpos    = scanner->pos;
     scanner->last_state = scanner->state;
@@ -1801,7 +1844,7 @@ static int yylex(YYSTYPE *lvalp, yyscan_t scanner)
             case SinglelineComment:
                 while (scanner->pos < scanner->insize) {
                     /* htmlnorm converts \n to space, so
-					 * stop on space too */
+                     * stop on space too */
                     if (in[scanner->pos] == '\n' || in[scanner->pos] == ' ')
                         break;
                     scanner->pos++;

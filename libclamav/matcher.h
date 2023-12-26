@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -35,7 +35,21 @@ struct cli_target_info {
     int status; /* 0 == not initialised, 1 == initialised OK, -1 == error */
 };
 
+/**
+ * Initialize a struct cli_target_info so that it's ready to have its exeinfo
+ * populated by the call to cli_targetinfo and/or destroyed by
+ * cli_targetinfo_destroy.
+ *
+ * @param info a pointer to the struct cli_target_info to initialize
+ */
 void cli_targetinfo_init(struct cli_target_info *info);
+
+/**
+ * Free resources associated with a struct cli_target_info initialized
+ * via cli_targetinfo_init
+ *
+ * @param info a pointer to the struct cli_target_info to destroy
+ */
 void cli_targetinfo_destroy(struct cli_target_info *info);
 
 #include "matcher-ac.h"
@@ -85,6 +99,8 @@ struct cli_lsig_tdb {
     uint32_t       *macro_ptids;
 #ifdef USE_MPOOL
     mpool_t        *mempool;
+#else
+    void           *_padding_mempool;
 #endif
 };
 
@@ -108,9 +124,11 @@ struct cli_ac_lsig {
         char *logic;
         uint8_t *code_start;
     } u;
-    const char *virname;
+    char *virname;
     struct cli_lsig_tdb tdb;
 };
+
+typedef void *fuzzyhashmap_t;
 
 struct cli_matcher {
     unsigned int type;
@@ -150,11 +168,21 @@ struct cli_matcher {
     uint32_t bcomp_metas;
     struct cli_bcomp_meta **bcomp_metatable;
 
+    /* Fuzzy Image Hash */
+    fuzzyhashmap_t fuzzy_hashmap;
+
     /* Bytecode Tracker */
     uint32_t linked_bcs;
 
+    /*Store pointers to malloced trans values so that they can be more easily freed*/
+    struct cli_ac_node ***trans_array;
+    size_t trans_cnt;
+    size_t trans_capacity;
+
 #ifdef USE_MPOOL
     mpool_t *mempool;
+#else
+    void *_padding_mempool;
 #endif
 };
 
@@ -163,8 +191,8 @@ struct cli_cdb {
     cli_file_t ctype;        /* container type */
     regex_t name;            /* filename regex */
     size_t csize[2];         /* container size (min, max); if csize[0] != csize[1]
-			                     * then value of 0 makes the field ignored
-			                     */
+                              * then value of 0 makes the field ignored
+                              */
     size_t fsizec[2];        /* file size in container */
     size_t fsizer[2];        /* real file size */
     int encrypted;           /* file is encrypted; 2 == ignore */
@@ -175,36 +203,54 @@ struct cli_cdb {
     struct cli_cdb *next;
 };
 
-#define CLI_MAX_TARGETS 2 /* maximum filetypes for a specific target */
+typedef enum {
+    TARGET_GENERIC  = 0,
+    TARGET_PE       = 1,
+    TARGET_OLE2     = 2,
+    TARGET_HTML     = 3,
+    TARGET_MAIL     = 4,
+    TARGET_GRAPHICS = 5,
+    TARGET_ELF      = 6,
+    TARGET_ASCII    = 7,
+    TARGET_NOT_USED = 8,
+    TARGET_MACHO    = 9,
+    TARGET_PDF      = 10,
+    TARGET_FLASH    = 11,
+    TARGET_JAVA     = 12,
+    TARGET_INTERNAL = 13,
+    TARGET_OTHER    = 14,
+} cli_target_t;
+
+#define CLI_MAX_TARGETS 10 /* maximum filetypes for a specific target */
 struct cli_mtarget {
     cli_file_t target[CLI_MAX_TARGETS];
     const char *name;
-    uint8_t idx; /* idx of matcher */
+    cli_target_t idx; /* idx of matcher */
     uint8_t ac_only;
     uint8_t enable_prefiltering;
     uint8_t target_count; /* must be synced with non-zero values in the target array */
 };
 
-// clang-format off
-
 #define CLI_MTARGETS 15
-static const struct cli_mtarget cli_mtargets[CLI_MTARGETS] =  {
-    { {0, 0},                                   "GENERIC",      0,  0, 1, 1 },
-    { {CL_TYPE_MSEXE, 0},                       "PE",           1,  0, 1, 1 },
-    { {CL_TYPE_MSOLE2, 0},                      "OLE2",         2,  1, 0, 1 },
-    { {CL_TYPE_HTML, 0},                        "HTML",         3,  1, 0, 1 },
-    { {CL_TYPE_MAIL, 0},                        "MAIL",         4,  1, 1, 1 },
-    { {CL_TYPE_GRAPHICS, 0},                    "GRAPHICS",     5,  1, 0, 1 },
-    { {CL_TYPE_ELF, 0},                         "ELF",          6,  1, 0, 1 },
-    { {CL_TYPE_TEXT_ASCII, 0},                  "ASCII",        7,  1, 1, 1 },
-    { {CL_TYPE_ERROR, 0},                       "NOT USED",     8,  1, 0, 1 },
-    { {CL_TYPE_MACHO, CL_TYPE_MACHO_UNIBIN},    "MACH-O",       9,  1, 0, 2 },
-    { {CL_TYPE_PDF, 0},                         "PDF",         10,  1, 0, 1 },
-    { {CL_TYPE_SWF, 0},                         "FLASH",       11,  1, 0, 1 },
-    { {CL_TYPE_JAVA, 0},                        "JAVA",        12,  1, 0, 1 },
-    { {CL_TYPE_INTERNAL, 0},                    "INTERNAL",    13,  1, 0, 1 },
-    { {CL_TYPE_OTHER, 0},                       "OTHER",       14,  1, 0, 1 }
-};
+static const struct cli_mtarget cli_mtargets[CLI_MTARGETS] = {
+    /* All types for target, name, idx, ac_only, pre-filtering?, # of types */
+    {{CL_TYPE_ANY, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "GENERIC", TARGET_GENERIC, 0, 1, 1},
+    {{CL_TYPE_MSEXE, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "PE", TARGET_PE, 0, 1, 1},
+    {{CL_TYPE_MSOLE2, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "OLE2", TARGET_OLE2, 1, 0, 1},
+    {{CL_TYPE_HTML, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "HTML", TARGET_HTML, 1, 0, 1},
+    {{CL_TYPE_MAIL, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "MAIL", TARGET_MAIL, 1, 1, 1},
+    {{CL_TYPE_GRAPHICS, CL_TYPE_GIF, CL_TYPE_PNG, CL_TYPE_JPEG, CL_TYPE_TIFF, 0, 0, 0, 0, 0}, "GRAPHICS", TARGET_GRAPHICS, 1, 0, 5},
+    {{CL_TYPE_ELF, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "ELF", TARGET_ELF, 1, 0, 1},
+    {{CL_TYPE_TEXT_ASCII, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "ASCII", TARGET_ASCII, 1, 1, 1},
+    {{CL_TYPE_ERROR, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "NOT USED", TARGET_NOT_USED, 1, 0, 1},
+    {{CL_TYPE_MACHO, CL_TYPE_MACHO_UNIBIN, 0, 0, 0, 0, 0, 0, 0, 0}, "MACH-O", TARGET_MACHO, 1, 0, 2},
+    {{CL_TYPE_PDF, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "PDF", TARGET_PDF, 1, 0, 1},
+    {{CL_TYPE_SWF, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "FLASH", TARGET_FLASH, 1, 0, 1},
+    {{CL_TYPE_JAVA, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "JAVA", TARGET_JAVA, 1, 0, 1},
+    {{CL_TYPE_INTERNAL, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "INTERNAL", TARGET_INTERNAL, 1, 0, 1},
+    {{CL_TYPE_OTHER, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "OTHER", TARGET_OTHER, 1, 0, 1}};
+
+// clang-format off
 
 #define CLI_OFF_ANY         0xffffffff
 #define CLI_OFF_NONE        0xfffffffe
@@ -223,18 +269,32 @@ static const struct cli_mtarget cli_mtargets[CLI_MTARGETS] =  {
 /**
  * @brief Non-magic scan matching using a file buffer for input.  Older API
  *
- * This function is lower-level, requiring a call to `cli_exp_eval()` after the
- * match to evaluate logical signatures and yara rules.
- *
+ * This function is lower-level than the *magic_scan* functions from scanners.
  * This function does not perform file type magic identification and does not use
  * the file format scanners.
  *
- * @param buffer    The buffer to be matched.
- * @param length    The length of the buffer or amount of bytets to match.
- * @param offset    Offset into the buffer from which to start matching.
- * @param ctx       The scanning context.
- * @param ftype     If specified, may limit signature matching trie by target type corresponding with the specified CL_TYPE
- * @param acdata    [in/out] A list of pattern maching data structs to contain match results, one for each pattern matching trie.
+ * Unlike the similar functions `cli_scan_desc()` and `cli_scan_fmap()` (below),
+ * this function:
+ *
+ * - REQUIRES a call to `cli_exp_eval()` after the match to evaluate logical
+ *   signatures and yara rules.
+ *
+ * - Does NOT support filetype detection.
+ *
+ * - Does NOT perform hash-based matching.
+ *
+ * - Does NOT support AC, BM, or PCRE relative-offset signature matching.
+ *
+ * - DOES support passing in externally initialized AC matcher data
+ *
+ * @param buffer            The buffer to be matched.
+ * @param length            The length of the buffer or amount of bytets to match.
+ * @param offset            Offset into the buffer from which to start matching.
+ * @param ctx               The scanning context.
+ * @param ftype             If specified, may limit signature matching trie by target type corresponding with the specified CL_TYPE
+ * @param[in,out] acdata    (optional) A list of pattern maching data structs to contain match results, one for generic signatures and one for target-specific signatures.
+ *                          If not provided, the matcher results are lost, outside of this function's return value.
+ *                          Required if you want to evaluate logical expressions afterwards.
  * @return cl_error_t
  */
 cl_error_t cli_scan_buff(const unsigned char *buffer, uint32_t length, uint32_t offset, cli_ctx *ctx, cli_file_t ftype, struct cli_ac_data **acdata);
@@ -242,38 +302,53 @@ cl_error_t cli_scan_buff(const unsigned char *buffer, uint32_t length, uint32_t 
 /**
  * @brief Non-magic scan matching using a file descriptor for input.
  *
+ * This function is lower-level than the *magic_scan* functions from scanners.
  * This function does not perform file type magic identification and does not use
  * the file format scanners.
  *
- * This function uses the newer cli_scan_fmap() scanning API.
+ * This function does signature matching for generic signatures, target-specific
+ * signatures, and file type recognition signatures to detect embedded files or
+ * to correct the current file type.
  *
- * @param desc      File descriptor to be used for input
- * @param ctx       The scanning context.
- * @param ftype     If specified, may limit signature matching trie by target type corresponding with the specified CL_TYPE
- * @param ftonly    Boolean indicating if the scan is for file-type detection only.
- * @param ftoffset  [out] A list of file type signature matches with their corresponding offsets.
- * @param acmode    Use AC_SCAN_VIR and AC_SCAN_FT to set scanning modes.
- * @param acres     [out] A list of cli_ac_result AC pattern matching results.
- * @param name      (optional) Original name of the file (to set fmap name metadata)
+ * This function is just a wrapper for `cli_scan_fmap()` that converts the file
+ * to an fmap and scans it.
+ *
+ * @param desc          File descriptor to be used for input
+ * @param ctx           The scanning context.
+ * @param ftype         If specified, may limit signature matching trie by target type corresponding with the specified CL_TYPE
+ * @param filetype_only Boolean indicating if the scan is for file-type detection only.
+ * @param[out] ftoffset (optional) A list of file type signature matches with their corresponding offsets. If provided, will output the file type signature matches.
+ * @param acmode        Use AC_SCAN_VIR and AC_SCAN_FT to set scanning modes.
+ * @param[out] acres    A list of cli_ac_result AC pattern matching results.
+ * @param name          (optional) Original name of the file (to set fmap name metadata)
+ * @param attributes    Layer attributes for the thing to be scanned.
  * @return cl_error_t
  */
-cl_error_t cli_scan_desc(int desc, cli_ctx *ctx, cli_file_t ftype, uint8_t ftonly, struct cli_matched_type **ftoffset, unsigned int acmode, struct cli_ac_result **acres, const char *name);
+cl_error_t cli_scan_desc(int desc, cli_ctx *ctx, cli_file_t ftype, bool filetype_only, struct cli_matched_type **ftoffset, unsigned int acmode, struct cli_ac_result **acres, const char *name, uint32_t attributes);
 
 /**
  * @brief Non-magic scan matching of the current fmap in the scan context.  Newer API.
  *
+ * This function is lower-level than the *magic_scan* functions from scanners.
+ * This function does not perform file type magic identification and does not use
+ * the file format scanners.
+ *
+ * This function does signature matching for generic signatures, target-specific
+ * signatures, and file type recognition signatures to detect embedded files or
+ * to correct the current file type.
+ *
  * This API will invoke cli_exp_eval() for you.
  *
- * @param ctx       The scanning context.
- * @param ftype     If specified, may limit signature matching trie by target type corresponding with the specified CL_TYPE
- * @param ftonly    Boolean indicating if the scan is for file-type detection only.
- * @param ftoffset  [out] A list of file type signature matches with their corresponding offsets.
- * @param acmode    Use AC_SCAN_VIR and AC_SCAN_FT to set scanning modes.
- * @param acres     [out] A list of cli_ac_result AC pattern matching results.
- * @param refhash   MD5 hash of the current file, used to save time creating hashes and to limit scan recursion for the HandlerType logical signature FTM feature.
+ * @param ctx           The scanning context.
+ * @param ftype         If specified, may limit signature matching trie by target type corresponding with the specified CL_TYPE
+ * @param filetype_only Boolean indicating if the scan is for file-type detection only.
+ * @param[out] ftoffset (optional) A list of file type signature matches with their corresponding offsets. If provided, will output the file type signature matches.
+ * @param acmode        Use AC_SCAN_VIR and AC_SCAN_FT to set scanning modes.
+ * @param[out] acres    A list of cli_ac_result AC pattern matching results.
+ * @param refhash       MD5 hash of the current file, used to save time creating hashes and to limit scan recursion for the HandlerType logical signature FTM feature.
  * @return cl_error_t
  */
-cl_error_t cli_scan_fmap(cli_ctx *ctx, cli_file_t ftype, uint8_t ftonly, struct cli_matched_type **ftoffset, unsigned int acmode, struct cli_ac_result **acres, unsigned char *refhash);
+cl_error_t cli_scan_fmap(cli_ctx *ctx, cli_file_t ftype, bool filetype_only, struct cli_matched_type **ftoffset, unsigned int acmode, struct cli_ac_result **acres, unsigned char *refhash);
 
 /**
  * @brief Evaluate logical signatures and yara rules given the AC matching results
@@ -290,11 +365,34 @@ cl_error_t cli_exp_eval(cli_ctx *ctx, struct cli_matcher *root, struct cli_ac_da
 
 cl_error_t cli_caloff(const char *offstr, const struct cli_target_info *info, unsigned int target, uint32_t *offdata, uint32_t *offset_min, uint32_t *offset_max);
 
-cl_error_t cli_checkfp(unsigned char *digest, size_t size, cli_ctx *ctx);
-cl_error_t cli_checkfp_virus(unsigned char *digest, size_t size, cli_ctx *ctx, const char *vname);
+/**
+ * @brief Determine if an alert is a known false positive, using each fmap in the the ctx->container stack to check MD5, SHA1, and SHA256 hashes.
+ *
+ * @param ctx           The scanning context.
+ * @param vname         (Optional) The name of the signature alert.
+ * @return cl_error_t   CL_CLEAN If an allow-list hash matches with one of the fmap hashes in the scan recursion stack.
+ *                      CL_VIRUS If no allow-list hash matches.
+ */
+cl_error_t cli_check_fp(cli_ctx *ctx, const char *vname);
 
 cl_error_t cli_matchmeta(cli_ctx *ctx, const char *fname, size_t fsizec, size_t fsizer, int encrypted, unsigned int filepos, int res1, void *res2);
 
-void cli_targetinfo(struct cli_target_info *info, unsigned int target, fmap_t *map);
+/** Parse the executable headers and, if successful, populate exeinfo
+ *
+ * If target refers to a supported executable file type, the exe header
+ * will be parsed and, if successful, info->status will be set to 1.
+ * If parsing the exe header fails, info->status will be set to -1.
+ * The caller MUST destroy info via a call to cli_targetinfo_destroy
+ * regardless of what info->status is set to.
+ *
+ * @param info A structure to populate with info from the exe header. This
+ *             MUST be initialized via cli_targetinfo_init prior to calling
+ * @param target the target executable file type. Possible values are:
+ *               - 1 - PE32 / PE32+
+ *               - 6 - ELF
+ *               - 9 - MachO
+ * @param ctx The current scan context
+ */
+void cli_targetinfo(struct cli_target_info *info, unsigned int target, cli_ctx *ctx);
 
 #endif

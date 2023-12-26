@@ -57,14 +57,14 @@ Rotate log file. Requires LogFileMaxSize option set prior to this option.
 Default: no
 .TP
 \fBPidFile STRING\fR
-This option allows you to save the process identifier of the daemon to a file specified in the argument.
+Write the daemon's pid to the specified file.
 .br
 Default: disabled
 .TP
 \fBDatabaseDirectory STRING\fR
 Path to a directory containing database files.
 .br
-Default: @DBDIR@
+Default: @DATADIR@
 .TP
 \fBForeground BOOL\fR
 Don't fork into background.
@@ -84,7 +84,7 @@ Default: disabled.
 \fBDatabaseOwner STRING\fR
 When started by root, drop privileges to a specified user.
 .br
-Default: @CLAMAVUSER@
+Default: @CLAMAV_USER@
 .TP
 \fBChecks NUMBER\fR
 Number of database checks per day.
@@ -92,7 +92,7 @@ Number of database checks per day.
 Default: 12
 .TP
 \fBDNSDatabaseInfo STRING\fR
-Use DNS to verify the virus database version. Freshclam uses DNS TXT records to verify the versions of the database and software itself. With this directive you can change the database verification domain.
+Use DNS to verify the virus database version. FreshClam uses DNS TXT records to verify the versions of the database and software itself. With this directive you can change the database verification domain.
 .br
 \fBWARNING:\fR Please don't change it unless you're configuring freshclam to use your own database verification domain.
 .br
@@ -144,7 +144,7 @@ With this option you can provide custom sources for database files. This option 
 Support for:
   http(s)://, ftp(s)://, or file://
 Example usage:
-  DatabaseCustomURL https://myserver.com:4567/whitelist.wdb
+  DatabaseCustomURL https://myserver.com:4567/allow_list.wdb
 .br
 Default: disabled
 .TP
@@ -165,6 +165,7 @@ Default: disabled
 .TP
 \fBHTTPUserAgent STRING\fR
 If your servers are behind a firewall/proxy which applies User-Agent filtering, you can use this option to force the use of a different User-Agent header.
+As of ClamAV 0.103.3, this setting may not be used when updating from the clamav.net CDN and can only be used when updating from a private mirror.
 .br .
 Default: clamav/version_number
 .TP
@@ -203,18 +204,13 @@ Maximum time in seconds for each download operation. 0 means no timeout.
 .br
 Default: 0
 .TP
-\fBSafeBrowsing BOOL\fR
-This option enables support for Google Safe Browsing. When activated for the first time, freshclam will download a new database file (safebrowsing.cvd) which will be automatically loaded by clamd and clamscan during the next reload, provided that the heuristic phishing detection is turned on. This database includes information about websites that may be phishing sites or possible sources of malware. When using this option, it's mandatory to run freshclam at least every 30 minutes. Freshclam uses the ClamAV's mirror infrastructure to distribute the database and its updates but all the contents are provided under Google's terms of use. See https://support.google.com/code/answer/70015 and https://www.clamav.net/documents/safebrowsing for more information.
-.br
-Default: no
-.TP
 \fBBytecode BOOL\fR
 This option enables downloading of bytecode.cvd, which includes additional detection mechanisms and improvements to the ClamAV engine.
 .br
 Default: yes
 .SH "FILES"
 .LP
-@CFGDIR@/freshclam.conf
+@CONFDIR@/freshclam.conf
 .SH "AUTHOR"
 .LP
 Thomas Lamy <thomas.lamy@netwake.de>, Tomasz Kojm <tkojm@clamav.net>, Kevin Lin <klin@sourcefire.com>

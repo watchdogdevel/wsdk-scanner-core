@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2015-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2015-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Mickey Sola
  *
@@ -21,7 +21,7 @@
 #ifndef __ONAS_HASH_H
 #define __ONAS_HASH_H
 
-#if defined(FANOTIFY)
+#if defined(HAVE_SYS_FANOTIFY_H)
 
 #define ONAS_FANWATCH 0x1
 #define ONAS_INWATCH 0x2
@@ -104,7 +104,7 @@ void onas_free_hashnode(struct onas_hnode *hnode);
 
 void onas_free_listnode(struct onas_lnode *lnode);
 int onas_add_listnode(struct onas_lnode *tail, struct onas_lnode *node);
-int onas_rm_listnode(struct onas_lnode *head, const char *dirname);
+cl_error_t onas_rm_listnode(struct onas_lnode *head, const char *dirname);
 
 void onas_free_dirlist(struct onas_lnode *head);
 

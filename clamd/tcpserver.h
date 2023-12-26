@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -22,7 +22,7 @@
 #ifndef __TCPSERVER_H
 #define __TCPSERVER_H
 
-#include "shared/optparser.h"
+#include "optparser.h"
 
 int tcpserver(int **lsockets, unsigned int *nlsockets, char *ipaddr, const struct optstruct *opts);
 

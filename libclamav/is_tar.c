@@ -27,12 +27,6 @@
 
 static int from_oct(int digs, char *where);
 
-/*
- * Return 
- *	0 if the checksum is bad (i.e., probably not a tar archive), 
- *	1 for old UNIX tar file,
- *	2 for Unix Std (POSIX) tar file.
- */
 int is_tar(const unsigned char *buf, unsigned int nbytes)
 {
     union record *header = (union record *)buf;
@@ -49,9 +43,9 @@ int is_tar(const unsigned char *buf, unsigned int nbytes)
     p   = header->charptr;
     for (i = sizeof(union record); --i >= 0;) {
         /*
-		 * We can't use unsigned char here because of old compilers,
-		 * e.g. V7.
-		 */
+         * We can't use unsigned char here because of old compilers,
+         * e.g. V7.
+         */
         sum += 0xFF & *p++;
     }
 

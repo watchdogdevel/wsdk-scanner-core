@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Michal 'GiM' Spadlinski
@@ -251,8 +251,8 @@ int unupack(int upack, char *dest, uint32_t dsize, char *buff, uint32_t vma, uin
         cli_dbgmsg("Upack: EP: %08x original %08x\n", ep, original_ep);
 
         /* this are really ugly hacks,
-		 * rep_stosd_count_offs & context_bits_offs are < ep_jmp_offs,
-		 * so checked in CLI_ISCONTAINED above */
+         * rep_stosd_count_offs & context_bits_offs are < ep_jmp_offs,
+         * so checked in CLI_ISCONTAINED above */
         count   = (*(loc_esi + rep_stosd_count_offs)) & 0xff;
         shlsize = (*(loc_esi + context_bits_offs)) & 0xff;
         shlsize = 8 - shlsize;
@@ -282,8 +282,8 @@ int unupack(int upack, char *dest, uint32_t dsize, char *buff, uint32_t vma, uin
             cli_dbgmsg("Upack: DEST: %08x, %08x\n", cli_readint32(loc_esi), cli_readint32(loc_esi) - base);
             loc_esi += 4;
             /* 2vGiM: j is signed. Is that really what you want? Will it cause problems with the following checks?
-			 * yes! this is wrong! how did you notice that?!
-			 */
+             * yes! this is wrong! how did you notice that?!
+             */
             j = cli_readint32(loc_esi);
             if (j < 0) {
                 cli_dbgmsg("Upack: probably hand-crafted data, report back\n");
@@ -304,8 +304,8 @@ int unupack(int upack, char *dest, uint32_t dsize, char *buff, uint32_t vma, uin
             save2 += 4;
             loc_esi = save2;
             /* I could probably do simple loc_esi+= (0xe<<2),
-			 *  but I'm not sure if there is always 0xe and is always ebx =0
-			 */
+             *  but I'm not sure if there is always 0xe and is always ebx =0
+             */
             do {
                 loc_esi += loc_ebx_u;
                 loc_esi += 4;
@@ -331,8 +331,10 @@ int unupack(int upack, char *dest, uint32_t dsize, char *buff, uint32_t vma, uin
             /* fix values */
             if (!CLI_ISCONTAINED(dest, dsize, loc_ebx - 4, (12 + 4 * 4)) || !CLI_ISCONTAINED(dest, dsize, loc_esi + 0x24, 4) || !CLI_ISCONTAINED(dest, dsize, loc_esi + 0x40, 4))
                 return -1;
-            for (j = 2; j < 6; j++)
-                cli_writeint32(loc_ebx + (j << 2), cli_readint32(loc_ebx + (j << 2)));
+            for (j = 2; j < 6; j++) {
+                int32_t temp = cli_readint32(loc_ebx + (j << 2));
+                cli_writeint32(loc_ebx + (j << 2), temp);
+            }
             paddr      = dest + cli_readint32(loc_ebx - 4) - base;
             save1      = loc_ecx;
             pushed_esi = loc_edi;
@@ -471,9 +473,9 @@ int unupack399(char *bs, uint32_t bl, uint32_t init_eax, char *init_ebx, uint32_
                 /* loc_48397c */
                 loc_eax--;
                 /*
-				temp_ebp = loc_ebp; loc_ebp = cli_readint32(loc_ebx+0x0c); cli_writeint32(loc_ebx+0x0c, temp_ebp);
-				temp_ebp = loc_ebp; loc_ebp = cli_readint32(loc_ebx+0x10); cli_writeint32(loc_ebx+0x10, temp_ebp);
-				*/
+                                temp_ebp = loc_ebp; loc_ebp = cli_readint32(loc_ebx+0x0c); cli_writeint32(loc_ebx+0x0c, temp_ebp);
+                                temp_ebp = loc_ebp; loc_ebp = cli_readint32(loc_ebx+0x10); cli_writeint32(loc_ebx+0x10, temp_ebp);
+                                */
                 temp_ebp = loc_ebp;
                 loc_ebp  = state[4];
                 state[4] = state[3];

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2015-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2015-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Mickey Sola
  *
@@ -21,10 +21,14 @@
 #ifndef __ONAS_IN_H
 #define __ONAS_IN_H
 
-#if defined(FANOTIFY)
+#if defined(HAVE_SYS_FANOTIFY_H)
 
-#include "shared/optparser.h"
-#include "libclamav/clamav.h"
+// libclamav
+#include "clamav.h"
+
+// common
+#include "optparser.h"
+
 #include "clamonacc.h"
 
 /*

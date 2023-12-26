@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, Török Edvin
@@ -23,14 +23,14 @@
 #define __SESSION_H
 
 #define CMD1 "SCAN"
-/* #define CMD2 "RAWSCAN" */
-#define CMD3 "QUIT" /* deprecated */
+/* #define CMD2 "RAWSCAN" */ /* removed, was deprecated */
+#define CMD3 "QUIT"
 #define CMD4 "RELOAD"
 #define CMD5 "PING"
 #define CMD6 "CONTSCAN"
 #define CMD7 "VERSION"
-#define CMD8 "STREAM"
-/*#define CMD9 "SESSION"*/
+/* #define CMD8 "STREAM" */  /* removed, was deprecated */
+/* #define CMD9 "SESSION" */ /* removed, was deprecated */
 #define CMD10 "END"
 #define CMD11 "SHUTDOWN"
 /* #define CMD12 "FD" */
@@ -49,22 +49,24 @@
 #define CMD23 "GET / HTTP/2"
 #define CMD24 ""
 
-#include "libclamav/clamav.h"
-#include "shared/optparser.h"
+// libclamav
+#include "clamav.h"
+
+// common
+#include "optparser.h"
+
 #include "server.h"
-#include "others.h"
+#include "clamd_others.h"
 
 enum commands {
     COMMAND_UNKNOWN  = 0,
     COMMAND_SHUTDOWN = 1,
     COMMAND_RELOAD,
     COMMAND_END,
-    COMMAND_SESSION,
     COMMAND_SCAN,
     COMMAND_PING,
     COMMAND_CONTSCAN,
     COMMAND_VERSION,
-    COMMAND_STREAM,
     COMMAND_MULTISCAN,
     COMMAND_FILDES,
     COMMAND_STATS,

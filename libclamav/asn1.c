@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2011-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB
@@ -24,10 +24,10 @@
 #endif
 
 #include <time.h>
+#include <openssl/bn.h>
 
 #include "clamav.h"
 #include "asn1.h"
-#include "bignum.h"
 #include "matcher-hash.h"
 
 /* --------------------------------------------------------------------------- OIDS */
@@ -94,6 +94,9 @@
 #define OID_1_3_6_1_4_1_311_2_4_1 "\x2b\x06\x01\x04\x01\x82\x37\x02\x04\x01"
 #define OID_nestedSignatures OID_1_3_6_1_4_1_311_2_4_1
 
+#define OID_1_3_6_1_4_1_311_3_3_1 "\x2b\x06\x01\x04\x01\x82\x37\x03\x03\x01"
+#define OID_RFC3161_countersignature OID_1_3_6_1_4_1_311_3_3_1
+
 #define OID_1_3_6_1_4_1_311_10_1 "\x2b\x06\x01\x04\x01\x82\x37\x0a\x01"
 #define OID_szOID_CTL OID_1_3_6_1_4_1_311_10_1
 
@@ -102,6 +105,10 @@
 
 #define OID_1_3_6_1_4_1_311_12_1_2 "\x2b\x06\x01\x04\x01\x82\x37\x0c\x01\x02"
 #define OID_szOID_CATALOG_LIST_MEMBER OID_1_3_6_1_4_1_311_12_1_2
+
+/* CATALOG_LIST_MEMBER2 seems to be whats used by the SHA256-based CAT files */
+#define OID_1_3_6_1_4_1_311_12_1_3 "\x2b\x06\x01\x04\x01\x82\x37\x0c\x01\x03"
+#define OID_szOID_CATALOG_LIST_MEMBER2 OID_1_3_6_1_4_1_311_12_1_3
 
 #define OID_2_16_840_1_101_3_4_2_1 "\x60\x86\x48\x01\x65\x03\x04\x02\x01"
 #define OID_sha256 OID_2_16_840_1_101_3_4_2_1
@@ -358,170 +365,158 @@ static int asn1_expect_algo(fmap_t *map, const void **asn1data, unsigned int *as
     return 0;
 }
 
-static int asn1_expect_hash_algo(fmap_t *map, const void **asn1data, unsigned int *asn1len, cli_crt_hashtype *hashtype, unsigned int *hashsize)
+typedef struct _oid_alternative {
+    const char *oid_bytes;
+    const unsigned int oid_bytes_len;
+    const int context[2];
+} oid_alternative_t;
+
+static const oid_alternative_t *asn1_expect_algo_multi(fmap_t *map, const void **asn1data, unsigned int *asn1len,
+                                                       const oid_alternative_t alts[], unsigned int alts_count)
 {
     struct cli_asn1 obj;
     unsigned int avail;
-    int ret;
+    unsigned int i;
+    const oid_alternative_t *oid_alt_ptr = NULL;
 
-    if (0 != (ret = asn1_expect_objtype(map, *asn1data, asn1len, &obj, ASN1_TYPE_SEQUENCE))) {
-        cli_dbgmsg("asn1_expect_hash_algo: expected SEQUENCE to start AlgorithmIdentifier\n");
-        return ret;
-    }
-    avail     = obj.size;
-    *asn1data = obj.next;
-    if (0 != (ret = asn1_expect_objtype(map, obj.content, &avail, &obj, ASN1_TYPE_OBJECT_ID))) {
-        cli_dbgmsg("asn1_expect_hash_algo: unexpected object type inside AlgorithmIdentifier SET\n");
-        return ret;
-    }
-    /* Cases to consider for the length check:
-     *  - obj.size == 5:
-     *     - OID_sha1
-     *  - obj.size == 8:
-     *     - OID_md5
-     *  - obj.size == 9:
-     *     - OID_sha256
-     *     - OID_sha1WithRSAEncryption
-     *     - OID_md5WithRSAEncryption
-     *     - OID_sha256WithRSAEncryption
-     *     - OID_sha384
-     *     - OID_sha384WithRSAEncryption
-     *     - OID_sha512
-     *     - OID_sha512WithRSAEncryption
-     */
-    if (obj.size != lenof(OID_sha1) && obj.size != lenof(OID_md5) && obj.size != lenof(OID_sha256)) {
-        cli_dbgmsg("asn1_expect_hash_algo: unsupported algorithm OID size for AlgorithmIdentifier\n");
-        return 1;
-    }
-    if (!fmap_need_ptr_once(map, obj.content, obj.size)) {
-        cli_dbgmsg("asn1_expect_hash_algo: failed to get AlgorithmIdentifier OID\n");
-        return 1;
-    }
-    if ((obj.size == lenof(OID_sha1) && !memcmp(obj.content, OID_sha1, lenof(OID_sha1))) ||
-        (obj.size == lenof(OID_sha1WithRSAEncryption) && !memcmp(obj.content, OID_sha1WithRSAEncryption, lenof(OID_sha1WithRSAEncryption)))) {
-        *hashtype = CLI_SHA1RSA;
-        *hashsize = SHA1_HASH_SIZE;
-    } else if ((obj.size == lenof(OID_md5) && !memcmp(obj.content, OID_md5, lenof(OID_md5))) ||
-               (obj.size == lenof(OID_md5WithRSAEncryption) && !memcmp(obj.content, OID_md5WithRSAEncryption, lenof(OID_md5WithRSAEncryption)))) {
-        *hashtype = CLI_MD5RSA;
-        *hashsize = MD5_HASH_SIZE;
-    } else if ((obj.size == lenof(OID_sha256) && !memcmp(obj.content, OID_sha256, lenof(OID_sha256))) ||
-               (obj.size == lenof(OID_sha256WithRSAEncryption) && !memcmp(obj.content, OID_sha256WithRSAEncryption, lenof(OID_sha256WithRSAEncryption)))) {
-        *hashtype = CLI_SHA256RSA;
-        *hashsize = SHA256_HASH_SIZE;
-    } else if ((obj.size == lenof(OID_sha384) && !memcmp(obj.content, OID_sha384, lenof(OID_sha384))) ||
-               (obj.size == lenof(OID_sha384WithRSAEncryption) && !memcmp(obj.content, OID_sha384WithRSAEncryption, lenof(OID_sha384WithRSAEncryption)))) {
-        *hashtype = CLI_SHA384RSA;
-        *hashsize = SHA384_HASH_SIZE;
-    } else if ((obj.size == lenof(OID_sha512) && !memcmp(obj.content, OID_sha512, lenof(OID_sha512))) ||
-               (obj.size == lenof(OID_sha512WithRSAEncryption) && !memcmp(obj.content, OID_sha512WithRSAEncryption, lenof(OID_sha512WithRSAEncryption)))) {
-        *hashtype = CLI_SHA512RSA;
-        *hashsize = SHA512_HASH_SIZE;
-    } else {
-        cli_dbgmsg("asn1_expect_hash_algo: unknown digest OID in AlgorithmIdentifier\n");
-        return 1;
-    }
-    // The specification says that the NULL is a required parameter for this
-    // data type, but in practice it doesn't always exist in the ASN1. If
-    // there is something after the ALGO OID, assume it's the NULL
-    if (avail && (ret = asn1_expect_obj(map, &obj.next, &avail, ASN1_TYPE_NULL, 0, NULL))) {
-        cli_dbgmsg("asn1_expect_hash_algo: expected NULL after AlgorithmIdentifier OID\n");
-        return ret;
-    }
-    if (avail) {
-        cli_dbgmsg("asn1_expect_hash_algo: extra data in AlgorithmIdentifier\n");
-        return 1;
-    }
-    return 0;
-}
-
-static int asn1_expect_rsa(fmap_t *map, const void **asn1data, unsigned int *asn1len, cli_crt_hashtype *hashtype)
-{
-    struct cli_asn1 obj;
-    unsigned int avail;
-    int ret;
-    if ((ret = asn1_expect_objtype(map, *asn1data, asn1len, &obj, ASN1_TYPE_SEQUENCE))) { /* SEQUENCE */
-        cli_dbgmsg("asn1_expect_rsa: expecting SEQUENCE at the start of the RSA algo\n");
-        return ret;
+    if (asn1_expect_objtype(map, *asn1data, asn1len, &obj, ASN1_TYPE_SEQUENCE)) { /* SEQUENCE */
+        cli_dbgmsg("asn1_expect_algo_multi: expecting SEQUENCE at the start of the algo\n");
+        return NULL;
     }
     avail     = obj.size;
     *asn1data = obj.next;
 
     if (asn1_expect_objtype(map, obj.content, &avail, &obj, ASN1_TYPE_OBJECT_ID)) {
-        cli_dbgmsg("asn1_expect_rsa: expected OID in RSA algo\n");
-        return 1;
+        cli_dbgmsg("asn1_expect_algo_multi: expected OID in algo\n");
+        return NULL;
     }
 
-    // Two cases to check for:
-    // obj.size == 5:
-    //  - OID_sha1WithRSA
-    //
-    // obj.size == 9:
-    //  - OID_rsaEncryption
-    //  - OID_md2WithRSAEncryption
-    //  - OID_md5WithRSAEncryption
-    //  - OID_sha1WithRSAEncryption
-    //  - OID_sha256WithRSAEncryption
-    //  - OID_sha384WithRSAEncryption
-    //  - OID_sha512WithRSAEncryption
-    if (obj.size != lenof(OID_sha1WithRSA) && obj.size != lenof(OID_sha1WithRSAEncryption)) {
-        cli_dbgmsg("asn1_expect_rsa: expecting OID with size 5 or 9, got %02x with size %u\n", obj.type, obj.size);
-        return 1;
+    if (0 == obj.size) {
+        cli_dbgmsg("asn1_expect_algo_multi: Unexpected length value of zero when parsing OID obj\n");
+        return NULL;
     }
+
     if (!fmap_need_ptr_once(map, obj.content, obj.size)) {
-        cli_dbgmsg("asn1_expect_rsa: failed to read OID\n");
-        return 1;
+        cli_dbgmsg("asn1_expect_algo_multi: failed to read OID\n");
+        return NULL;
     }
-    if (obj.size == lenof(OID_sha1WithRSA)) {
 
-        if (!memcmp(obj.content, OID_sha1WithRSA, lenof(OID_sha1WithRSA))) {
-            *hashtype = CLI_SHA1RSA; /* Obsolete sha1rsa 1.3.14.3.2.29 */
-        } else {
-            cli_dbgmsg("asn1_expect_rsa: unknown OID (length 5)\n");
-            return 1;
+    for (i = 0; i < alts_count; i++) {
+        oid_alt_ptr = &(alts[i]);
+
+        if (obj.size != oid_alt_ptr->oid_bytes_len) {
+            continue;
         }
 
-    } else if (obj.size == lenof(OID_sha1WithRSAEncryption)) {
-
-        if (!memcmp(obj.content, OID_sha1WithRSAEncryption, lenof(OID_sha1WithRSAEncryption)))
-            *hashtype = CLI_SHA1RSA; /* sha1withRSAEncryption 1.2.840.113549.1.1.5 */
-
-        else if (!memcmp(obj.content, OID_md5WithRSAEncryption, lenof(OID_md5WithRSAEncryption)))
-            *hashtype = CLI_MD5RSA; /* md5withRSAEncryption 1.2.840.113549.1.1.4 */
-
-        else if (!memcmp(obj.content, OID_rsaEncryption, lenof(OID_rsaEncryption)))
-            *hashtype = CLI_RSA; /* rsaEncryption 1.2.840.113549.1.1.1 */
-
-        else if (!memcmp(obj.content, OID_md2WithRSAEncryption, lenof(OID_md2WithRSAEncryption))) {
-            *hashtype = CLI_MD2RSA; /* md2withRSAEncryption 1.2.840.113549.1.1.2 */
-        } else if (!memcmp(obj.content, OID_sha256WithRSAEncryption, lenof(OID_sha256WithRSAEncryption))) {
-            *hashtype = CLI_SHA256RSA; /* sha256WithRSAEncryption 1.2.840.113549.1.1.11 */
-        } else if (!memcmp(obj.content, OID_sha384WithRSAEncryption, lenof(OID_sha384WithRSAEncryption))) {
-            *hashtype = CLI_SHA384RSA; /* sha384WithRSAEncryption 1.2.840.113549.1.1.12 */
-        } else if (!memcmp(obj.content, OID_sha512WithRSAEncryption, lenof(OID_sha512WithRSAEncryption))) {
-            *hashtype = CLI_SHA512RSA; /* sha512WithRSAEncryption 1.2.840.113549.1.1.13 */
-        } else {
-            cli_dbgmsg("asn1_expect_rsa: unknown OID (length 9)\n");
-            return 1;
+        if (!memcmp(obj.content, oid_alt_ptr->oid_bytes, obj.size)) {
+            break;
         }
-    } else {
-        cli_dbgmsg("asn1_expect_rsa: OID mismatch (size %u)\n", obj.size);
-        return 1;
     }
+
+    if (NULL == oid_alt_ptr) {
+        cli_dbgmsg("asn1_expect_algo_multi: Failed to find valid OID alternative\n");
+        return NULL;
+    }
+
     // The specification says that the NULL is a required parameter for this
     // data type, but in practice it doesn't always exist in the ASN1. If
     // there is something after the ALGO OID, assume it's the NULL
-    if (avail && (ret = asn1_expect_obj(map, &obj.next, &avail, ASN1_TYPE_NULL, 0, NULL))) { /* NULL */
-        cli_dbgmsg("asn1_expect_rsa: expected NULL following RSA OID\n");
-        return ret;
+    if (avail && asn1_expect_obj(map, &obj.next, &avail, ASN1_TYPE_NULL, 0, NULL)) { /* NULL */
+        cli_dbgmsg("asn1_expect_algo_multi: expected NULL following OID\n");
+        return NULL;
     }
     if (avail) {
-        cli_dbgmsg("asn1_expect_rsa: extra data found in SEQUENCE\n");
+        cli_dbgmsg("asn1_expect_algo_multi: extra data found in SEQUENCE\n");
+        return NULL;
+    }
+    return oid_alt_ptr;
+}
+
+static int asn1_expect_hash_algo(fmap_t *map, const void **asn1data, unsigned int *asn1len, cli_crt_hashtype *hashtype, unsigned int *hashsize)
+{
+    const oid_alternative_t *ret;
+
+    static const oid_alternative_t alts[] = {
+        {OID_sha1, lenof(OID_sha1), {CLI_SHA1RSA, SHA1_HASH_SIZE}},
+        {OID_sha1WithRSAEncryption, lenof(OID_sha1WithRSAEncryption), {CLI_SHA1RSA, SHA1_HASH_SIZE}},
+        {OID_md5, lenof(OID_md5), {CLI_MD5RSA, MD5_HASH_SIZE}},
+        {OID_md5WithRSAEncryption, lenof(OID_md5WithRSAEncryption), {CLI_MD5RSA, MD5_HASH_SIZE}},
+        {OID_sha256, lenof(OID_sha256), {CLI_SHA256RSA, SHA256_HASH_SIZE}},
+        {OID_sha256WithRSAEncryption, lenof(OID_sha256WithRSAEncryption), {CLI_SHA256RSA, SHA256_HASH_SIZE}},
+        {OID_sha384, lenof(OID_sha384), {CLI_SHA384RSA, SHA384_HASH_SIZE}},
+        {OID_sha384WithRSAEncryption, lenof(OID_sha384WithRSAEncryption), {CLI_SHA384RSA, SHA384_HASH_SIZE}},
+        {OID_sha512, lenof(OID_sha512), {CLI_SHA512RSA, SHA512_HASH_SIZE}},
+        {OID_sha512WithRSAEncryption, lenof(OID_sha512WithRSAEncryption), {CLI_SHA512RSA, SHA512_HASH_SIZE}},
+    };
+
+    ret = asn1_expect_algo_multi(map, asn1data, asn1len, alts, sizeof(alts) / sizeof(alts[0]));
+    if (NULL == ret) {
+        cli_dbgmsg("asn1_expect_hash_algo: Failed to find valid OID alternative for hash algo\n");
         return 1;
     }
+
+    *hashtype = ret->context[0];
+    *hashsize = ret->context[1];
     return 0;
 }
 
+static int asn1_expect_rsa(fmap_t *map, const void **asn1data, unsigned int *asn1len, cli_crt_hashtype *hashtype)
+{
+    const oid_alternative_t *ret;
+
+    static const oid_alternative_t alts[] = {
+        /* Obsolete sha1rsa 1.3.14.3.2.29 */
+        {OID_sha1WithRSA, lenof(OID_sha1WithRSA), {CLI_SHA1RSA, 0}},
+
+        /* sha1withRSAEncryption 1.2.840.113549.1.1.5 */
+        {OID_sha1WithRSAEncryption, lenof(OID_sha1WithRSAEncryption), {CLI_SHA1RSA, 0}},
+
+        /* md5withRSAEncryption 1.2.840.113549.1.1.4 */
+        {OID_md5WithRSAEncryption, lenof(OID_md5WithRSAEncryption), {CLI_MD5RSA, 0}},
+
+        /* rsaEncryption 1.2.840.113549.1.1.1 */
+        {OID_rsaEncryption, lenof(OID_rsaEncryption), {CLI_RSA, 0}},
+
+        /* md2withRSAEncryption 1.2.840.113549.1.1.2 */
+        {OID_md2WithRSAEncryption, lenof(OID_md2WithRSAEncryption), {CLI_MD2RSA, 0}},
+
+        /* sha256WithRSAEncryption 1.2.840.113549.1.1.11 */
+        {OID_sha256WithRSAEncryption, lenof(OID_sha256WithRSAEncryption), {CLI_SHA256RSA, 0}},
+
+        /* sha384WithRSAEncryption 1.2.840.113549.1.1.12 */
+        {OID_sha384WithRSAEncryption, lenof(OID_sha384WithRSAEncryption), {CLI_SHA384RSA, 0}},
+
+        /* sha512WithRSAEncryption 1.2.840.113549.1.1.13 */
+        {OID_sha512WithRSAEncryption, lenof(OID_sha512WithRSAEncryption), {CLI_SHA512RSA, 0}},
+    };
+
+    ret = asn1_expect_algo_multi(map, asn1data, asn1len, alts, sizeof(alts) / sizeof(alts[0]));
+    if (NULL == ret) {
+        cli_dbgmsg("asn1_expect_rsa: Failed to find valid OID alternative for RSA algo\n");
+        return 1;
+    }
+
+    *hashtype = ret->context[0];
+    return 0;
+}
+
+static int asn1_expect_list_member(fmap_t *map, const void **asn1data, unsigned int *asn1len)
+{
+    const oid_alternative_t *ret;
+
+    static const oid_alternative_t alts[] = {
+        {OID_szOID_CATALOG_LIST_MEMBER, lenof(OID_szOID_CATALOG_LIST_MEMBER), {0, 0}},
+        {OID_szOID_CATALOG_LIST_MEMBER2, lenof(OID_szOID_CATALOG_LIST_MEMBER2), {0, 0}},
+    };
+
+    ret = asn1_expect_algo_multi(map, asn1data, asn1len, alts, sizeof(alts) / sizeof(alts[0]));
+    if (NULL == ret) {
+        cli_dbgmsg("asn1_expect_list_member: Failed to find valid OID alternative for list member algo\n");
+        return 1;
+    }
+
+    return 0;
+}
 static int asn1_getnum(const char *s)
 {
     if (s[0] < '0' || s[0] > '9' || s[1] < '0' || s[1] > '9') {
@@ -699,10 +694,9 @@ static int asn1_get_rsa_pubkey(fmap_t *map, const void **asn1data, unsigned int 
         cli_dbgmsg("asn1_get_rsa_pubkey: cannot read n\n");
         return 1;
     }
-    if (mp_read_unsigned_bin(&x509->n, obj.content, avail2)) {
-        cli_dbgmsg("asn1_get_rsa_pubkey: cannot convert n to big number\n");
+
+    if (!BN_bin2bn(obj.content, avail2, x509->n))
         return 1;
-    }
 
     if (asn1_expect_objtype(map, obj.next, &avail, &obj, ASN1_TYPE_INTEGER)) /* INTEGER - exp */
         return 1;
@@ -718,10 +712,10 @@ static int asn1_get_rsa_pubkey(fmap_t *map, const void **asn1data, unsigned int 
         cli_dbgmsg("asn1_get_rsa_pubkey: cannot read e\n");
         return 1;
     }
-    if (mp_read_unsigned_bin(&x509->e, obj.content, obj.size)) {
-        cli_dbgmsg("asn1_get_rsa_pubkey: cannot convert e to big number\n");
+
+    if (!BN_bin2bn(obj.content, obj.size, x509->e))
         return 1;
-    }
+
     return 0;
 }
 
@@ -746,10 +740,12 @@ static int asn1_get_x509(fmap_t *map, const void **asn1data, unsigned int *size,
     int ret = ASN1_GET_X509_UNRECOVERABLE_ERROR;
     unsigned int version;
 
-    if (cli_crt_init(&x509))
-        return ret;
-
     do {
+        if (cli_crt_init(&x509) < 0) {
+            cli_dbgmsg("asn1_get_x509: failed to initialize x509.\n");
+            break;
+        }
+
         if (asn1_expect_objtype(map, *asn1data, size, &crt, ASN1_TYPE_SEQUENCE)) { /* SEQUENCE */
             cli_dbgmsg("asn1_get_x509: expected SEQUENCE at the x509 start\n");
             break;
@@ -1115,10 +1111,10 @@ static int asn1_get_x509(fmap_t *map, const void **asn1data, unsigned int *size,
             cli_dbgmsg("asn1_get_x509: cannot read signature\n");
             break;
         }
-        if (mp_read_unsigned_bin(&x509.sig, obj.content, obj.size)) {
-            cli_dbgmsg("asn1_get_x509: cannot convert signature to big number\n");
+
+        if (!BN_bin2bn(obj.content, obj.size, x509.sig))
             break;
-        }
+
         if (crt.size) {
             cli_dbgmsg("asn1_get_x509: found unexpected extra data in signature\n");
             break;
@@ -1291,8 +1287,8 @@ static int asn1_parse_countersignature(fmap_t *map, const void **asn1data, unsig
                     if (asn1_expect_obj(map, &deeper.content, &deep.size, ASN1_TYPE_OBJECT_ID, lenof(OID_pkcs7_data), OID_pkcs7_data)) {
                         cli_dbgmsg("asn1_parse_countersignature: contentType != pkcs7-data, checking for timestampToken instead\n");
                         /* Some signatures use OID_timestampToken instead, so allow
-                     * that also (despite the 2008 spec saying that this value
-                     * must be pkcs7-data) */
+                         * that also (despite the 2008 spec saying that this value
+                         * must be pkcs7-data) */
                         deeper.content = backupPtr;
                         deep.size      = backupSize;
                         if (asn1_expect_obj(map, &deeper.content, &deep.size, ASN1_TYPE_OBJECT_ID, lenof(OID_timestampToken), OID_timestampToken)) {
@@ -1414,6 +1410,8 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
     void *hash_ctx;
     int result;
     cl_error_t ret = CL_EPARSE;
+    char *mod      = NULL;
+    char *exp      = NULL;
 
     cli_dbgmsg("in asn1_parse_mscat\n");
 
@@ -1568,11 +1566,10 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
                     while (x509) {
                         char raw_issuer[CRT_RAWMAXLEN * 2 + 1], raw_subject[CRT_RAWMAXLEN * 2 + 1], raw_serial[CRT_RAWMAXLEN * 3 + 1];
                         char issuer[SHA1_HASH_SIZE * 2 + 1], subject[SHA1_HASH_SIZE * 2 + 1], serial[SHA1_HASH_SIZE * 2 + 1];
-                        char mod[1024 + 1], exp[1024 + 1];
-                        int j = 1024;
+                        int j;
 
-                        fp_toradix_n(&x509->n, mod, 16, j + 1);
-                        fp_toradix_n(&x509->e, exp, 16, j + 1);
+                        mod = BN_bn2hex(x509->n);
+                        exp = BN_bn2hex(x509->e);
                         memset(raw_issuer, 0, CRT_RAWMAXLEN * 2 + 1);
                         memset(raw_subject, 0, CRT_RAWMAXLEN * 2 + 1);
                         memset(raw_serial, 0, CRT_RAWMAXLEN * 2 + 1);
@@ -1604,14 +1601,18 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
                         cli_dbgmsg("  raw_issuer: %s\n", raw_issuer);
 
                         x509 = x509->next;
+                        OPENSSL_free(mod);
+                        OPENSSL_free(exp);
+                        mod = NULL;
+                        exp = NULL;
                     }
                     x509 = newcerts.crts;
                 }
 
-                /* Determine whether the embedded certificate is blacklisted or
-                 * whitelisted. If an embedded cert matches a blacklist rule,
+                /* Determine whether the embedded certificate is blocked or
+                 * trusted. If an embedded cert matches a block list rule,
                  * we can return immediately indicating that a sig matched.
-                 * This isn't true for whitelist matches, since otherwise an
+                 * This isn't true for allow list matches, since otherwise an
                  * attacker could just include a known-good certificate in the
                  * signature and not use it. Instead, for those we will add the
                  * embedded cert to the trust store and continue on to ensure
@@ -1620,23 +1621,23 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
                     cli_crt *crt;
 
                     /* Use &(engine->cmgr) for this check, since we don't copy
-                     * blacklist certs into cmgr and so that if there's a
+                     * block list certs into cmgr and so that if there's a
                      * match, we have a long-lived pointer that we can pass
                      * back (via cli_append_virus) indicating the name of the
                      * sigs that matched (we can't just malloc new space for
                      * one, since nothing above here knows to free it.) */
-                    if (NULL != (crt = crtmgr_blacklist_lookup(&(engine->cmgr), x509))) {
+                    if (NULL != (crt = crtmgr_block_list_lookup(&(engine->cmgr), x509))) {
                         ret = CL_VIRUS;
-                        cli_dbgmsg("asn1_parse_mscat: Found Authenticode certificate blacklisted by %s\n", crt->name ? crt->name : "(unnamed CRB rule)");
+                        cli_dbgmsg("asn1_parse_mscat: Found Authenticode certificate blocked by %s\n", crt->name ? crt->name : "(unnamed CRB rule)");
                         if (NULL != ctx) {
                             ret = cli_append_virus(ctx, crt->name ? crt->name : "(unnamed CRB rule)");
-                            if ((ret == CL_VIRUS) && !SCAN_ALLMATCHES) {
+                            if (ret == CL_VIRUS) {
                                 crtmgr_free(&newcerts);
                                 goto finish;
                             }
                         }
                         /* In the case where ctx is NULL, we don't care about
-                         * blacklist matches - we are either using this
+                         * block list matches - we are either using this
                          * function to parse .cat rules that were loaded in,
                          * or it's sigtool doing cert printing. */
                     }
@@ -1647,13 +1648,13 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
                      * store for doing the time/code digital signature checks.
                      * This isn't required for cert-signing certs that
                      * we discover this way, since the CRB cli_crts have enough
-                     * info to be able to whitelist other certs, but executing
+                     * info to be able to trust other certs, but executing
                      * the following code for those has the benefit of removing
                      * them from newcerts so they aren't processed again while
                      * looking for chained trust. */
-                    if (NULL != (crt = crtmgr_whitelist_lookup(cmgr, x509, 1))) {
+                    if (NULL != (crt = crtmgr_trust_list_lookup(cmgr, x509, 1))) {
                         cli_crt *tmp = x509->next;
-                        cli_dbgmsg("asn1_parse_mscat: Directly whitelisting embedded cert based on %s\n", (crt->name ? crt->name : "(no name)"));
+                        cli_dbgmsg("asn1_parse_mscat: Directly trusting embedded cert based on %s\n", (crt->name ? crt->name : "(no name)"));
                         if (cli_debug_flag && crt->name) {
                             // Copy the name from the CRB entry for printing below
                             x509->name = strdup(crt->name);
@@ -1674,10 +1675,6 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
                     break;
                 }
 
-                /* In the SCAN_ALLMATCHES case, we'd get here with
-                 * ret == CL_VIRUS if a match occurred but we wanted
-                 * to keep looping to look for other matches.  In that
-                 * case, bail here. */
                 if (CL_VIRUS == ret) {
                     crtmgr_free(&newcerts);
                     break;
@@ -1695,7 +1692,7 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
                      * assuming tries to prevent us from doing the expensive
                      * RSA verification in the case where the same cert is
                      * embedded multiple times?  Sure, why not */
-                    if (crtmgr_whitelist_lookup(cmgr, x509, 0)) {
+                    if (crtmgr_trust_list_lookup(cmgr, x509, 0)) {
                         cli_crt *tmp = x509->next;
                         cli_dbgmsg("asn1_parse_mscat: found embedded certificate matching one in the trust store\n");
                         crtmgr_del(&newcerts, x509);
@@ -1709,7 +1706,7 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
 
                     if (parent) {
 
-                        cli_dbgmsg("asn1_parse_mscat: Indirectly whitelisting embedded cert based on %s\n", (parent->name ? parent->name : "(no name)"));
+                        cli_dbgmsg("asn1_parse_mscat: Indirectly trusting embedded cert based on %s\n", (parent->name ? parent->name : "(no name)"));
 
                         // TODO Why is this done?  It seems like you should be
                         // able to have a parent cert can only do cert signing
@@ -2005,7 +2002,7 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
          * signature has a time-stamping countersignature, then we just need to
          * verify that countersignature.  Otherwise, we should determine
          * whether the signing certificate is still valid (time-based, since at
-         * this point in the code no matching blacklist rules fired). */
+         * this point in the code no matching block list rules fired). */
 
         if (!size) {
             time_t now;
@@ -2059,7 +2056,9 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
             // and the presence of those doesn't seem to mess up verification
             // through the Windows API, so just skip those
 
-            if (deeper.size != lenof(OID_countersignature) && deeper.size != lenof(OID_nestedSignatures)) {
+            if (deeper.size != lenof(OID_countersignature) &&
+                deeper.size != lenof(OID_nestedSignatures) &&
+                deeper.size != lenof(OID_RFC3161_countersignature)) {
                 continue;
             }
 
@@ -2069,11 +2068,22 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
                 break;
             }
 
-            if (!memcmp(deeper.content, OID_countersignature, deeper.size))
+            if (deeper.size == lenof(OID_countersignature) &&
+                !memcmp(deeper.content, OID_countersignature, lenof(OID_countersignature))) {
+
                 content = 0; /* counterSignature */
-            else if (!memcmp(deeper.content, OID_nestedSignatures, deeper.size))
+
+            } else if (deeper.size == lenof(OID_nestedSignatures) &&
+                       !memcmp(deeper.content, OID_nestedSignatures, lenof(OID_nestedSignatures))) {
+
                 content = 1; /* nested */
-            else {
+
+            } else if (deeper.size == lenof(OID_RFC3161_countersignature) &&
+                       !memcmp(deeper.content, OID_RFC3161_countersignature, lenof(OID_RFC3161_countersignature))) {
+
+                content = 2; /* RFC3161 Counter Signature */
+
+            } else {
                 continue;
             }
 
@@ -2103,15 +2113,23 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
 
                 result |= 1;
 
-            } else { /* nestedSignature */
+            } else if (content == 1) { /* nestedSignature */
 
                 // TODO Support parsing these out in the future
                 cli_dbgmsg("asn1_parse_mscat: nested signatures detected but parsing them is not currently supported\n");
 
                 deeper.size = 0;
                 result |= 2;
+            } else if (content == 2) {
+
+                // TODO Support verifying these in the future
+                cli_dbgmsg("asn1_parse_mscat: RFC3161 timestamping countersignature detected but parsing them is not currently supported\n");
+
+                deeper.size = 0;
+                result |= 4;
             }
             if (deeper.size) {
+
                 cli_dbgmsg("asn1_parse_mscat: extra data in unauthenticated attribute\n");
                 dsize = 1;
                 break;
@@ -2142,6 +2160,8 @@ static cl_error_t asn1_parse_mscat(struct cl_engine *engine, fmap_t *map, size_t
     } while (0);
 
 finish:
+    OPENSSL_free(mod);
+    OPENSSL_free(exp);
     if (CL_EPARSE == ret) {
         cli_dbgmsg("asn1_parse_mscat: failed to parse authenticode section\n");
     }
@@ -2152,10 +2172,10 @@ int asn1_load_mscat(fmap_t *map, struct cl_engine *engine)
 {
     struct cli_asn1 c;
     unsigned int size;
-    int i;
+    unsigned int i;
 
     // TODO As currently implemented, loading in a .cat file with -d requires
-    // an accompanying .crb with whitelist entries that will cause the .cat
+    // an accompanying .crb with trust entries that will cause the .cat
     // file signatures to verify successfully.  If a user is specifying a .cat
     // file to use, though, we should assume they trust it and at least add the
     // covered hashes from it to hm_fp
@@ -2177,7 +2197,8 @@ int asn1_load_mscat(fmap_t *map, struct cl_engine *engine)
         return 1;
     if (asn1_expect_objtype(map, c.next, &size, &c, 0x17)) /* Effective date - WTF?! */
         return 1;
-    if (asn1_expect_algo(map, &c.next, &size, lenof(OID_szOID_CATALOG_LIST_MEMBER), OID_szOID_CATALOG_LIST_MEMBER)) /* szOID_CATALOG_LIST_MEMBER */
+
+    if (asn1_expect_list_member(map, &c.next, &size)) /* szOID_CATALOG_LIST_MEMBER or szOID_CATALOG_LIST_MEMBER2 */
         return 1;
     if (asn1_expect_objtype(map, c.next, &size, &c, ASN1_TYPE_SEQUENCE)) /* hashes here */
         return 1;
@@ -2199,7 +2220,10 @@ int asn1_load_mscat(fmap_t *map, struct cl_engine *engine)
         }
         while (tag.size) {
             struct cli_asn1 tagval1, tagval2, tagval3;
-            int hashtype;
+            int hashed_obj_type;
+            cli_crt_hashtype hashtype;
+            cli_hash_type_t hm_hashtype;
+            unsigned int hashsize;
 
             if (asn1_expect_objtype(map, tag.content, &tag.size, &tagval1, ASN1_TYPE_SEQUENCE))
                 return 1;
@@ -2245,9 +2269,9 @@ int asn1_load_mscat(fmap_t *map, struct cl_engine *engine)
                 return 1;
             }
             if (!memcmp(tagval3.content, OID_SPC_PE_IMAGE_DATA_OBJID, lenof(OID_SPC_PE_IMAGE_DATA_OBJID)))
-                hashtype = 2;
+                hashed_obj_type = 2;
             else if (!memcmp(tagval3.content, OID_SPC_CAB_DATA_OBJID, lenof(OID_SPC_CAB_DATA_OBJID)))
-                hashtype = 1;
+                hashed_obj_type = 1;
             else {
                 cli_dbgmsg("asn1_load_mscat: unexpected hash type\n");
                 return 1;
@@ -2260,8 +2284,18 @@ int asn1_load_mscat(fmap_t *map, struct cl_engine *engine)
                 return 1;
             }
 
-            if (asn1_expect_algo(map, &tagval2.content, &tagval2.size, lenof(OID_sha1), OID_sha1)) { /* objid 1.3.14.3.2.26 - sha1 */
-                cli_dbgmsg("asn1_load_mscat: currently only SHA1 hashes are supported for .cat file signatures\n");
+            if (asn1_expect_hash_algo(map, &tagval2.content, &tagval2.size, &hashtype, &hashsize)) {
+                cli_dbgmsg("asn1_load_mscat: failed to identify hash algorithm used\n");
+                return 1;
+            }
+
+            /* Translate hashtype to the enum used by the hasher */
+            if (CLI_SHA1RSA == hashtype) {
+                hm_hashtype = CLI_HASH_SHA1;
+            } else if (CLI_SHA256RSA == hashtype) {
+                hm_hashtype = CLI_HASH_SHA256;
+            } else {
+                cli_dbgmsg("asn1_load_mscat: only SHA1 and SHA256 hashes are supported for .cat file sigs\n");
                 return 1;
             }
 
@@ -2271,20 +2305,20 @@ int asn1_load_mscat(fmap_t *map, struct cl_engine *engine)
                 cli_dbgmsg("asn1_load_mscat: found extra data in hash\n");
                 return 1;
             }
-            if (tagval3.size != SHA1_HASH_SIZE) {
+            if (tagval3.size != hashsize) {
                 cli_dbgmsg("asn1_load_mscat: bad hash size %u\n", tagval3.size);
                 return 1;
             }
-            if (!fmap_need_ptr_once(map, tagval3.content, SHA1_HASH_SIZE)) {
+            if (!fmap_need_ptr_once(map, tagval3.content, hashsize)) {
                 cli_dbgmsg("asn1_load_mscat: cannot read hash\n");
                 return 1;
             }
 
             if (cli_debug_flag) {
-                char sha1[SHA1_HASH_SIZE * 2 + 1];
-                for (i = 0; i < SHA1_HASH_SIZE; i++)
-                    sprintf(&sha1[i * 2], "%02x", ((uint8_t *)(tagval3.content))[i]);
-                cli_dbgmsg("asn1_load_mscat: got hash %s (%s)\n", sha1, (hashtype == 2) ? "PE" : "CAB");
+                char sha[SHA256_HASH_SIZE * 2 + 1] = {0};
+                for (i = 0; i < hashsize; i++)
+                    sprintf(&sha[i * 2], "%02x", ((uint8_t *)(tagval3.content))[i]);
+                cli_dbgmsg("asn1_load_mscat: got hash %s (%s)\n", sha, (hashed_obj_type == 2) ? "PE" : "CAB");
             }
             if (!engine->hm_fp) {
                 if (!(engine->hm_fp = MPOOL_CALLOC(engine->mempool, 1, sizeof(*(engine->hm_fp))))) {
@@ -2295,10 +2329,11 @@ int asn1_load_mscat(fmap_t *map, struct cl_engine *engine)
                 engine->hm_fp->mempool = engine->mempool;
 #endif
             }
+
             /* Load the trusted hashes into hm_fp, using the size values
              * 1 and 2 as sentinel values corresponding to CAB and PE hashes
              * from .cat files respectively. */
-            if (hm_addhash_bin(engine->hm_fp, tagval3.content, CLI_HASH_SHA1, hashtype, NULL)) {
+            if (hm_addhash_bin(engine->hm_fp, tagval3.content, hm_hashtype, hashed_obj_type, NULL)) {
                 cli_warnmsg("asn1_load_mscat: failed to add hash\n");
                 return 1;
             }
@@ -2311,10 +2346,10 @@ int asn1_load_mscat(fmap_t *map, struct cl_engine *engine)
 /* Check an embedded PE Authenticode section to determine whether it's trusted.
  * This will return CL_VERIFIED if the file should be trusted, CL_EPARSE if an
  * error occurred while parsing the signature, CL_EVERIFY if parsing was
- * successful but there were no whitelist rules for the signature, and
- * CL_VIRUS if a blacklist rule was found for an embedded certificate.
+ * successful but there were no trust rules for the signature, and
+ * CL_VIRUS if a block list rule was found for an embedded certificate.
  *
- * If CL_VIRUS is returned, certname will be set to the certname of blacklist
+ * If CL_VIRUS is returned, certname will be set to the certname of block list
  * rule that matched (unless certname is NULL). */
 cl_error_t asn1_check_mscat(struct cl_engine *engine, fmap_t *map, size_t offset, unsigned int size, struct cli_mapped_region *regions, uint32_t nregions, cli_ctx *ctx)
 {
@@ -2331,7 +2366,7 @@ cl_error_t asn1_check_mscat(struct cl_engine *engine, fmap_t *map, size_t offset
 
     cli_dbgmsg("in asn1_check_mscat (offset: %llu)\n", (long long unsigned)offset);
     crtmgr_init(&certs);
-    /* Get a copy of all certs in the trust store, excluding blacklist certs */
+    /* Get a copy of all certs in the trust store, excluding block list certs */
     if (crtmgr_add_roots(engine, &certs, 1)) {
         crtmgr_free(&certs);
         return CL_EVERIFY;
@@ -2404,6 +2439,6 @@ cl_error_t asn1_check_mscat(struct cl_engine *engine, fmap_t *map, size_t offset
         return CL_EPARSE;
     }
 
-    cli_dbgmsg("asn1_check_mscat: file with valid authenticode signature, whitelisted\n");
+    cli_dbgmsg("asn1_check_mscat: file with valid authenticode signature, trusted\n");
     return CL_VERIFIED;
 }

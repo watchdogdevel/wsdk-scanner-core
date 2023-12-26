@@ -1,7 +1,7 @@
 /*
  *  HTML Entity & Encoding normalization.
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -20,7 +20,9 @@
  *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
  *  MA 02110-1301, USA.
  */
+#if HAVE_CONFIG_H
 #include "clamav-config.h"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,7 +85,7 @@ static inline unsigned char* u16_normalize(uint16_t u16, unsigned char* out, con
             return NULL;
         }
         /* inline version of
-		 * out += snprintf(out, max_num_length, "&#x%x;", u16) */
+         * out += snprintf(out, max_num_length, "&#x%x;", u16) */
         out[0] = '&';
         out[1] = '#';
         out[2] = 'x';
@@ -112,7 +114,7 @@ const char* entity_norm(struct entity_conv* conv, const unsigned char* entity)
 {
     struct cli_element* e = cli_hashtab_find(&entities_htable, (const char*)entity, strlen((const char*)entity));
     if (e && e->key) {
-        unsigned char* out = u16_normalize(e->data, conv->entity_buff, sizeof(conv->entity_buff) - 1);
+        unsigned char* out = u16_normalize((uint16_t)e->data, conv->entity_buff, sizeof(conv->entity_buff) - 1);
         if (out) {
             *out++ = '\0';
             return (const char*)conv->entity_buff;
@@ -127,7 +129,7 @@ static size_t encoding_bytes(const char* fromcode, enum encodings* encoding)
     /* special case for these unusual byteorders */
     struct cli_element* e = cli_hashtab_find(&aliases_htable, fromcode, strlen(fromcode));
     if (e && e->key) {
-        *encoding = e->data;
+        *encoding = (enum encodings)e->data;
     } else {
         *encoding = E_OTHER;
     }
@@ -301,8 +303,8 @@ static int iconv(iconv_t iconv_struct, char** inbuf, size_t* inbytesleft,
                         output[j++] = 0xff;
 
                         /*out[j++] = ((input[i] & 0x07) << 2) | ((input[i+1] >> 4) & 0x3);
-							out[j++] = (input[i+1] << 4) | ((input[i+2] >> 2) & 0x0F);
-							out[j++] = (input[i+2] << 6) | (input[i+2] & 0x3F);*/
+                                                        out[j++] = (input[i+1] << 4) | ((input[i+2] >> 2) & 0x0F);
+                                                        out[j++] = (input[i+2] << 6) | (input[i+2] & 0x3F);*/
                     } else {
                         cli_dbgmsg(MODULE_NAME "invalid UTF8 character encountered\n");
                         break;
@@ -350,7 +352,7 @@ static inline const char* detect_encoding(const unsigned char* bom, uint8_t* bom
     int has_bom          = 0;
     uint8_t enc_bytes    = 1; /* default is UTF8, which has a minimum of 1 bytes */
     /* undecided 32-bit encodings are treated as ucs4, and
-	 * 16 bit as utf16*/
+     * 16 bit as utf16*/
     switch (bom[0]) {
         case 0x00:
             if (bom[1] == 0x00) {
@@ -515,8 +517,8 @@ struct iconv_cache {
 static void iconv_cache_init(struct iconv_cache* cache)
 {
     /*	cache->tab = NULL;
-	cache->len = 0;
-	cache->used = 0; - already done by memset*/
+        cache->len = 0;
+        cache->used = 0; - already done by memset*/
     cli_dbgmsg(MODULE_NAME "Initializing iconv pool:%p\n", (void*)cache);
     cli_hashtab_init(&cache->hashtab, 32);
 }
@@ -639,14 +641,14 @@ static iconv_t iconv_open_cached(const char* fromcode)
     }
 
     e = cli_hashtab_find(&cache->hashtab, fromcode, fromcode_len);
-    if (e && (e->data < 0 || (size_t)e->data > cache->len)) {
+    if (e && ((size_t)e->data == (size_t)-1 || (size_t)e->data > cache->len)) {
         e = NULL;
     }
     if (e) {
         size_t dummy_in, dummy_out;
         /* reset state */
-        iconv(cache->tab[e->data], NULL, &dummy_in, NULL, &dummy_out);
-        return cache->tab[e->data];
+        iconv(cache->tab[(size_t)e->data], NULL, &dummy_in, NULL, &dummy_out);
+        return cache->tab[(size_t)e->data];
     }
     cli_dbgmsg(MODULE_NAME "iconv not found in cache, for encoding:%s\n", fromcode);
     iconv_struct = iconv_open("UTF-16BE", (const char*)fromcode);
@@ -664,7 +666,7 @@ static iconv_t iconv_open_cached(const char* fromcode)
             }
         }
 
-        cli_hashtab_insert(&cache->hashtab, fromcode, fromcode_len, idx);
+        cli_hashtab_insert(&cache->hashtab, fromcode, fromcode_len, (const cli_element_data)idx);
         cache->tab[idx] = iconv_struct;
         cli_dbgmsg(MODULE_NAME "iconv_open(),for:%s -> %p\n", fromcode, (void*)cache->tab[idx]);
         return cache->tab[idx];
@@ -687,7 +689,7 @@ static int in_iconv_u16(const m_area_t* in_m_area, iconv_t* iconv_struct, m_area
     }
     /* convert encoding conv->tmp_area. conv->out_area */
     alignfix = inleft % 4; /* iconv gives an error if we give him 3 bytes to convert,
-			       and we are using ucs4, ditto for utf16, and 1 byte*/
+                               and we are using ucs4, ditto for utf16, and 1 byte*/
     inleft -= alignfix;
 
     if (!inleft && alignfix) {
@@ -716,8 +718,8 @@ static int in_iconv_u16(const m_area_t* in_m_area, iconv_t* iconv_struct, m_area
             continue;
         }
         /*cli_dbgmsg(MODULE_NAME "resuming (inleft:%lu, outleft:%lu, inpos:%ld, %ld)\n",
-					inleft, outleft, input - (char*)in_m_area->buffer,
-					out - (char*)out_m_area->buffer);*/
+                                        inleft, outleft, input - (char*)in_m_area->buffer,
+                                        out - (char*)out_m_area->buffer);*/
         /* output raw byte, and resume at next byte */
         if (outleft < 2) break;
         outleft -= 2;
@@ -772,7 +774,6 @@ int encoding_normalize_toascii(const m_area_t* in_m_area, const char* initial_en
 }
 
 cl_error_t cli_codepage_to_utf8(char* in, size_t in_size, uint16_t codepage, char** out, size_t* out_size)
-
 {
     cl_error_t status = CL_BREAK;
 
@@ -780,14 +781,14 @@ cl_error_t cli_codepage_to_utf8(char* in, size_t in_size, uint16_t codepage, cha
     size_t out_utf8_size = 0;
 
 #if defined(HAVE_ICONV)
-    iconv_t conv = (iconv_t) -1;
+    iconv_t conv = (iconv_t)-1;
 #elif defined(WIN32)
     LPWSTR lpWideCharStr = NULL;
     int cchWideChar      = 0;
 #endif
 
     if (NULL == in || in_size == 0 || NULL == out || NULL == out_size) {
-        cli_dbgmsg("egg_filename_to_utf8: Invalid args.\n");
+        cli_dbgmsg("cli_codepage_to_utf8: Invalid args.\n");
         status = CL_EARG;
         goto done;
     }
@@ -796,22 +797,22 @@ cl_error_t cli_codepage_to_utf8(char* in, size_t in_size, uint16_t codepage, cha
     *out_size = 0;
 
     switch (codepage) {
-        case 20127:   /* US-ASCII (7-bit) */
-        case 65001: { /* Unicode (UTF-8) */
+        case CODEPAGE_US_7BIT_ASCII: /* US-ASCII (7-bit) */
+        case CODEPAGE_UTF8: {        /* Unicode (UTF-8) */
             char* track;
             int byte_count, sigbit_count;
 
             out_utf8_size = in_size;
             out_utf8      = cli_calloc(1, out_utf8_size + 1);
             if (NULL == out_utf8) {
-                cli_errmsg("egg_filename_to_utf8: Failure allocating buffer for utf8 filename.\n");
+                cli_errmsg("cli_codepage_to_utf8: Failure allocating buffer for utf8 filename.\n");
                 status = CL_EMEM;
                 goto done;
             }
             memcpy(out_utf8, in, in_size);
 
             track = out_utf8 + in_size - 1;
-            if ((codepage == 65001) && (*track & 0x80)) {
+            if ((codepage == CODEPAGE_UTF8) && (*track & 0x80)) {
                 /*
                  * UTF-8 with a most significant bit.
                  */
@@ -829,7 +830,7 @@ cl_error_t cli_codepage_to_utf8(char* in, size_t in_size, uint16_t codepage, cha
                 }
 
                 if (byte_count != sigbit_count) {
-                    cli_dbgmsg("egg_filename_to_utf8: cleaning out %d bytes from incomplete "
+                    cli_dbgmsg("cli_codepage_to_utf8: cleaning out %d bytes from incomplete "
                                "utf-8 character length %d\n",
                                byte_count, sigbit_count);
                     for (; byte_count > 0; byte_count--, track++) {
@@ -847,45 +848,73 @@ cl_error_t cli_codepage_to_utf8(char* in, size_t in_size, uint16_t codepage, cha
              * Do conversion using native Win32 APIs.
              */
 
-            if (1200 != codepage) { /* not already UTF16-LE (Windows Unicode) */
+            if (CODEPAGE_UTF16_LE != codepage) { /* not already UTF16-LE (Windows Unicode) */
                 /*
                  * First, Convert from codepage -> UCS-2 LE with MultiByteToWideChar(codepage)
                  */
-                cchWideChar = MultiByteToWideChar(
-                    codepage,
-                    0,
-                    in,
-                    in_size,
-                    NULL,
-                    0);
-                if (0 == cchWideChar) {
-                    cli_dbgmsg("egg_filename_to_utf8: failed to determine string size needed for ansi to widechar conversion.\n");
-                    status = CL_EPARSE;
-                    goto done;
-                }
+                if (CODEPAGE_UTF16_BE == codepage) {
+                    /*
+                     * MultiByteToWideChar() does not support conversions from UTF-16BE to UTF-16LE.
+                     * However, conversion is simply a matter of swapping the bytes for each WCHAR_T.
+                     * See: https://stackoverflow.com/questions/29054217/multibytetowidechar-for-unicode-code-pages-1200-1201-12000-12001
+                     */
+                    int i = 0;
 
-                lpWideCharStr = malloc((cchWideChar + 1) * sizeof(WCHAR));
-                if (NULL == lpWideCharStr) {
-                    cli_dbgmsg("egg_filename_to_utf8: failed to allocate memory for wide char string.\n");
-                    status = CL_EMEM;
-                    goto done;
-                }
+                    uint16_t* pCodeUnits = (uint16_t*)in;
+                    cchWideChar          = (int)in_size / 2;
 
-                cchWideChar = MultiByteToWideChar(
-                    codepage,
-                    0,
-                    in,
-                    in_size,
-                    lpWideCharStr,
-                    cchWideChar + 1);
-                if (0 == cchWideChar) {
-                    cli_dbgmsg("egg_filename_to_utf8: failed to convert multibyte string to widechars.\n");
-                    status = CL_EPARSE;
-                    goto done;
-                }
+                    lpWideCharStr = cli_malloc((cchWideChar) * sizeof(WCHAR)); /* No need for a null terminator here, we'll deal with the exact size */
+                    if (NULL == lpWideCharStr) {
+                        cli_dbgmsg("cli_codepage_to_utf8: failed to allocate memory for wide char string.\n");
+                        status = CL_EMEM;
+                        goto done;
+                    }
 
-                in      = (char*)lpWideCharStr;
-                in_size = cchWideChar;
+                    for (i = 0; i < cchWideChar; i++) {
+                        lpWideCharStr[i] = (WCHAR)(((pCodeUnits[i] << 8) & 0xFF00) |
+                                                   ((pCodeUnits[i] >> 8) & 0x00FF));
+                    }
+                    in = (char*)lpWideCharStr;
+                    /* in_size didn't change */
+
+                } else {
+                    cchWideChar = MultiByteToWideChar(
+                        codepage,
+                        0,
+                        in,
+                        (int)in_size,
+                        NULL,
+                        0);
+                    if (0 == cchWideChar) {
+                        DWORD error = GetLastError();
+                        cli_dbgmsg("cli_codepage_to_utf8: failed to determine string size needed for ansi to widechar conversion: %d.\n", error);
+                        status = CL_EPARSE;
+                        goto done;
+                    }
+
+                    lpWideCharStr = cli_malloc((cchWideChar) * sizeof(WCHAR)); /* No need for a null terminator here, we'll deal with the exact size */
+                    if (NULL == lpWideCharStr) {
+                        cli_dbgmsg("cli_codepage_to_utf8: failed to allocate memory for wide char string.\n");
+                        status = CL_EMEM;
+                        goto done;
+                    }
+
+                    cchWideChar = MultiByteToWideChar(
+                        codepage,
+                        0,
+                        in,
+                        (int)in_size,
+                        lpWideCharStr,
+                        cchWideChar);
+                    if (0 == cchWideChar) {
+                        cli_dbgmsg("cli_codepage_to_utf8: failed to convert multibyte string to widechars.\n");
+                        status = CL_EPARSE;
+                        goto done;
+                    }
+
+                    in      = (char*)lpWideCharStr;
+                    in_size = cchWideChar * sizeof(WCHAR);
+                }
             }
 
             /*
@@ -895,20 +924,20 @@ cl_error_t cli_codepage_to_utf8(char* in, size_t in_size, uint16_t codepage, cha
                 CP_UTF8,
                 0,
                 (LPCWCH)in,
-                in_size / sizeof(WCHAR),
+                (int)in_size / sizeof(WCHAR),
                 NULL,
                 0,
                 NULL,
                 NULL);
             if (0 == out_utf8_size) {
-                cli_dbgmsg("egg_filename_to_utf8: failed to determine string size needed for widechar conversion.\n");
+                cli_dbgmsg("cli_codepage_to_utf8: failed to determine string size needed for widechar conversion.\n");
                 status = CL_EPARSE;
                 goto done;
             }
 
-            out_utf8 = malloc(out_utf8_size + 1);
-            if (NULL == lpWideCharStr) {
-                cli_dbgmsg("egg_filename_to_utf8: failed to allocate memory for wide char to utf-8 string.\n");
+            out_utf8 = cli_malloc(out_utf8_size + 1); /* Add a null terminator to this string */
+            if (NULL == out_utf8) {
+                cli_dbgmsg("cli_codepage_to_utf8: failed to allocate memory for wide char to utf-8 string.\n");
                 status = CL_EMEM;
                 goto done;
             }
@@ -917,21 +946,23 @@ cl_error_t cli_codepage_to_utf8(char* in, size_t in_size, uint16_t codepage, cha
                 CP_UTF8,
                 0,
                 (LPCWCH)in,
-                in_size / sizeof(WCHAR),
+                (int)in_size / sizeof(WCHAR),
                 out_utf8,
-                out_utf8_size,
+                (int)out_utf8_size,
                 NULL,
                 NULL);
             if (0 == out_utf8_size) {
-                cli_dbgmsg("egg_filename_to_utf8: failed to convert widechar string to utf-8.\n");
+                cli_dbgmsg("cli_codepage_to_utf8: failed to convert widechar string to utf-8.\n");
                 status = CL_EPARSE;
                 goto done;
             }
 
+            /* Set a null byte, since null-terminator is not provided when in_size is provided */
+            out_utf8[out_utf8_size] = '\0';
+
 #elif defined(HAVE_ICONV)
 
             uint32_t attempt, i;
-            size_t inbytesleft, outbytesleft;
             const char* encoding = NULL;
 
             for (i = 0; i < NUMCODEPAGES; ++i) {
@@ -943,45 +974,63 @@ cl_error_t cli_codepage_to_utf8(char* in, size_t in_size, uint16_t codepage, cha
                 }
             }
 
+            if (NULL == encoding) {
+                cli_dbgmsg("cli_codepage_to_utf8: Invalid codepage parameter passed in.\n");
+                goto done;
+            }
+
             for (attempt = 1; attempt <= 3; attempt++) {
-                char* out_utf8_tmp;
-                char* out_utf8_index;
+                char* inbuf         = in;
+                size_t inbufsize    = in_size;
+                size_t iconvRet     = -1;
+                size_t outbytesleft = 0;
+
+                char* out_utf8_tmp   = NULL;
+                char* out_utf8_index = NULL;
 
                 /* Charset to UTF-8 should never exceed in_size * 6;
                  * We can shrink final buffer after the conversion, if needed. */
                 out_utf8_size = (in_size * 2) * attempt;
 
-                inbytesleft  = in_size;
                 outbytesleft = out_utf8_size;
 
                 out_utf8 = cli_calloc(1, out_utf8_size + 1);
                 if (NULL == out_utf8) {
-                    cli_errmsg("egg_filename_to_utf8: Failure allocating buffer for utf8 data.\n");
+                    cli_errmsg("cli_codepage_to_utf8: Failure allocating buffer for utf8 data.\n");
                     status = CL_EMEM;
+                    goto done;
                 }
                 out_utf8_index = out_utf8;
 
                 conv = iconv_open("UTF-8//TRANSLIT", encoding);
                 if (conv == (iconv_t)-1) {
-                    cli_warnmsg("egg_filename_to_utf8: Failed to open iconv.\n");
-                    goto done;
+                    // Try again w/out the //TRANSLIT, required because musl doesn't supprot it.
+                    // See: https://github.com/akrennmair/newsbeuter/issues/364#issuecomment-250208235
+                    conv = iconv_open("UTF-8", encoding);
+                    if (conv == (iconv_t)-1) {
+                        cli_warnmsg("cli_codepage_to_utf8: Failed to open iconv.\n");
+                        goto done;
+                    }
                 }
 
-                if ((size_t)-1 == iconv(conv, &in, &inbytesleft, &out_utf8_index, &outbytesleft)) {
+                iconvRet = iconv(conv, &inbuf, &inbufsize, &out_utf8_index, &outbytesleft);
+                iconv_close(conv);
+                conv = (iconv_t)-1;
+                if ((size_t)-1 == iconvRet) {
                     switch (errno) {
                         case E2BIG:
-                            cli_warnmsg("egg_filename_to_utf8: iconv error: There is not sufficient room at *outbuf.\n");
+                            cli_warnmsg("cli_codepage_to_utf8: iconv error: There is not sufficient room at *outbuf.\n");
                             free(out_utf8);
                             out_utf8 = NULL;
                             continue; /* Try again, with a larger buffer. */
                         case EILSEQ:
-                            cli_warnmsg("egg_filename_to_utf8: iconv error: An invalid multibyte sequence has been encountered in the input.\n");
+                            cli_warnmsg("cli_codepage_to_utf8: iconv error: An invalid multibyte sequence has been encountered in the input.\n");
                             break;
                         case EINVAL:
-                            cli_warnmsg("egg_filename_to_utf8: iconv error: An incomplete multibyte sequence has been encountered in the input.\n");
+                            cli_dbgmsg("cli_codepage_to_utf8: iconv error: An incomplete multibyte sequence has been encountered in the input.\n");
                             break;
                         default:
-                            cli_warnmsg("egg_filename_to_utf8: iconv error: Unexpected error code %d.\n", errno);
+                            cli_warnmsg("cli_codepage_to_utf8: iconv error: Unexpected error code %d.\n", errno);
                     }
                     status = CL_EPARSE;
                     goto done;
@@ -990,7 +1039,7 @@ cl_error_t cli_codepage_to_utf8(char* in, size_t in_size, uint16_t codepage, cha
                 /* iconv succeeded, but probably didn't use the whole buffer. Free up the extra memory. */
                 out_utf8_tmp = cli_realloc(out_utf8, out_utf8_size - outbytesleft + 1);
                 if (NULL == out_utf8_tmp) {
-                    cli_errmsg("egg_filename_to_utf8: failure cli_realloc'ing converted filename.\n");
+                    cli_errmsg("cli_codepage_to_utf8: failure cli_realloc'ing converted filename.\n");
                     status = CL_EMEM;
                     goto done;
                 }
@@ -1024,7 +1073,7 @@ done:
 #endif
 
 #if defined(HAVE_ICONV)
-    if (conv != (iconv_t) -1) {
+    if (conv != (iconv_t)-1) {
         iconv_close(conv);
     }
 #endif
@@ -1038,9 +1087,9 @@ done:
     return status;
 }
 
-char *cli_utf16toascii(const char *str, unsigned int length)
+char* cli_utf16toascii(const char* str, unsigned int length)
 {
-    char *decoded;
+    char* decoded;
     unsigned int i, j;
 
     if (length < 2) {
@@ -1062,14 +1111,14 @@ char *cli_utf16toascii(const char *str, unsigned int length)
     return decoded;
 }
 
-char *cli_utf16_to_utf8(const char *utf16, size_t length, encoding_t type)
+char* cli_utf16_to_utf8(const char* utf16, size_t length, encoding_t type)
 {
     /* utf8 -
      * 4 bytes for utf16 high+low surrogate (4 bytes input)
      * 3 bytes for utf16 otherwise (2 bytes input) */
     size_t i, j;
     size_t needed = length * 3 / 2 + 2;
-    char *s2;
+    char* s2;
 
     if (length < 2)
         return cli_strdup("");
@@ -1134,7 +1183,7 @@ char *cli_utf16_to_utf8(const char *utf16, size_t length, encoding_t type)
     return s2;
 }
 
-int cli_isutf8(const char *buf, unsigned int len)
+int cli_isutf8(const char* buf, unsigned int len)
 {
     unsigned int i, j;
 

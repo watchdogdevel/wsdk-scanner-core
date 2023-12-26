@@ -1,7 +1,7 @@
 /*
  *  Match a string against a list of patterns/regexes.
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -39,7 +39,6 @@
 
 #include <limits.h>
 #include <sys/types.h>
-#include <assert.h>
 
 #include "regex/regex.h"
 
@@ -73,7 +72,7 @@ static cl_error_t add_static_pattern(struct regex_matcher *matcher, char *patter
 static void fatal_error(struct regex_matcher *matcher)
 {
     regex_list_done(matcher);
-    matcher->list_inited = -1; /* the phishing module will know we tried to load a whitelist, and failed, so it will disable itself too*/
+    matcher->list_inited = -1; /* the phishing module will know we tried to load an allow list, and failed, so it will disable itself too*/
 }
 
 static inline char get_char_at_pos_with_skip(const struct pre_fixup_info *info, const char *buffer, size_t pos)
@@ -118,9 +117,9 @@ static int validate_subdomain(const struct regex_list *regex, const struct pre_f
             const size_t pos = real_len - match_len - 1;
             if (real_url[pos] != '.') {
                 /* we need to shift left, and insert a '.'
-				 * we have an extra '.' at the beginning inserted by get_host to have room,
-				 * orig_real_url has to be used here,
-				 * because we want to overwrite that extra '.' */
+                 * we have an extra '.' at the beginning inserted by get_host to have room,
+                 * orig_real_url has to be used here,
+                 * because we want to overwrite that extra '.' */
                 size_t orig_real_len = strlen(orig_real_url);
                 cli_dbgmsg("No dot here:%s\n", real_url + pos);
                 real_url = orig_real_url;
@@ -140,7 +139,7 @@ static int validate_subdomain(const struct regex_list *regex, const struct pre_f
  * @real_url - href target
  * @display_url - <a> tag contents
  * @hostOnly - if you want to match only the host part
- * @is_whitelist - is this a lookup in whitelist?
+ * @is_allow_list_lookup - is this a lookup in an allow list?
  *
  * @return - CL_SUCCESS - url doesn't match
  *         - CL_VIRUS - url matches list
@@ -148,7 +147,7 @@ static int validate_subdomain(const struct regex_list *regex, const struct pre_f
  * Do not send NULL pointers to this function!!
  *
  */
-cl_error_t regex_list_match(struct regex_matcher *matcher, char *real_url, const char *display_url, const struct pre_fixup_info *pre_fixup, int hostOnly, const char **info, int is_whitelist)
+cl_error_t regex_list_match(struct regex_matcher *matcher, char *real_url, const char *display_url, const struct pre_fixup_info *pre_fixup, int hostOnly, const char **info, int is_allow_list_lookup)
 {
     char *orig_real_url = real_url;
     struct regex_list *regex;
@@ -157,24 +156,46 @@ cl_error_t regex_list_match(struct regex_matcher *matcher, char *real_url, const
     char *buffer         = NULL;
     char *bufrev         = NULL;
     cl_error_t rc        = CL_SUCCESS;
-    //int filter_search_rc = 0;
+    int filter_search_rc = 0;
     int root;
     struct cli_ac_data mdata;
     struct cli_ac_result *res = NULL;
 
-    assert(matcher);
-    assert(real_url);
-    assert(display_url);
+    if (NULL == matcher) {
+        rc = CL_ENULLARG;
+        cli_errmsg("regex_list_match: matcher must be initialized\n");
+        goto done;
+    }
+
+    if (NULL == real_url) {
+        rc = CL_ENULLARG;
+        cli_errmsg("regex_list_match: real_url must be initialized\n");
+        goto done;
+    }
+
+    if (NULL == display_url) {
+        rc = CL_ENULLARG;
+        cli_errmsg("regex_list_match: display_url must be initialized\n");
+        goto done;
+    }
+
     *info = NULL;
-    if (!matcher->list_inited)
-        return CL_SUCCESS;
-    assert(matcher->list_built);
+    if (1 != matcher->list_inited) {
+        rc = CL_SUCCESS;
+        goto done;
+    }
+    if (0 == matcher->list_built) {
+        cli_errmsg("regex_list_match: matcher->list_built must be initialized\n");
+        rc = CL_ENULLARG;
+        goto done;
+    }
+
     /* skip initial '.' inserted by get_host */
     if (real_url[0] == '.') real_url++;
     if (display_url[0] == '.') display_url++;
     real_len    = strlen(real_url);
     display_len = strlen(display_url);
-    buffer_len  = (hostOnly && !is_whitelist) ? real_len + 1 : real_len + display_len + 1 + 1;
+    buffer_len  = (hostOnly && !is_allow_list_lookup) ? real_len + 1 : real_len + display_len + 1 + 1;
     if (buffer_len < 3) {
         /* too short, no match possible */
         return CL_SUCCESS;
@@ -185,16 +206,16 @@ cl_error_t regex_list_match(struct regex_matcher *matcher, char *real_url, const
         return CL_EMEM;
     }
 
-    strncpy(buffer, real_url, real_len);
-    buffer[real_len] = (!is_whitelist && hostOnly) ? '/' : ':';
+    strncpy(buffer, real_url, buffer_len);
+    buffer[real_len] = (!is_allow_list_lookup && hostOnly) ? '/' : ':';
 
     /*
      * For H-type PDB signatures, real_url is actually the DisplayedHostname.
      * RealHostname is not used.
      */
-    if (!hostOnly || is_whitelist) {
+    if (!hostOnly || is_allow_list_lookup) {
         /* For all other PDB and WDB signatures concatenate Real:Displayed. */
-        strncpy(buffer + real_len + 1, display_url, display_len);
+        strncpy(buffer + real_len + 1, display_url, buffer_len - real_len);
     }
     buffer[buffer_len - 1] = '/';
     buffer[buffer_len]     = 0;
@@ -208,39 +229,16 @@ cl_error_t regex_list_match(struct regex_matcher *matcher, char *real_url, const
         return CL_EMEM;
 
     reverse_string(bufrev);
-    // TODO Add this back in once we improve the regex parsing code that finds
-    // suffixes to add to the filter.
-    //
-    // Reviewing Coverity bug reports we found that the return value to this
-    // filter_search call was effectively being ignored, causing no filtering
-    // to occur. Fixing this issue resulted in a unit test that uses the
-    // following match list regex to fail when searching for `ebay.com`.:
-    //
-    // .+\\.paypal\\.(com|de|fr|it)([/?].*)?:.+\\.ebay\\.(at|be|ca|ch|co\\.uk|de|es|fr|ie|in|it|nl|ph|pl|com(\\.(au|cn|hk|my|sg))?)/
-    //
-    // After investigating further, this is because the regex_list_add_pattern
-    // call, which parses the regex for suffixes and attempts to add these to
-    // the filter, can't handle the `com(\\.(au|cn|hk|my|sg))?` portion of
-    // the regex. As a result, it only adds `ebay.at`, `ebay.be`, `ebay.ca`, up
-    // through `ebay.pl` into the filter). With the commented out code below
-    // uncommented, these suffixes not existing in the filter are treated as
-    // there not being a corresponding regex for ebay.com, causing no regex
-    // rules to be evaluated against the URL.
-    //
-    // We should get the regex parsing code working (and ensure it handles any
-    // other complex cases in daily.cdb) before re-enabling this code. The code
-    // has had no effect for 12+ years at this point, though, so it's probably
-    // safe to wait a bit longer without it.
-    //
-    //filter_search_rc = filter_search(&matcher->filter, (const unsigned char *)bufrev, buffer_len);
-    //if (filter_search_rc == -1) {
-    //    free(buffer);
-    //    free(bufrev);
-    //    /* filter says this suffix doesn't match.
-    //     * The filter has false positives, but no false
-    //     * negatives */
-    //    return CL_SUCCESS;
-    //}
+
+    filter_search_rc = filter_search(&matcher->filter, (const unsigned char *)bufrev, buffer_len);
+    if (filter_search_rc == -1) {
+        free(buffer);
+        free(bufrev);
+        /* filter says this suffix doesn't match.
+        * The filter has false positives, but no false
+        * negatives */
+        return CL_SUCCESS;
+    }
 
     rc = cli_ac_scanbuff((const unsigned char *)bufrev, buffer_len, NULL, (void *)&regex, &res, &matcher->suffixes, &mdata, 0, 0, NULL, AC_SCAN_VIR, NULL);
     free(bufrev);
@@ -258,7 +256,7 @@ cl_error_t regex_list_match(struct regex_matcher *matcher, char *real_url, const
         }
         while (!rc && regex) {
             /* loop over multiple regexes corresponding to
-				 * this suffix */
+             * this suffix */
             if (!regex->preg) {
                 /* we matched a static pattern */
                 rc = validate_subdomain(regex, pre_fixup, buffer, buffer_len, real_url, real_len, orig_real_url);
@@ -279,6 +277,7 @@ cl_error_t regex_list_match(struct regex_matcher *matcher, char *real_url, const
         cli_dbgmsg("Lookup result: not in regex list\n");
     else
         cli_dbgmsg("Lookup result: in regex list\n");
+done:
     return rc;
 }
 
@@ -287,11 +286,25 @@ cl_error_t regex_list_match(struct regex_matcher *matcher, char *real_url, const
 cl_error_t init_regex_list(struct regex_matcher *matcher, uint8_t dconf_prefiltering)
 {
 #ifdef USE_MPOOL
-    mpool_t *mp = matcher->mempool;
+    mpool_t *mp = NULL;
 #endif
-    cl_error_t rc;
+    cl_error_t rc = CL_SUCCESS;
 
-    assert(matcher);
+    if (NULL == matcher) {
+        cli_errmsg("init_regex_list: matcher must be initialized\n");
+        rc = CL_ENULLARG;
+        goto done;
+    }
+
+#ifdef USE_MPOOL
+    mp = matcher->mempool;
+    if (NULL == mp) {
+        cli_errmsg("init_regex_list: matcher->mempool must be initialized\n");
+        rc = CL_ENULLARG;
+        goto done;
+    }
+#endif
+
     memset(matcher, 0, sizeof(*matcher));
 
     matcher->list_inited = 1;
@@ -301,23 +314,25 @@ cl_error_t init_regex_list(struct regex_matcher *matcher, uint8_t dconf_prefilte
 #ifdef USE_MPOOL
     matcher->mempool          = mp;
     matcher->suffixes.mempool = mp;
-    assert(mp && "mempool must be initialized");
 #endif
+
     if ((rc = cli_ac_init(&matcher->suffixes, 2, 32, dconf_prefiltering))) {
-        return rc;
+        goto done;
     }
 #ifdef USE_MPOOL
     matcher->sha256_hashes.mempool  = mp;
     matcher->hostkey_prefix.mempool = mp;
 #endif
     if ((rc = cli_bm_init(&matcher->sha256_hashes))) {
-        return rc;
+        goto done;
     }
     if ((rc = cli_bm_init(&matcher->hostkey_prefix))) {
-        return rc;
+        goto done;
     }
     filter_init(&matcher->filter);
-    return CL_SUCCESS;
+
+done:
+    return rc;
 }
 
 static int functionality_level_check(char *line)
@@ -365,15 +380,27 @@ static int functionality_level_check(char *line)
 
 static int add_hash(struct regex_matcher *matcher, char *pattern, const char fl, int is_prefix)
 {
-    int rc;
-    struct cli_bm_patt *pat = MPOOL_CALLOC(matcher->mempool, 1, sizeof(*pat));
-    struct cli_matcher *bm;
-    const char *vname = NULL;
-    if (!pat)
-        return CL_EMEM;
+    int rc                  = CL_SUCCESS;
+    struct cli_bm_patt *pat = NULL;
+    struct cli_matcher *bm  = NULL;
+    const char *vname       = NULL;
+
+    if (0 == strlen(pattern)) {
+        cli_errmsg("add_hash: Invalid pattern '%s' in database\n", pattern);
+        rc = CL_EMALFDB;
+        goto done;
+    }
+
+    pat = MPOOL_CALLOC(matcher->mempool, 1, sizeof(*pat));
+    if (!pat) {
+        rc = CL_EMEM;
+        goto done;
+    }
     pat->pattern = (unsigned char *)CLI_MPOOL_HEX2STR(matcher->mempool, pattern);
-    if (!pat->pattern)
-        return CL_EMALFDB;
+    if (!pat->pattern) {
+        rc = CL_EMALFDB;
+        goto done;
+    }
     pat->length = 32;
     if (is_prefix) {
         pat->length = 4;
@@ -384,7 +411,7 @@ static int add_hash(struct regex_matcher *matcher, char *pattern, const char fl,
 
     if (!matcher->sha256_pfx_set.keys) {
         if ((rc = cli_hashset_init(&matcher->sha256_pfx_set, 1048576, 90))) {
-            return rc;
+            goto done;
         }
     }
 
@@ -392,39 +419,52 @@ static int add_hash(struct regex_matcher *matcher, char *pattern, const char fl,
         cli_hashset_contains(&matcher->sha256_pfx_set, cli_readint32(pat->pattern)) &&
         cli_bm_scanbuff(pat->pattern, 32, &vname, NULL, &matcher->sha256_hashes, 0, NULL, NULL, NULL) == CL_VIRUS) {
         if (*vname == 'W') {
-            /* hash is whitelisted in local.gdb */
+            /* hash is allowed in local.gdb */
             cli_dbgmsg("Skipping hash %s\n", pattern);
-            MPOOL_FREE(matcher->mempool, pat->pattern);
-            MPOOL_FREE(matcher->mempool, pat);
-            return CL_SUCCESS;
+            rc = CL_SUCCESS;
+            goto done;
         }
     }
     pat->virname = MPOOL_MALLOC(matcher->mempool, 1);
     if (!pat->virname) {
-        free(pat);
         cli_errmsg("add_hash: Unable to allocate memory for path->virname\n");
-        return CL_EMEM;
+        rc = CL_EMEM;
+        goto done;
     }
     *pat->virname = fl;
     cli_hashset_addkey(&matcher->sha256_pfx_set, cli_readint32(pat->pattern));
     if ((rc = cli_bm_addpatt(bm, pat, "*"))) {
         cli_errmsg("add_hash: failed to add BM pattern\n");
-        free(pat->pattern);
-        free(pat->virname);
-        free(pat);
-        return CL_EMALFDB;
+        rc = CL_EMALFDB;
+        goto done;
     }
-    return CL_SUCCESS;
+
+    pat = NULL;
+done:
+    if (pat) {
+        if (pat->pattern) {
+            MPOOL_FREE(matcher->mempool, pat->pattern);
+        }
+        if (pat->virname) {
+            MPOOL_FREE(matcher->mempool, pat->virname);
+        }
+        MPOOL_FREE(matcher->mempool, pat);
+    }
+
+    return rc;
 }
 
 /* Load patterns/regexes from file */
-cl_error_t load_regex_matcher(struct cl_engine *engine, struct regex_matcher *matcher, FILE *fd, unsigned int *signo, unsigned int options, int is_whitelist, struct cli_dbio *dbio, uint8_t dconf_prefiltering)
+cl_error_t load_regex_matcher(struct cl_engine *engine, struct regex_matcher *matcher, FILE *fd, unsigned int *signo, unsigned int options, int is_allow_list_lookup, struct cli_dbio *dbio, uint8_t dconf_prefiltering)
 {
     cl_error_t rc;
     int line = 0, entry = 0;
     char buffer[FILEBUFF];
 
-    assert(matcher);
+    if (NULL == matcher) {
+        cli_errmsg("load_regex_matcher: matcher must be initialized\n");
+        return CL_ENULLARG;
+    }
 
     if (matcher->list_inited == -1)
         return CL_EMALFDB; /* already failed to load */
@@ -443,25 +483,26 @@ cl_error_t load_regex_matcher(struct cl_engine *engine, struct regex_matcher *ma
         }
     }
     /*
-	 * Regexlist db format (common to .wdb(whitelist) and .pdb(domainlist) files:
-	 * Multiple lines of form, (empty lines are skipped):
- 	 * Flags RealURL DisplayedURL
-	 * Where:
-	 * Flags:
-	 *
-	 * .pdb files:
-	 * R - regex, H - host-only, followed by (optional) 3-digit hexnumber representing
-	 * flags that should be filtered.
-	 * [i.e. phishcheck urls.flags that we don't want to be done for this particular host]
-	 *
-	 * .wdb files:
-	 * X - full URL regex
-	 * Y - host-only regex
-	 * M - host simple pattern
-	 *
-	 * If a line in the file doesn't conform to this format, loading fails
-	 *
-	 */
+     * Regexlist db format, common to .wdb (allow list) and .pdb (domain list) files.
+     *
+     * Multiple lines of form, (empty lines are skipped):
+     * Flags RealURL DisplayedURL
+     * Where:
+     * Flags:
+     *
+     * .pdb files:
+     * R - regex, H - host-only, followed by (optional) 3-digit hexnumber representing
+     * flags that should be filtered.
+     * [i.e. phishcheck urls.flags that we don't want to be done for this particular host]
+     *
+     * .wdb files:
+     * X - full URL regex
+     * Y - host-only regex
+     * M - host simple pattern
+     *
+     * If a line in the file doesn't conform to this format, loading fails
+     *
+     */
     while (cli_dbgets(buffer, FILEBUFF, fd, dbio)) {
         char *pattern;
         char *flags;
@@ -471,6 +512,9 @@ cl_error_t load_regex_matcher(struct cl_engine *engine, struct regex_matcher *ma
         line++;
         if (!*buffer)
             continue; /* skip empty lines */
+
+        if (buffer[0] == '#')
+            continue;
 
         if (functionality_level_check(buffer))
             continue;
@@ -492,7 +536,10 @@ cl_error_t load_regex_matcher(struct cl_engine *engine, struct regex_matcher *ma
         pattern++;
 
         pattern_len = strlen(pattern);
-        if (pattern_len < FILEBUFF) {
+        /* '-3' to leave room for the '/' and null being
+         * appended below.
+         */
+        if ((pattern - buffer) + pattern_len < (FILEBUFF - 3)) {
             pattern[pattern_len]     = '/';
             pattern[pattern_len + 1] = '\0';
         } else {
@@ -501,15 +548,16 @@ cl_error_t load_regex_matcher(struct cl_engine *engine, struct regex_matcher *ma
             return CL_EMALFDB;
         }
 
-        if ((buffer[0] == 'R' && !is_whitelist) || ((buffer[0] == 'X' || buffer[0] == 'Y') && is_whitelist)) {
+        if ((buffer[0] == 'R' && !is_allow_list_lookup) || ((buffer[0] == 'X' || buffer[0] == 'Y') && is_allow_list_lookup)) {
             /* regex for hostname*/
-            if ((rc = regex_list_add_pattern(matcher, pattern)))
+            if ((rc = regex_list_add_pattern(matcher, pattern))) {
                 return rc == CL_EMEM ? CL_EMEM : CL_EMALFDB;
-        } else if ((buffer[0] == 'H' && !is_whitelist) || (buffer[0] == 'M' && is_whitelist)) {
+            }
+        } else if ((buffer[0] == 'H' && !is_allow_list_lookup) || (buffer[0] == 'M' && is_allow_list_lookup)) {
             /*matches displayed host*/
             if ((rc = add_static_pattern(matcher, pattern)))
                 return rc == CL_EMEM ? CL_EMEM : CL_EMALFDB;
-        } else if (buffer[0] == 'S' && (!is_whitelist || pattern[0] == 'W')) {
+        } else if (buffer[0] == 'S' && (!is_allow_list_lookup || pattern[0] == 'W')) {
             pattern[pattern_len] = '\0';
             if (pattern[0] == 'W')
                 flags[0] = 'W';
@@ -557,7 +605,10 @@ cl_error_t cli_build_regex_list(struct regex_matcher *matcher)
 /* Done with this matcher, free resources */
 void regex_list_done(struct regex_matcher *matcher)
 {
-    assert(matcher);
+    if (NULL == matcher) {
+        cli_errmsg("regex_list_done: matcher must be initialized\n");
+        goto done;
+    }
 
     if (matcher->list_inited == 1) {
         size_t i;
@@ -587,24 +638,55 @@ void regex_list_done(struct regex_matcher *matcher)
         cli_bm_free(&matcher->sha256_hashes);
         cli_bm_free(&matcher->hostkey_prefix);
     }
+
+done:
+    return;
 }
 
 int is_regex_ok(struct regex_matcher *matcher)
 {
-    assert(matcher);
-    return (!matcher->list_inited || matcher->list_inited != -1); /* either we don't have a regexlist, or we initialized it successfully */
+    int ret = 0;
+    if (NULL == matcher) {
+        cli_errmsg("is_regex_ok: matcher must be initialized\n");
+    } else {
+        ret = (!matcher->list_inited || matcher->list_inited != -1); /* either we don't have a regexlist, or we initialized it successfully */
+    }
+
+    return ret;
 }
 
-static int add_newsuffix(struct regex_matcher *matcher, struct regex_list *info, const char *suffix, size_t len)
+static cl_error_t add_newsuffix(struct regex_matcher *matcher, struct regex_list *info, const char *suffix, size_t len)
 {
-    struct cli_matcher *root = &matcher->suffixes;
-    struct cli_ac_patt *new  = MPOOL_CALLOC(matcher->mempool, 1, sizeof(*new));
+    struct cli_matcher *root = NULL;
+    struct cli_ac_patt *new  = NULL;
     size_t i;
-    int ret;
+    cl_error_t ret = CL_SUCCESS;
 
-    if (!new)
-        return CL_EMEM;
-    assert(root && suffix);
+    if (NULL == matcher) {
+        cli_errmsg("add_newsuffix: matcher must be initialized\n");
+        ret = CL_ENULLARG;
+        goto done;
+    }
+
+    root = &matcher->suffixes;
+    if (NULL == root) {
+        cli_errmsg("add_newsuffix: root must be initialized\n");
+        ret = CL_ENULLARG;
+        goto done;
+    }
+
+    if (NULL == suffix) {
+        cli_errmsg("add_newsuffix: suffix must be initialized\n");
+        ret = CL_ENULLARG;
+        goto done;
+    }
+
+    new = MPOOL_CALLOC(matcher->mempool, 1, sizeof(*new));
+    if (!new) {
+        cli_errmsg("add_newsuffix: Unable to allocate memory for new\n");
+        ret = CL_EMEM;
+        goto done;
+    }
 
     new->rtype      = 0;
     new->type       = 0;
@@ -622,22 +704,38 @@ static int add_newsuffix(struct regex_matcher *matcher, struct regex_list *info,
 
     new->pattern = MPOOL_MALLOC(matcher->mempool, sizeof(new->pattern[0]) * len);
     if (!new->pattern) {
-        MPOOL_FREE(matcher->mempool, new);
         cli_errmsg("add_newsuffix: Unable to allocate memory for new->pattern\n");
-        return CL_EMEM;
+        ret = CL_EMEM;
+        goto done;
     }
-    for (i = 0; i < len; i++)
+    for (i = 0; i < len; i++) {
         new->pattern[i] = suffix[i]; /*new->pattern is short int* */
+    }
 
     new->customdata = info;
     new->virname    = NULL;
     if ((ret = cli_ac_addpatt(root, new))) {
-        MPOOL_FREE(matcher->mempool, new->pattern);
-        MPOOL_FREE(matcher->mempool, new);
-        return ret;
+        goto done;
     }
-    filter_add_static(&matcher->filter, (const unsigned char *)suffix, len, "regex");
-    return CL_SUCCESS;
+
+    if (filter_add_static(&matcher->filter, (const unsigned char *)suffix, len, "regex") < 0) {
+        cli_errmsg("add_newsuffix: Unable to add filter\n");
+        ret = CL_ERROR;
+        goto done;
+    }
+
+done:
+
+    if (CL_SUCCESS != ret) {
+        if (NULL != new) {
+            if (NULL != new->pattern) {
+                MPOOL_FREE(matcher->mempool, new->pattern);
+            }
+            MPOOL_FREE(matcher->mempool, new);
+        }
+    }
+
+    return ret;
 }
 
 #define MODULE "regex_list: "
@@ -656,43 +754,82 @@ static void list_add_tail(struct regex_list_ht *ht, struct regex_list *regex)
 static cl_error_t add_pattern_suffix(void *cbdata, const char *suffix, size_t suffix_len, const struct regex_list *iregex)
 {
     struct regex_matcher *matcher = cbdata;
-    struct regex_list *regex      = cli_malloc(sizeof(*regex));
-    const struct cli_element *el;
-    void *tmp_matcher; /*	save original address if OOM occurs */
+    struct regex_list *regex      = NULL;
+    const struct cli_element *el  = NULL;
+    cl_error_t ret                = CL_SUCCESS;
 
-    assert(matcher);
-    if (!regex) {
-        cli_errmsg("add_pattern_suffix: Unable to allocate memory for regex\n");
-        return CL_EMEM;
+    if (NULL == matcher) {
+        cli_errmsg("add_pattern_suffix: matcher must be initialized\n");
+        ret = CL_ENULLARG;
+        goto done;
     }
-    regex->pattern = iregex->pattern ? cli_strdup(iregex->pattern) : NULL;
-    regex->preg    = iregex->preg;
-    regex->nxt     = NULL;
-    el             = cli_hashtab_find(&matcher->suffix_hash, suffix, suffix_len);
+    if (NULL == suffix) {
+        cli_errmsg("add_pattern_suffix: suffix must be initialized\n");
+        ret = CL_ENULLARG;
+        goto done;
+    }
+    if (NULL == iregex) {
+        cli_errmsg("add_pattern_suffix: iregex must be initialized\n");
+        ret = CL_ENULLARG;
+        goto done;
+    }
+
+    CLI_MALLOC(regex, sizeof(*regex),
+               cli_errmsg("add_pattern_suffix: Unable to allocate memory for regex\n");
+               ret = CL_EMEM);
+
+    if (NULL == iregex->pattern) {
+        regex->pattern = NULL;
+    } else {
+        CLI_STRDUP(iregex->pattern, regex->pattern,
+                   cli_errmsg("add_pattern_suffix: unable to strdup iregex->pattern");
+                   ret = CL_EMEM);
+    }
+    regex->preg = iregex->preg;
+    regex->nxt  = NULL;
+    el          = cli_hashtab_find(&matcher->suffix_hash, suffix, suffix_len);
     /* TODO: what if suffixes are prefixes of eachother and only one will
-	 * match? */
+     * match? */
     if (el) {
         /* existing suffix */
-        assert((size_t)el->data < matcher->suffix_cnt);
-        list_add_tail(&matcher->suffix_regexes[el->data], regex);
+        if ((size_t)el->data >= matcher->suffix_cnt) {
+            cli_errmsg("add_pattern_suffix: el-> data too large");
+            ret = CL_ERROR;
+            goto done;
+        }
+        list_add_tail(&matcher->suffix_regexes[(size_t)el->data], regex);
     } else {
         /* new suffix */
-        size_t n    = matcher->suffix_cnt++;
-        el          = cli_hashtab_insert(&matcher->suffix_hash, suffix, suffix_len, n);
-        tmp_matcher = matcher->suffix_regexes; /*  save the current value before cli_realloc()	*/
-        tmp_matcher = cli_realloc(matcher->suffix_regexes, (n + 1) * sizeof(*matcher->suffix_regexes));
-        if (!tmp_matcher) {
-            free(regex);
-            return CL_EMEM;
-        }
-        matcher->suffix_regexes         = tmp_matcher; /*  success, point at new memory location   */
+        size_t n = matcher->suffix_cnt;
+        el       = cli_hashtab_insert(&matcher->suffix_hash, suffix, suffix_len, (cli_element_data)n);
+        CLI_REALLOC(matcher->suffix_regexes,
+                    (n + 1) * sizeof(*matcher->suffix_regexes),
+                    cli_errmsg("add_pattern_suffix: Unable to reallocate memory for matcher->suffix_regexes\n");
+                    ret = CL_EMEM);
         matcher->suffix_regexes[n].tail = regex;
         matcher->suffix_regexes[n].head = regex;
-        if (suffix[0] == '/' && suffix[1] == '\0')
+        if (suffix[0] == '/' && suffix[1] == '\0') {
             matcher->root_regex_idx = n;
-        add_newsuffix(matcher, regex, suffix, suffix_len);
+        }
+
+        ret = add_newsuffix(matcher, regex, suffix, suffix_len);
+
+        if (CL_SUCCESS != ret) {
+            cli_hashtab_delete(&matcher->suffix_hash, suffix, suffix_len);
+            /*shrink the size back to what it was.*/
+            CLI_REALLOC(matcher->suffix_regexes, n * sizeof(*matcher->suffix_regexes));
+        } else {
+            matcher->suffix_cnt++;
+        }
     }
-    return CL_SUCCESS;
+
+done:
+    if (CL_SUCCESS != ret) {
+        FREE(regex->pattern);
+        FREE(regex);
+    }
+
+    return ret;
 }
 
 static size_t reverse_string(char *pattern)
@@ -728,14 +865,17 @@ static cl_error_t add_static_pattern(struct regex_matcher *matcher, char *patter
 {
     size_t len;
     struct regex_list regex;
-    cl_error_t rc;
+    cl_error_t rc = CL_EMEM;
 
-    len           = reverse_string(pattern);
-    regex.nxt     = NULL;
-    regex.pattern = cli_strdup(pattern);
-    regex.preg    = NULL;
-    rc            = add_pattern_suffix(matcher, pattern, len, &regex);
-    free(regex.pattern);
+    len       = reverse_string(pattern);
+    regex.nxt = NULL;
+    CLI_STRDUP(pattern, regex.pattern,
+               cli_errmsg("add_static_pattern: Cannot allocate memory for regex.pattern\n");
+               rc = CL_EMEM);
+    regex.preg = NULL;
+    rc         = add_pattern_suffix(matcher, pattern, len, &regex);
+done:
+    FREE(regex.pattern);
     return rc;
 }
 
@@ -754,6 +894,8 @@ cl_error_t regex_list_add_pattern(struct regex_matcher *matcher, char *pattern)
             len -= sizeof(remove_end) - 1;
             pattern[len++] = '/';
         }
+    }
+    if (len > sizeof(remove_end2)) {
         if (strncmp(&pattern[len - sizeof(remove_end2) + 1], remove_end2, sizeof(remove_end2) - 1) == 0) {
             len -= sizeof(remove_end2) - 1;
             pattern[len++] = '/';

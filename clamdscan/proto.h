@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, aCaB
@@ -21,10 +21,8 @@
 
 #ifndef PROTO_H
 #define PROTO_H
-#include "shared/misc.h"
+#include "misc.h"
 
-int dconnect(void);
 int serial_client_scan(char *file, int scantype, int *infected, int *err, int maxlevel, int flags);
 int parallel_client_scan(char *file, int scantype, int *infected, int *err, int maxlevel, int flags);
-int dsresult(int sockd, int scantype, const char *filename, int *printok, int *errors);
 #endif

@@ -38,7 +38,7 @@ MKDIR_CODE MakeDir(const wchar *Name,bool SetAttr,uint Attr)
 }
 
 
-bool CreatePath(const wchar *Path,bool SkipLastName)
+bool CreatePath(const wchar *Path,bool SkipLastName,bool Silent)
 {
   if (Path==NULL || *Path==0)
     return false;
@@ -73,7 +73,7 @@ bool CreatePath(const wchar *Path,bool SkipLastName)
       DirName[s-Path]=0;
 
       Success=MakeDir(DirName,true,DirAttr)==MKDIR_SUCCESS;
-      if (Success)
+      if (Success && !Silent)
       {
         mprintf(St(MCreatDir),DirName);
         mprintf(L" %s",St(MOk));
@@ -320,7 +320,6 @@ bool SetFileAttr(const wchar *Name,uint Attr)
 }
 
 
-#if 0
 wchar *MkTemp(wchar *Name,size_t MaxSize)
 {
   size_t Length=wcslen(Name);
@@ -354,7 +353,6 @@ wchar *MkTemp(wchar *Name,size_t MaxSize)
   }
   return Name;
 }
-#endif
 
 
 #if !defined(SFX_MODULE)
@@ -397,7 +395,11 @@ void CalcFileSum(File *SrcFile,uint *CRC32,byte *Blake2,uint Threads,int64 Size,
     {
 #ifndef SILENT
       if ((Flags & CALCFSUM_SHOWPROGRESS)!=0)
-        uiExtractProgress(TotalRead,FileLength,TotalRead,FileLength);
+      {
+        // Update only the current file progress in WinRAR, set the total to 0
+        // to keep it as is. It looks better for WinRAR.
+        uiExtractProgress(TotalRead,FileLength,0,0);
+      }
       else
       {
         if ((Flags & CALCFSUM_SHOWPERCENT)!=0)
@@ -474,6 +476,24 @@ bool DelFile(const wchar *Name)
 }
 
 
+bool DelDir(const wchar *Name)
+{
+#ifdef _WIN_ALL
+  bool Success=RemoveDirectory(Name)!=0;
+  if (!Success)
+  {
+    wchar LongName[NM];
+    if (GetWinLongPath(Name,LongName,ASIZE(LongName)))
+      Success=RemoveDirectory(LongName)!=0;
+  }
+  return Success;
+#else
+  char NameA[NM];
+  WideToChar(Name,NameA,ASIZE(NameA));
+  bool Success=rmdir(NameA)==0;
+  return Success;
+#endif
+}
 
 
 #if defined(_WIN_ALL) && !defined(SFX_MODULE)
@@ -499,6 +519,18 @@ bool SetFileCompression(const wchar *Name,bool State)
   CloseHandle(hFile);
   return RetCode!=0;
 }
+
+
+void ResetFileCache(const wchar *Name)
+{
+  // To reset file cache in Windows it is enough to open it with
+  // FILE_FLAG_NO_BUFFERING and then close it.
+  HANDLE hSrc=CreateFile(Name,GENERIC_READ,
+                         FILE_SHARE_READ|FILE_SHARE_WRITE,
+                         NULL,OPEN_EXISTING,FILE_FLAG_NO_BUFFERING,NULL);
+  if (hSrc!=INVALID_HANDLE_VALUE)
+    CloseHandle(hSrc);
+}
 #endif
 
 
@@ -510,3 +542,65 @@ bool SetFileCompression(const wchar *Name,bool State)
 
 
 
+
+
+// Delete symbolic links in file path, if any, and replace them by directories.
+// Prevents extracting files outside of destination folder with symlink chains.
+bool LinksToDirs(const wchar *SrcName,const wchar *SkipPart,std::wstring &LastChecked)
+{
+  // Unlike Unix, Windows doesn't expand lnk1 in symlink targets like
+  // "lnk1/../dir", but converts the path to "dir". In Unix we need to call
+  // this function to prevent placing unpacked files outside of destination
+  // folder if previously we unpacked "dir/lnk1" -> "..",
+  // "dir/lnk2" -> "lnk1/.." and "dir/lnk2/anypath/poc.txt".
+  // We may still need this function to prevent abusing symlink chains
+  // in link source path if we remove detection of such chains
+  // in IsRelativeSymlinkSafe. This function seems to make other symlink
+  // related safety checks redundant, but for now we prefer to keep them too.
+  //
+  // 2022.12.01: the performance impact is minimized after adding the check
+  // against the previous path and enabling this verification only after
+  // extracting a symlink with ".." in target. So we enabled it for Windows
+  // as well for extra safety.
+//#ifdef _UNIX
+  wchar Path[NM];
+  if (wcslen(SrcName)>=ASIZE(Path))
+    return false;  // It should not be that long, skip.
+  wcsncpyz(Path,SrcName,ASIZE(Path));
+
+  size_t SkipLength=wcslen(SkipPart);
+
+  if (SkipLength>0 && wcsncmp(Path,SkipPart,SkipLength)!=0)
+    SkipLength=0; // Parameter validation, not really needed now.
+
+  // Do not check parts already checked in previous path to improve performance.
+  for (uint I=0;Path[I]!=0 && I<LastChecked.size() && Path[I]==LastChecked[I];I++)
+    if (IsPathDiv(Path[I]) && I>SkipLength)
+      SkipLength=I;
+
+  wchar *Name=Path;
+  if (SkipLength>0)
+  {
+    // Avoid converting symlinks in destination path part specified by user.
+    Name+=SkipLength;
+    while (IsPathDiv(*Name))
+      Name++;
+  }
+
+  for (wchar *s=Path+wcslen(Path)-1;s>Name;s--)
+    if (IsPathDiv(*s))
+    {
+      *s=0;
+      FindData FD;
+      if (FindFile::FastFind(Path,&FD,true) && FD.IsLink)
+#ifdef _WIN_ALL
+        if (!DelDir(Path))
+#else
+        if (!DelFile(Path))
+#endif
+          return false; // Couldn't delete the symlink to replace it with directory.
+    }
+  LastChecked=SrcName;
+//#endif
+  return true;
+}

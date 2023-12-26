@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Nigel Horne
@@ -33,14 +33,14 @@ typedef struct message {
     char **mimeArguments;
     char *mimeDispositionType; /* probably attachment */
     text *body_first, *body_last;
-    cli_ctx *ctx;          /* When set we can scan the message, otherwise NULL */
-    int numberOfArguments; /* count of mimeArguments */
+    cli_ctx *ctx;             /* When set we can scan the message, otherwise NULL */
+    size_t numberOfArguments; /* count of mimeArguments */
     int base64chars;
 
     /*
-	 * Markers for the start of various non MIME messages that could
-	 * be included within this message
-	 */
+     * Markers for the start of various non MIME messages that could
+     * be included within this message
+     */
     text *bounce;   /* start of a bounced message */
     text *binhex;   /* start of a binhex message */
     text *yenc;     /* start of a yEnc message */
@@ -74,7 +74,6 @@ void messageSetEncoding(message *m, const char *enctype);
 encoding_type messageGetEncoding(const message *m);
 int messageAddLine(message *m, line_t *line);
 int messageAddStr(message *m, const char *data);
-int messageAddStrAtTop(message *m, const char *data);
 int messageMoveText(message *m, text *t, message *old_message);
 text *messageGetBody(message *m);
 unsigned char *base64Flush(message *m, unsigned char *buf);

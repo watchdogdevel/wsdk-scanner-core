@@ -2,7 +2,7 @@
  *  ClamAV bytecode internal API
  *  This is an automatically generated file!
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,10 +30,10 @@
 #define BYTECODE_HOOKS_H
 
 struct cli_bc_hooks {
-	 const uint32_t* match_offsets;
-	 const uint16_t* kind;
-	 const uint32_t* match_counts;
-	 const uint32_t* filesize;
-	 const struct cli_pe_hook_data* pedata;
+    const uint32_t* match_offsets;
+    const uint16_t* kind;
+    const uint32_t* match_counts;
+    const uint32_t* filesize;
+    const struct cli_pe_hook_data* pedata;
 };
 #endif

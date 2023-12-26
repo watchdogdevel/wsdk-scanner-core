@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -34,6 +34,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <dirent.h>
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #endif
@@ -518,7 +519,15 @@ void cl_cvdfree(struct cl_cvd *cvd)
     free(cvd);
 }
 
-static int cli_cvdverify(FILE *fs, struct cl_cvd *cvdpt, unsigned int skipsig)
+/**
+ * @brief Verify the signature of a CVD file.
+ *
+ * @param fs            CVD File stream to read from.
+ * @param [out] cvdpt   (optional) Pointer to a CVD header struct to fill in .
+ * @param skipsig       If non-zero, skip the signature verification.
+ * @return cl_error_t   CL_SUCCESS on success. CL_ECVD, CL_EMEM, or CL_EVERIFY on error.
+ */
+static cl_error_t cli_cvdverify(FILE *fs, struct cl_cvd *cvdpt, unsigned int skipsig)
 {
     struct cl_cvd *cvd;
     char *md5, head[513];
@@ -585,7 +594,7 @@ cl_error_t cl_cvdverify(const char *file)
     }
 
     if (!(engine = cl_engine_new())) {
-        cli_errmsg("cld_cvdverify: Can't create new engine\n");
+        cli_errmsg("cl_cvdverify: Can't create new engine\n");
         fclose(fs);
         return CL_EMEM;
     }
@@ -603,11 +612,11 @@ cl_error_t cl_cvdverify(const char *file)
     return ret;
 }
 
-int cli_cvdload(FILE *fs, struct cl_engine *engine, unsigned int *signo, unsigned int options, unsigned int dbtype, const char *filename, unsigned int chkonly)
+cl_error_t cli_cvdload(FILE *fs, struct cl_engine *engine, unsigned int *signo, unsigned int options, unsigned int dbtype, const char *filename, unsigned int chkonly)
 {
     struct cl_cvd cvd, dupcvd;
     FILE *dupfs;
-    int ret;
+    cl_error_t ret;
     time_t s_time;
     int cfd;
     struct cli_dbio dbio;
@@ -670,7 +679,7 @@ int cli_cvdload(FILE *fs, struct cl_engine *engine, unsigned int *signo, unsigne
     if (cvd.fl > cl_retflevel()) {
         cli_warnmsg("*******************************************************************\n");
         cli_warnmsg("***  This version of the ClamAV engine is outdated.             ***\n");
-        cli_warnmsg("***   Read https://www.clamav.net/documents/installing-clamav   ***\n");
+        cli_warnmsg("***   Read https://docs.clamav.net/manual/Installing.html       ***\n");
         cli_warnmsg("*******************************************************************\n");
     }
 
@@ -715,7 +724,7 @@ int cli_cvdload(FILE *fs, struct cl_engine *engine, unsigned int *signo, unsigne
     return ret;
 }
 
-int cli_cvdunpack(const char *file, const char *dir)
+static cl_error_t cli_cvdunpack(const char *file, const char *dir)
 {
     int fd, ret;
 
@@ -731,4 +740,141 @@ int cli_cvdunpack(const char *file, const char *dir)
     ret = cli_untgz(fd, dir);
     close(fd);
     return ret;
+}
+
+cl_error_t cl_cvdunpack(const char *file, const char *dir, bool dont_verify)
+{
+    cl_error_t status = CL_SUCCESS;
+    FILE *fs          = NULL;
+
+    fs = fopen(file, "rb");
+    if (NULL == fs) {
+        char err[128];
+        cli_errmsg("Can't open CVD: %s -- %s\n", file, cli_strerror(errno, err, sizeof(err)));
+        return CL_EOPEN;
+    }
+
+    if (!dont_verify) {
+        status = cli_cvdverify(fs, NULL, 0);
+        if (CL_SUCCESS != status) {
+            cli_errmsg("CVD verification failed for: %s\n", file);
+            goto done;
+        }
+    }
+
+    status = cli_cvdunpack(file, dir);
+    if (CL_SUCCESS != status) {
+        cli_errmsg("CVD unpacking failed for: %s\n", file);
+        goto done;
+    }
+
+done:
+    if (NULL != fs) {
+        fclose(fs);
+    }
+
+    return status;
+}
+
+static cl_error_t cvdgetfileage(const char *path, time_t *age_seconds)
+{
+    struct cl_cvd cvd;
+    time_t s_time;
+    cl_error_t status = CL_SUCCESS;
+    FILE *fs          = NULL;
+
+    if ((fs = fopen(path, "rb")) == NULL) {
+        cli_errmsg("cvdgetfileage: Can't open file %s\n", path);
+        return CL_EOPEN;
+    }
+
+    if ((status = cli_cvdverify(fs, &cvd, 1)) != CL_SUCCESS)
+        goto done;
+
+    time(&s_time);
+
+    if (cvd.stime > s_time)
+        *age_seconds = 0;
+    else
+        *age_seconds = s_time - cvd.stime;
+
+done:
+    if (fs)
+        fclose(fs);
+
+    return status;
+}
+
+cl_error_t cl_cvdgetage(const char *path, time_t *age_seconds)
+{
+    STATBUF statbuf;
+    struct dirent *dent;
+    size_t path_len;
+    bool ends_with_sep = false;
+    DIR *dd            = NULL;
+    bool first_age_set = true;
+    cl_error_t status  = CL_SUCCESS;
+
+    if (CLAMSTAT(path, &statbuf) == -1) {
+        cli_errmsg("cl_cvdgetage: Can't get status of: %s\n", path);
+        status = CL_ESTAT;
+        goto done;
+    }
+
+    if (!S_ISDIR(statbuf.st_mode)) {
+        status = cvdgetfileage(path, age_seconds);
+        goto done;
+    }
+
+    if ((dd = opendir(path)) == NULL) {
+        cli_errmsg("cl_cvdgetage: Can't open directory %s\n", path);
+        status = CL_EOPEN;
+        goto done;
+    }
+
+    path_len = strlen(path);
+
+    if (path_len >= strlen(PATHSEP)) {
+        if (strcmp(path + path_len - strlen(PATHSEP), PATHSEP) == 0) {
+            cli_dbgmsg("cl_cvdgetage: path ends with separator\n");
+            ends_with_sep = true;
+        }
+    }
+
+    while ((dent = readdir(dd))) {
+        char fname[1024] = {0};
+        time_t file_age;
+
+        if (!dent->d_ino)
+            continue;
+
+        if (!strcmp(dent->d_name, ".") || !strcmp(dent->d_name, ".."))
+            continue;
+
+        if (!CLI_DBEXT(dent->d_name))
+            continue;
+
+        if (ends_with_sep)
+            snprintf(fname, sizeof(fname) - 1, "%s%s", path, dent->d_name);
+        else
+            snprintf(fname, sizeof(fname) - 1, "%s" PATHSEP "%s", path, dent->d_name);
+
+        if ((status = cvdgetfileage(fname, &file_age)) != CL_SUCCESS) {
+            cli_errmsg("cl_cvdgetage: cvdgetfileage() failed for %s\n", fname);
+            goto done;
+        }
+
+        if (first_age_set) {
+            first_age_set = false;
+            *age_seconds  = file_age;
+        } else {
+            *age_seconds = MIN(file_age, *age_seconds);
+        }
+    }
+
+done:
+    if (dd)
+        closedir(dd);
+
+    return status;
 }

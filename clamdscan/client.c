@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, aCaB
@@ -53,23 +53,26 @@
 #include <sys/uio.h>
 #endif
 
-#include "libclamav/clamav.h"
-#include "shared/optparser.h"
-#include "shared/output.h"
-#include "shared/misc.h"
-#include "shared/actions.h"
-#include "shared/clamdcom.h"
+// libclamav
+#include "clamav.h"
+#include "str.h"
+#include "others.h"
 
-#include "libclamav/str.h"
-#include "libclamav/others.h"
+// common
+#include "optparser.h"
+#include "output.h"
+#include "misc.h"
+#include "actions.h"
+#include "clamdcom.h"
+
+#ifdef _WIN32
+#include "scanmem.h"
+#endif
 
 #include "client.h"
 #include "proto.h"
 
 unsigned long int maxstream;
-#ifndef _WIN32
-struct sockaddr_un nixsock;
-#endif
 extern struct optstruct *clamdopts;
 
 /* Inits the communication layer
@@ -110,14 +113,14 @@ static int isremote(const struct optstruct *opts)
         hints.ai_flags    = AI_PASSIVE;
 
         if ((res = getaddrinfo(ipaddr, port, &hints, &info))) {
-            logg("!Can't lookup clamd hostname: %s\n", gai_strerror(res));
+            logg(LOGG_ERROR, "Can't lookup clamd hostname: %s\n", gai_strerror(res));
             opt = opt->nextarg;
             continue;
         }
 
         for (p = info; p != NULL; p = p->ai_next) {
             if ((s = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0) {
-                logg("isremote: socket() returning: %s.\n", strerror(errno));
+                logg(LOGG_INFO, "isremote: socket() returning: %s.\n", strerror(errno));
                 continue;
             }
 
@@ -177,26 +180,26 @@ int16_t ping_clamd(const struct optstruct *opts)
     uint16_t ret = 0;
 
     if (opts == NULL) {
-        logg("!null parameter was passed\n");
+        logg(LOGG_ERROR, "null parameter was passed\n");
         ret = -1;
         goto done;
     }
 
     /* ping command takes the form --ping [attempts[:interval]] */
-    if (opt = optget(opts, "ping")) {
-        if (attempt_str = cli_strdup(opt->strarg)) {
-            if (NULL == attempt_str) {
-                logg("!could not allocate memory for string\n");
+    if (NULL != (opt = optget(opts, "ping"))) {
+        if (NULL != opt->strarg) {
+            if (NULL == (attempt_str = cli_strdup(opt->strarg))) {
+                logg(LOGG_ERROR, "could not allocate memory for string\n");
                 ret = -1;
                 goto done;
             }
             interval_str = strchr(attempt_str, ':');
-            if (interval_str[0] != '\0') {
+            if ((NULL != interval_str) && (interval_str[0] != '\0')) {
                 interval_str[0] = '\0';
                 interval_str++;
                 interval = cli_strntoul(interval_str, strlen(interval_str), &errchk, 10);
                 if (interval_str + strlen(interval_str) > errchk) {
-                    logg("^interval_str would go past end of buffer\n");
+                    logg(LOGG_WARNING, "interval_str would go past end of buffer\n");
                     ret = -1;
                     goto done;
                 }
@@ -205,7 +208,7 @@ int16_t ping_clamd(const struct optstruct *opts)
             }
             attempts = cli_strntoul(attempt_str, strlen(attempt_str), &errchk, 10);
             if (attempt_str + strlen(attempt_str) > errchk) {
-                logg("^attmept_str would go past end of buffer\n");
+                logg(LOGG_WARNING, "attmept_str would go past end of buffer\n");
                 ret = -1;
                 goto done;
             }
@@ -217,15 +220,16 @@ int16_t ping_clamd(const struct optstruct *opts)
 
     isremote(opts);
     do {
-        if ((sockd = dconnect()) >= 0) {
+        if ((sockd = dconnect(clamdopts)) >= 0) {
+            const char zPING[] = "zPING";
             recvlninit(&rcv, sockd);
 
-            if (sendln(sockd, "zPING", 5)) {
-                logg("*PING failed...\n");
+            if (sendln(sockd, zPING, sizeof(zPING))) {
+                logg(LOGG_DEBUG, "PING failed...\n");
                 closesocket(sockd);
             } else {
                 if (!optget(opts, "wait")->enabled) {
-                    logg("PONG\n");
+                    logg(LOGG_INFO, "PONG\n");
                 }
                 ret = 0;
                 goto done;
@@ -233,13 +237,29 @@ int16_t ping_clamd(const struct optstruct *opts)
         }
 
         if (i + 1 < attempts) {
-            logg("*PINGing again in %lu seconds\n", interval);
+            if (optget(opts, "wait")->enabled) {
+                if (interval == 1)
+                    logg(LOGG_DEBUG, "Could not connect, will try again in %lu second\n", interval);
+                else
+                    logg(LOGG_DEBUG, "Could not connect, will try again in %lu seconds\n", interval);
+            } else {
+                if (interval == 1)
+                    logg(LOGG_INFO, "Could not connect, will PING again in %lu second\n", interval);
+                else
+                    logg(LOGG_INFO, "Could not connect, will PING again in %lu seconds\n", interval);
+            }
             sleep(interval);
         }
         i++;
     } while (i < attempts);
 
+    /* timed out */
     ret = 1;
+    if (optget(opts, "wait")->enabled) {
+        logg(LOGG_INFO, "Wait timeout exceeded; Could not connect to clamd\n");
+    } else {
+        logg(LOGG_INFO, "PING timeout exceeded; No response from clamd\n");
+    }
 
 done:
     if (attempt_str) {
@@ -261,12 +281,12 @@ static char *makeabs(const char *basepath)
     char *ret;
 
     if (!(ret = malloc(PATH_MAX + 1))) {
-        logg("^Can't make room for fullpath.\n");
+        logg(LOGG_WARNING, "Can't make room for fullpath.\n");
         return NULL;
     }
     if (!cli_is_abspath(basepath)) {
         if (!getcwd(ret, PATH_MAX)) {
-            logg("^Can't get absolute pathname of current working directory.\n");
+            logg(LOGG_WARNING, "Can't get absolute pathname of current working directory.\n");
             free(ret);
             return NULL;
         }
@@ -290,7 +310,21 @@ static char *makeabs(const char *basepath)
 static int client_scan(const char *file, int scantype, int *infected, int *err, int maxlevel, int session, int flags)
 {
     int ret;
-    char *fullpath = makeabs(file);
+    char *real_path = NULL;
+    char *fullpath  = NULL;
+
+    /* Convert relative path to fullpath */
+    fullpath = makeabs(file);
+
+    /* Convert fullpath to the real path (evaluating symlinks and . and ..).
+       Doing this early on will ensure that the scan results will appear consistent
+       across regular scans, --fdpass scans, and --stream scans. */
+    if (CL_SUCCESS != cli_realpath(fullpath, &real_path)) {
+        logg(LOGG_DEBUG, "client_scan: Failed to determine real filename of %s.\n", fullpath);
+    } else {
+        free(fullpath);
+        fullpath = real_path;
+    }
 
     if (!fullpath)
         return 0;
@@ -307,19 +341,20 @@ int get_clamd_version(const struct optstruct *opts)
     char *buff;
     int len, sockd;
     struct RCVLN rcv;
+    const char zVERSION[] = "zVERSION";
 
     isremote(opts);
-    if ((sockd = dconnect()) < 0) return 2;
+    if ((sockd = dconnect(clamdopts)) < 0) return 2;
     recvlninit(&rcv, sockd);
 
-    if (sendln(sockd, "zVERSION", 9)) {
+    if (sendln(sockd, zVERSION, sizeof(zVERSION))) {
         closesocket(sockd);
         return 2;
     }
 
     while ((len = recvln(&rcv, &buff, NULL))) {
         if (len == -1) {
-            logg("!Error occurred while receiving version information.\n");
+            logg(LOGG_ERROR, "Error occurred while receiving version information.\n");
             break;
         }
         printf("%s\n", buff);
@@ -334,18 +369,19 @@ int reload_clamd_database(const struct optstruct *opts)
     char *buff;
     int len, sockd;
     struct RCVLN rcv;
+    const char zRELOAD[] = "zRELOAD";
 
     isremote(opts);
-    if ((sockd = dconnect()) < 0) return 2;
+    if ((sockd = dconnect(clamdopts)) < 0) return 2;
     recvlninit(&rcv, sockd);
 
-    if (sendln(sockd, "zRELOAD", 8)) {
+    if (sendln(sockd, zRELOAD, sizeof(zRELOAD))) {
         closesocket(sockd);
         return 2;
     }
 
     if (!(len = recvln(&rcv, &buff, NULL)) || len < 10 || memcmp(buff, "RELOADING", 9)) {
-        logg("!Clamd did not reload the database\n");
+        logg(LOGG_ERROR, "Clamd did not reload the database\n");
         closesocket(sockd);
         return 2;
     }
@@ -359,8 +395,14 @@ int client(const struct optstruct *opts, int *infected, int *err)
     const char *fname;
 
     if (optget(opts, "wait")->enabled) {
-        if (ping_clamd(opts) != 0) {
-            return 2;
+        int16_t ping_result = ping_clamd(opts);
+        switch (ping_result) {
+            case 0:
+                break;
+            case 1:
+                return (int)CL_ETIMEOUT;
+            default:
+                return (int)CL_ERROR;
         }
     }
 
@@ -396,34 +438,47 @@ int client(const struct optstruct *opts, int *infected, int *err)
         int sockd, ret;
         STATBUF sb;
         if (FSTAT(0, &sb) < 0) {
-            logg("client.c: fstat failed for file name \"%s\", with %s\n.",
+            logg(LOGG_INFO, "client.c: fstat failed for file name \"%s\", with %s\n.",
                  opts->filename[0], strerror(errno));
             return 2;
         }
         if ((sb.st_mode & S_IFMT) != S_IFREG) scantype = STREAM;
-        if ((sockd = dconnect()) >= 0 && (ret = dsresult(sockd, scantype, NULL, &ret, NULL)) >= 0)
+        if ((sockd = dconnect(clamdopts)) >= 0 && (ret = dsresult(sockd, scantype, NULL, &ret, NULL, clamdopts)) >= 0)
             *infected = ret;
         else
             errors = 1;
         if (sockd >= 0) closesocket(sockd);
     } else if (opts->filename || optget(opts, "file-list")->enabled) {
         if (opts->filename && optget(opts, "file-list")->enabled)
-            logg("^Only scanning files from --file-list (files passed at cmdline are ignored)\n");
+            logg(LOGG_WARNING, "Only scanning files from --file-list (files passed at cmdline are ignored)\n");
 
         while ((fname = filelist(opts, NULL))) {
             if (!strcmp(fname, "-")) {
-                logg("!Scanning from standard input requires \"-\" to be the only file argument\n");
+                logg(LOGG_ERROR, "Scanning from standard input requires \"-\" to be the only file argument\n");
                 continue;
             }
             errors += client_scan(fname, scantype, infected, err, maxrec, session, flags);
             /* this may be too strict
-	    if(errors >= 10) {
-		logg("!Too many errors\n");
-		break;
-	    }
-	    */
+            if(errors >= 10) {
+                logg(LOGG_ERROR, "Too many errors\n");
+                break;
+            }
+            */
         }
-    } else {
+    }
+#ifdef _WIN32
+    else if (optget(opts, "memory")->enabled) {
+        struct mem_info minfo;
+        minfo.d      = 1;
+        minfo.opts   = opts;
+        minfo.ifiles = *infected;
+        minfo.errors = errors;
+        int res      = scanmem(&minfo);
+        *infected    = minfo.ifiles;
+        *err         = minfo.errors;
+    }
+#endif
+    else {
         errors = client_scan("", scantype, infected, err, maxrec, session, flags);
     }
     return *infected ? 1 : (errors ? 2 : 0);

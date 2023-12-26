@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, Török Edvin
@@ -33,6 +33,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
+#include <fcntl.h>
 #ifndef _WIN32
 #include <sys/time.h>
 #include <sys/wait.h>
@@ -45,16 +46,18 @@
 #endif
 #include <pthread.h>
 
-#include "libclamav/clamav.h"
-#include "libclamav/others.h"
-#include "libclamav/scanners.h"
-
-#include "shared/idmef_logging.h"
-#include "shared/optparser.h"
-#include "shared/output.h"
-#include "shared/misc.h"
-
+// libclamav
+#include "clamav.h"
 #include "others.h"
+#include "scanners.h"
+
+// common
+#include "idmef_logging.h"
+#include "optparser.h"
+#include "output.h"
+#include "misc.h"
+
+#include "clamd_others.h"
 #include "scanner.h"
 #include "shared.h"
 #include "thrmgr.h"
@@ -77,16 +80,16 @@ void msg_callback(enum cl_msg severity, const char *fullmsg, const char *msg, vo
 
     switch (severity) {
         case CL_MSG_ERROR:
-            logg("^[LibClamAV] %s: %s", filename, msg);
+            logg(LOGG_WARNING, "[LibClamAV] %s: %s", filename, msg);
             break;
         case CL_MSG_WARN:
-            logg("~[LibClamAV] %s: %s", filename, msg);
+            logg(LOGG_INFO, "[LibClamAV] %s: %s", filename, msg);
             break;
         case CL_MSG_INFO_VERBOSE:
-            logg("*[LibClamAV] %s: %s", filename, msg);
+            logg(LOGG_DEBUG, "[LibClamAV] %s: %s", filename, msg);
             break;
         default:
-            logg("$[LibClamAV] %s: %s", filename, msg);
+            logg(LOGG_DEBUG_NV, "[LibClamAV] %s: %s", filename, msg);
             break;
     }
 }
@@ -125,26 +128,38 @@ void clamd_virus_found_cb(int fd, const char *virname, void *ctx)
         d->infected++;
         conn_reply_virus(d->conn, fname, virname);
         if (c->virsize > 0 && optget(d->opts, "ExtendedDetectionInfo")->enabled)
-            logg("~%s: %s(%s:%llu) FOUND\n", fname, virname, c->virhash, c->virsize);
-        logg("~%s: %s FOUND\n", fname, virname);
+            logg(LOGG_INFO, "%s: %s(%s:%llu) FOUND\n", fname, virname, c->virhash, c->virsize);
+        logg(LOGG_INFO, "%s: %s FOUND\n", fname, virname);
     }
 
     return;
 }
 
 #define BUFFSIZE 1024
-int scan_callback(STATBUF *sb, char *filename, const char *msg, enum cli_ftw_reason reason, struct cli_ftw_cbdata *data)
+cl_error_t scan_callback(STATBUF *sb, char *filename, const char *msg, enum cli_ftw_reason reason, struct cli_ftw_cbdata *data)
 {
     struct scan_cb_data *scandata = data->data;
     const char *virname           = NULL;
     int ret;
     int type = scandata->type;
     struct cb_context context;
+    char *real_filename = NULL;
+
+    if (NULL != filename) {
+        if (CL_SUCCESS != cli_realpath((const char *)filename, &real_filename)) {
+            conn_reply_errno(scandata->conn, msg, "File path check failure:");
+            logg(LOGG_WARNING, "File path check failure for: %s\n", filename);
+            logg(LOGG_DEBUG, "Quarantine of the file may fail if file path contains symlinks.\n");
+        } else {
+            free(filename);
+            filename = real_filename;
+        }
+    }
 
     /* detect disconnected socket,
      * this should NOT detect half-shutdown sockets (SHUT_WR) */
     if (send(scandata->conn->sd, &ret, 0, 0) == -1 && errno != EINTR) {
-        logg("$Client disconnected while command was active!\n");
+        logg(LOGG_DEBUG_NV, "Client disconnected while command was active!\n");
         thrmgr_group_terminate(scandata->conn->group);
         if (reason == visit_file)
             free(filename);
@@ -152,7 +167,7 @@ int scan_callback(STATBUF *sb, char *filename, const char *msg, enum cli_ftw_rea
     }
 
     if (thrmgr_group_need_terminate(scandata->conn->group)) {
-        logg("^Client disconnected while scanjob was active\n");
+        logg(LOGG_WARNING, "Client disconnected while scanjob was active\n");
         if (reason == visit_file)
             free(filename);
         return CL_BREAK;
@@ -161,37 +176,42 @@ int scan_callback(STATBUF *sb, char *filename, const char *msg, enum cli_ftw_rea
     switch (reason) {
         case error_mem:
             if (msg)
-                logg("!Memory allocation failed during cli_ftw() on %s\n",
+                logg(LOGG_ERROR, "Memory allocation failed during cli_ftw() on %s\n",
                      msg);
             else
-                logg("!Memory allocation failed during cli_ftw()\n");
+                logg(LOGG_ERROR, "Memory allocation failed during cli_ftw()\n");
             scandata->errors++;
+            free(filename);
             return CL_EMEM;
         case error_stat:
-            conn_reply_errno(scandata->conn, msg, "lstat() failed:");
-            logg("^lstat() failed on: %s\n", msg);
+            conn_reply_errno(scandata->conn, msg, "File path check failure:");
+            logg(LOGG_WARNING, "File path check failure on: %s\n", msg);
             scandata->errors++;
+            free(filename);
             return CL_SUCCESS;
         case warning_skipped_dir:
-            logg("^Directory recursion limit reached, skipping %s\n",
-                 msg);
+            logg(LOGG_WARNING, "Directory recursion limit reached, skipping %s\n", msg);
+            free(filename);
             return CL_SUCCESS;
         case warning_skipped_link:
-            logg("$Skipping symlink: %s\n", msg);
+            logg(LOGG_DEBUG_NV, "Skipping symlink: %s\n", msg);
+            free(filename);
             return CL_SUCCESS;
         case warning_skipped_special:
             if (msg == scandata->toplevel_path)
                 conn_reply(scandata->conn, msg, "Not supported file type", "ERROR");
-            logg("*Not supported file type: %s\n", msg);
+            logg(LOGG_DEBUG, "Not supported file type: %s\n", msg);
+            free(filename);
             return CL_SUCCESS;
         case visit_directory_toplev:
+            free(filename);
             return CL_SUCCESS;
         case visit_file:
             break;
     }
 
-        /* check whether the file is excluded */
 #ifdef C_LINUX
+    /* check whether the file is excluded */
     if (procdev && sb && (sb->st_dev == procdev)) {
         free(filename);
         return CL_SUCCESS;
@@ -217,7 +237,7 @@ int scan_callback(STATBUF *sb, char *filename, const char *msg, enum cli_ftw_rea
             client_conn->opts     = scandata->opts;
             client_conn->group    = scandata->group;
             if (cl_engine_addref(scandata->engine)) {
-                logg("!cl_engine_addref() failed\n");
+                logg(LOGG_ERROR, "cl_engine_addref() failed\n");
                 free(filename);
                 free(client_conn);
                 return CL_EMEM;
@@ -227,7 +247,7 @@ int scan_callback(STATBUF *sb, char *filename, const char *msg, enum cli_ftw_rea
                 client_conn->engine_timestamp = reloaded_time;
                 pthread_mutex_unlock(&reload_mutex);
                 if (!thrmgr_group_dispatch(scandata->thr_pool, scandata->group, client_conn, 1)) {
-                    logg("!thread dispatch failed\n");
+                    logg(LOGG_ERROR, "thread dispatch failed\n");
                     cl_engine_free(scandata->engine);
                     free(filename);
                     free(client_conn);
@@ -235,22 +255,11 @@ int scan_callback(STATBUF *sb, char *filename, const char *msg, enum cli_ftw_rea
                 }
             }
         } else {
-            logg("!Can't allocate memory for client_conn\n");
+            logg(LOGG_ERROR, "Can't allocate memory for client_conn\n");
             scandata->errors++;
             free(filename);
             return CL_EMEM;
         }
-        return CL_SUCCESS;
-    }
-
-    if (access(filename, R_OK)) {
-        if (conn_reply(scandata->conn, filename, "Access denied.", "ERROR") == -1) {
-            free(filename);
-            return CL_ETIMEOUT;
-        }
-        logg("*Access denied: %s\n", filename);
-        scandata->errors++;
-        free(filename);
         return CL_SUCCESS;
     }
 
@@ -263,13 +272,24 @@ int scan_callback(STATBUF *sb, char *filename, const char *msg, enum cli_ftw_rea
 
     if (thrmgr_group_need_terminate(scandata->conn->group)) {
         free(filename);
-        logg("*Client disconnected while scanjob was active\n");
+        logg(LOGG_DEBUG, "Client disconnected while scanjob was active\n");
         return ret == CL_ETIMEOUT ? ret : CL_BREAK;
     }
 
     if ((ret == CL_VIRUS) && (virname == NULL)) {
-        logg("*%s: reported CL_VIRUS but no virname returned!\n", filename);
+        logg(LOGG_DEBUG, "%s: reported CL_VIRUS but no virname returned!\n", filename);
         ret = CL_EMEM;
+    }
+
+    if (ret == CL_EACCES) {
+        if (conn_reply(scandata->conn, filename, "Access denied.", "ERROR") == -1) {
+            free(filename);
+            return CL_ETIMEOUT;
+        }
+        logg(LOGG_DEBUG, "Access denied: %s\n", filename);
+        scandata->errors++;
+        free(filename);
+        return CL_SUCCESS;
     }
 
     if (ret == CL_VIRUS) {
@@ -281,6 +301,7 @@ int scan_callback(STATBUF *sb, char *filename, const char *msg, enum cli_ftw_rea
             virusaction(filename, virname, scandata->opts);
         } else {
             scandata->infected++;
+            virusaction(filename, virname, scandata->opts);
             if (conn_reply_virus(scandata->conn, filename, virname) == -1) {
                 free(filename);
                 return CL_ETIMEOUT;
@@ -290,10 +311,9 @@ int scan_callback(STATBUF *sb, char *filename, const char *msg, enum cli_ftw_rea
             }
 
             if (context.virsize && optget(scandata->opts, "ExtendedDetectionInfo")->enabled)
-                logg("~%s: %s(%s:%llu) FOUND\n", filename, virname, context.virhash, context.virsize);
+                logg(LOGG_INFO, "%s: %s(%s:%llu) FOUND\n", filename, virname, context.virhash, context.virsize);
             else
-                logg("~%s: %s FOUND\n", filename, virname);
-            virusaction(filename, virname, scandata->opts);
+                logg(LOGG_INFO, "%s: %s FOUND\n", filename, virname);
         }
     } else if (ret != CL_CLEAN) {
         scandata->errors++;
@@ -301,9 +321,9 @@ int scan_callback(STATBUF *sb, char *filename, const char *msg, enum cli_ftw_rea
             free(filename);
             return CL_ETIMEOUT;
         }
-        logg("~%s: %s ERROR\n", filename, cl_strerror(ret));
+        logg(LOGG_INFO, "%s: %s ERROR\n", filename, cl_strerror(ret));
     } else if (logok) {
-        logg("~%s: OK\n", filename);
+        logg(LOGG_INFO, "%s: OK\n", filename);
     }
 
     free(filename);
@@ -350,7 +370,7 @@ int scan_pathchk(const char *path, struct cli_ftw_cbdata *data)
     return 0;
 }
 
-int scanfd(
+cl_error_t scanfd(
     const client_conn_t *conn,
     unsigned long int *scanned,
     const struct cl_engine *engine,
@@ -359,12 +379,16 @@ int scanfd(
     int odesc,
     int stream)
 {
-    int ret, fd = conn->scanfd;
+    cl_error_t ret      = -1;
+    int fd              = conn->scanfd;
     const char *virname = NULL;
     STATBUF statbuf;
     struct cb_context context;
     char fdstr[32];
     const char *reply_fdstr;
+
+    char *filepath     = NULL;
+    char *log_filename = fdstr;
 
     UNUSEDPARAM(odesc);
 
@@ -381,42 +405,61 @@ int scanfd(
         reply_fdstr = fdstr;
     }
     if (FSTAT(fd, &statbuf) == -1 || !S_ISREG(statbuf.st_mode)) {
-        logg("%s: Not a regular file. ERROR\n", fdstr);
-        if (conn_reply(conn, reply_fdstr, "Not a regular file", "ERROR") == -1)
-            return CL_ETIMEOUT;
-        return -1;
+        logg(LOGG_INFO, "%s: Not a regular file. ERROR\n", fdstr);
+        if (conn_reply(conn, reply_fdstr, "Not a regular file", "ERROR") == -1) {
+            ret = CL_ETIMEOUT;
+            goto done;
+        }
+        ret = CL_BREAK;
+        goto done;
+    }
+
+    /* Try and get the real filename, for logging purposes */
+    if (!stream) {
+        if (CL_SUCCESS != cli_get_filepath_from_filedesc(fd, &filepath)) {
+            logg(LOGG_DEBUG, "%s: Unable to determine the filepath given the file descriptor.\n", fdstr);
+        } else {
+            log_filename = filepath;
+        }
     }
 
     thrmgr_setactivetask(fdstr, NULL);
     context.filename = fdstr;
     context.virsize  = 0;
     context.scandata = NULL;
-    ret              = cl_scandesc_callback(fd, conn->filename, &virname, scanned, engine, options, &context);
+    ret              = cl_scandesc_callback(fd, log_filename, &virname, scanned, engine, options, &context);
     thrmgr_setactivetask(NULL, NULL);
 
     if (thrmgr_group_need_terminate(conn->group)) {
-        logg("*Client disconnected while scanjob was active\n");
-        return ret == CL_ETIMEOUT ? ret : CL_BREAK;
+        logg(LOGG_DEBUG, "Client disconnected while scanjob was active\n");
+        ret = ret == CL_ETIMEOUT ? ret : CL_BREAK;
+        goto done;
     }
 
     if (ret == CL_VIRUS) {
+        virusaction(log_filename, virname, opts);
         if (conn_reply_virus(conn, reply_fdstr, virname) == -1)
             ret = CL_ETIMEOUT;
         if (context.virsize && optget(opts, "ExtendedDetectionInfo")->enabled)
-            logg("%s: %s(%s:%llu) FOUND\n", fdstr, virname, context.virhash, context.virsize);
+            logg(LOGG_INFO, "%s: %s(%s:%llu) FOUND\n", log_filename, virname, context.virhash, context.virsize);
         else
-            logg("%s: %s FOUND\n", fdstr, virname);
-        virusaction(reply_fdstr, virname, opts);
+            logg(LOGG_INFO, "%s: %s FOUND\n", log_filename, virname);
     } else if (ret != CL_CLEAN) {
         if (conn_reply(conn, reply_fdstr, cl_strerror(ret), "ERROR") == -1)
             ret = CL_ETIMEOUT;
-        logg("%s: %s ERROR\n", fdstr, cl_strerror(ret));
+        logg(LOGG_INFO, "%s: %s ERROR\n", log_filename, cl_strerror(ret));
     } else {
         if (conn_reply_single(conn, reply_fdstr, "OK") == CL_ETIMEOUT)
             ret = CL_ETIMEOUT;
         if (logok)
-            logg("%s: OK\n", fdstr);
+            logg(LOGG_INFO, "%s: OK\n", log_filename);
     }
+
+done:
+    if (NULL != filepath) {
+        free(filepath);
+    }
+
     return ret;
 }
 
@@ -472,17 +515,17 @@ int scanstream(
     firsttimeout = optget(opts, "CommandReadTimeout")->numarg;
 
     if (!bound) {
-        logg("!ScanStream: Can't find any free port.\n");
+        logg(LOGG_ERROR, "ScanStream: Can't find any free port.\n");
         mdprintf(odesc, "Can't find any free port. ERROR%c", term);
         return -1;
     } else {
         if (listen(sockfd, 1) == -1) {
-            logg("!ScanStream: listen() error on socket. Error returned is %s.\n", strerror(errno));
+            logg(LOGG_ERROR, "ScanStream: listen() error on socket. Error returned is %s.\n", strerror(errno));
             closesocket(sockfd);
             return -1;
         }
         if (mdprintf(odesc, "PORT %u%c", port, term) <= 0) {
-            logg("!ScanStream: error transmitting port.\n");
+            logg(LOGG_ERROR, "ScanStream: error transmitting port.\n");
             closesocket(sockfd);
             return -1;
         }
@@ -492,7 +535,7 @@ int scanstream(
     if (!retval || retval == -1) {
         const char *reason = !retval ? "timeout" : "poll";
         mdprintf(odesc, "Accept %s. ERROR%c", reason, term);
-        logg("!ScanStream %u: accept %s.\n", port, reason);
+        logg(LOGG_ERROR, "ScanStream %u: accept %s.\n", port, reason);
         closesocket(sockfd);
         return -1;
     }
@@ -501,20 +544,20 @@ int scanstream(
     if ((acceptd = accept(sockfd, (struct sockaddr *)&peer, (socklen_t *)&addrlen)) == -1) {
         closesocket(sockfd);
         mdprintf(odesc, "accept() ERROR%c", term);
-        logg("!ScanStream %u: accept() failed.\n", port);
+        logg(LOGG_ERROR, "ScanStream %u: accept() failed.\n", port);
         return -1;
     }
 
     *peer_addr = '\0';
     inet_ntop(peer.sin_family, &peer.sin_addr, peer_addr, sizeof(peer_addr));
-    logg("*Accepted connection from %s on port %u, fd %d\n", peer_addr, port, acceptd);
+    logg(LOGG_DEBUG, "Accepted connection from %s on port %u, fd %d\n", peer_addr, port, acceptd);
 
     if (cli_gentempfd(optget(opts, "TemporaryDirectory")->strarg, &tmpname, &tmpd)) {
         shutdown(sockfd, 2);
         closesocket(sockfd);
         closesocket(acceptd);
         mdprintf(odesc, "cli_gentempfd() failed. ERROR%c", term);
-        logg("!ScanStream(%s@%u): Can't create temporary file.\n", peer_addr, port);
+        logg(LOGG_ERROR, "ScanStream(%s@%u): Can't create temporary file.\n", peer_addr, port);
         return -1;
     }
 
@@ -524,7 +567,7 @@ int scanstream(
         /* only read up to max */
         btread = (maxsize && (quota < sizeof(buff))) ? quota : sizeof(buff);
         if (!btread) {
-            logg("^ScanStream(%s@%u): Size limit reached (max: %lu)\n", peer_addr, port, maxsize);
+            logg(LOGG_WARNING, "ScanStream(%s@%u): Size limit reached (max: %lu)\n", peer_addr, port, maxsize);
             break; /* Scan what we have */
         }
         bread = recv(acceptd, buff, btread, 0);
@@ -538,7 +581,7 @@ int scanstream(
             closesocket(sockfd);
             closesocket(acceptd);
             mdprintf(odesc, "Temporary file -> write ERROR%c", term);
-            logg("!ScanStream(%s@%u): Can't write to temporary file.\n", peer_addr, port);
+            logg(LOGG_ERROR, "ScanStream(%s@%u): Can't write to temporary file.\n", peer_addr, port);
             close(tmpd);
             if (!optget(opts, "LeaveTemporaryFiles")->enabled)
                 unlink(tmpname);
@@ -550,11 +593,11 @@ int scanstream(
     switch (retval) {
         case 0: /* timeout */
             mdprintf(odesc, "read timeout ERROR%c", term);
-            logg("!ScanStream(%s@%u): read timeout.\n", peer_addr, port);
+            logg(LOGG_ERROR, "ScanStream(%s@%u): read timeout.\n", peer_addr, port);
             break;
         case -1:
             mdprintf(odesc, "read poll ERROR%c", term);
-            logg("!ScanStream(%s@%u): read poll failed.\n", peer_addr, port);
+            logg(LOGG_ERROR, "ScanStream(%s@%u): read poll failed.\n", peer_addr, port);
             break;
     }
 
@@ -580,21 +623,21 @@ int scanstream(
     if (ret == CL_VIRUS) {
         if (context.virsize && optget(opts, "ExtendedDetectionInfo")->enabled) {
             mdprintf(odesc, "stream: %s(%s:%llu) FOUND%c", virname, context.virhash, context.virsize, term);
-            logg("stream(%s@%u): %s(%s:%llu) FOUND\n", peer_addr, port, virname, context.virhash, context.virsize);
+            logg(LOGG_INFO, "stream(%s@%u): %s(%s:%llu) FOUND\n", peer_addr, port, virname, context.virhash, context.virsize);
         } else {
             mdprintf(odesc, "stream: %s FOUND%c", virname, term);
-            logg("stream(%s@%u): %s FOUND\n", peer_addr, port, virname);
+            logg(LOGG_INFO, "stream(%s@%u): %s FOUND\n", peer_addr, port, virname);
         }
         virusaction("stream", virname, opts);
     } else if (ret != CL_CLEAN) {
         if (retval == 1) {
             mdprintf(odesc, "stream: %s ERROR%c", cl_strerror(ret), term);
-            logg("stream(%s@%u): %s ERROR\n", peer_addr, port, cl_strerror(ret));
+            logg(LOGG_INFO, "stream(%s@%u): %s ERROR\n", peer_addr, port, cl_strerror(ret));
         }
     } else {
         mdprintf(odesc, "stream: OK%c", term);
         if (logok)
-            logg("stream(%s@%u): OK\n", peer_addr, port);
+            logg(LOGG_INFO, "stream(%s@%u): OK\n", peer_addr, port);
     }
 
     return ret;

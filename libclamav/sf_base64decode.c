@@ -1,5 +1,5 @@
 /*
- ** Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ ** Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  ** Copyright (C) 1998-2013 Sourcefire, Inc.
  **
  ** Written by Patrick Mullen <pmullen@sourcefire.com>
@@ -53,7 +53,7 @@ uint8_t sf_decode64tab[256] = {
  * out there.  So, either terminate the string, set inbuf_size correctly, or at least be sure the
  * data is valid up until the point you care about.  Note base64 data does NOT have to end with
  * '=' and won't if the number of bytes of input data is evenly divisible by 3.
-*/
+ */
 int sf_base64decode(uint8_t *inbuf, size_t inbuf_size, uint8_t *outbuf, size_t outbuf_size, size_t *bytes_written)
 {
     uint8_t *cursor, *endofinbuf;

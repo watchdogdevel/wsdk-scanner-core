@@ -1,7 +1,7 @@
 /*
  *  Builtin ClamAV bytecodes.
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2010-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -147,7 +147,7 @@ int entrypoint()
         else
           /* RWX mapping got denied but apparently not due to SELinux/PaX */
           disable_jit_if("^RWX mapping denied for unknown reason."
-            "Please report to https://bugzilla.clamav.net\n", 0, 1);
+            "Please report to https://github.com/Cisco-Talos/clamav/issues\n", 0, 1);
       }
     } else {
       if ((env.os_category == os_linux || env.os == llvm_os_Linux) &&

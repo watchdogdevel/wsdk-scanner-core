@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -47,22 +47,28 @@
 #include <sys/types.h>
 #include <signal.h>
 #include <errno.h>
-#include <target.h>
+#include <math.h>
+
+// libclamav
+#include "clamav.h"
+#include "others.h"
+#include "matcher-ac.h"
+#include "matcher-pcre.h"
+#include "str.h"
+#include "readdb.h"
+
+// common
+#include "optparser.h"
+#include "actions.h"
+#include "output.h"
+#include "misc.h"
 
 #include "manager.h"
 #include "global.h"
 
-#include "shared/optparser.h"
-#include "shared/actions.h"
-#include "shared/output.h"
-#include "shared/misc.h"
-
-#include "libclamav/clamav.h"
-#include "libclamav/others.h"
-#include "libclamav/matcher-ac.h"
-#include "libclamav/matcher-pcre.h"
-#include "libclamav/str.h"
-#include "libclamav/readdb.h"
+#ifdef _WIN32 /* scan memory */
+#include "scanmem.h"
+#endif
 
 #ifdef C_LINUX
 dev_t procdev;
@@ -260,7 +266,7 @@ static cl_error_t meta(const char *container_type, unsigned long fsize_container
     if (c->nchains > 0) {
         c->chains[c->nchains - 1] = chain;
         toolong                   = print_chain(c, prev, sizeof(prev));
-        logg("*Scanning %s%s!%s\n", prev, toolong ? "..." : "", chain);
+        logg(LOGG_DEBUG, "Scanning %s%s!%s\n", prev, toolong ? "..." : "", chain);
     } else {
         free(chain);
     }
@@ -281,7 +287,7 @@ static void clamscan_virus_found_cb(int fd, const char *virname, void *context)
         filename = data->filename;
     else
         filename = "(filename not set)";
-    logg("~%s: %s FOUND\n", filename, virname);
+    logg(LOGG_INFO, "%s: %s FOUND\n", filename, virname);
     return;
 }
 
@@ -299,23 +305,24 @@ static void scanfile(const char *filename, struct cl_engine *engine, const struc
     char *real_filename = NULL;
 
     if (NULL == filename || NULL == engine || NULL == opts || NULL == options) {
-        logg("scanfile: Invalid args.\n");
+        logg(LOGG_INFO, "scanfile: Invalid args.\n");
         ret = CL_EARG;
         goto done;
     }
 
-    ret = cli_realpath((const char *) filename, &real_filename);
+    ret = cli_realpath((const char *)filename, &real_filename);
     if (CL_SUCCESS != ret) {
-        logg("Failed to determine real filename of %s.\n", filename);
-        goto done;
+        logg(LOGG_DEBUG, "Failed to determine real filename of %s.\n", filename);
+        logg(LOGG_DEBUG, "Quarantine of the file may fail if file path contains symlinks.\n");
+    } else {
+        filename = real_filename;
     }
-    filename = real_filename;
 
     if ((opt = optget(opts, "exclude"))->enabled) {
         while (opt) {
             if (match_regex(filename, opt->strarg) == 1) {
                 if (!printinfected)
-                    logg("~%s: Excluded\n", filename);
+                    logg(LOGG_INFO, "%s: Excluded\n", filename);
 
                 goto done;
             }
@@ -338,7 +345,7 @@ static void scanfile(const char *filename, struct cl_engine *engine, const struc
 
         if (!included) {
             if (!printinfected)
-                logg("~%s: Excluded\n", filename);
+                logg(LOGG_INFO, "%s: Excluded\n", filename);
 
             goto done;
         }
@@ -349,14 +356,14 @@ static void scanfile(const char *filename, struct cl_engine *engine, const struc
 #ifdef C_LINUX
         if (procdev && sb.st_dev == procdev) {
             if (!printinfected)
-                logg("~%s: Excluded (/proc)\n", filename);
+                logg(LOGG_INFO, "%s: Excluded (/proc)\n", filename);
 
             goto done;
         }
 #endif
         if (!sb.st_size) {
             if (!printinfected)
-                logg("~%s: Empty file\n", filename);
+                logg(LOGG_INFO, "%s: Empty file\n", filename);
 
             goto done;
         }
@@ -368,7 +375,7 @@ static void scanfile(const char *filename, struct cl_engine *engine, const struc
     if (geteuid()) {
         if (checkaccess(filename, NULL, R_OK) != 1) {
             if (!printinfected)
-                logg("~%s: Access denied\n", filename);
+                logg(LOGG_INFO, "%s: Access denied\n", filename);
 
             info.errors++;
             goto done;
@@ -383,7 +390,7 @@ static void scanfile(const char *filename, struct cl_engine *engine, const struc
             chain.chains[0] = strdup(filename);
             if (!chain.chains[0]) {
                 free(chain.chains);
-                logg("Unable to allocate memory in scanfile()\n");
+                logg(LOGG_INFO, "Unable to allocate memory in scanfile()\n");
                 info.errors++;
                 goto done;
             }
@@ -391,10 +398,10 @@ static void scanfile(const char *filename, struct cl_engine *engine, const struc
         }
     }
 
-    logg("*Scanning %s\n", filename);
+    logg(LOGG_DEBUG, "Scanning %s\n", filename);
 
     if ((fd = safe_open(filename, O_RDONLY | O_BINARY)) == -1) {
-        logg("^Can't open file %s: %s\n", filename, strerror(errno));
+        logg(LOGG_WARNING, "Can't open file %s: %s\n", filename, strerror(errno));
         info.errors++;
         goto done;
     }
@@ -407,9 +414,9 @@ static void scanfile(const char *filename, struct cl_engine *engine, const struc
                 char str[128];
                 int toolong = print_chain(&chain, str, sizeof(str));
 
-                logg("~%s%s!(%llu)%s: %s FOUND\n", str, toolong ? "..." : "", (long long unsigned)(chain.lastvir - 1), chain.chains[chain.nchains - 1], virname);
+                logg(LOGG_INFO, "%s%s!(%llu)%s: %s FOUND\n", str, toolong ? "..." : "", (long long unsigned)(chain.lastvir - 1), chain.chains[chain.nchains - 1], virname);
             } else if (chain.lastvir) {
-                logg("~%s!(%llu): %s FOUND\n", filename, (long long unsigned)(chain.lastvir - 1), virname);
+                logg(LOGG_INFO, "%s!(%llu): %s FOUND\n", filename, (long long unsigned)(chain.lastvir - 1), virname);
             }
         }
         info.files++;
@@ -419,12 +426,12 @@ static void scanfile(const char *filename, struct cl_engine *engine, const struc
             fprintf(stderr, "\007");
     } else if (ret == CL_CLEAN) {
         if (!printinfected && printclean)
-            mprintf("~%s: OK\n", filename);
+            mprintf(LOGG_INFO, "%s: OK\n", filename);
 
         info.files++;
     } else {
         if (!printinfected)
-            logg("~%s: %s ERROR\n", filename, cl_strerror(ret));
+            logg(LOGG_INFO, "%s: %s ERROR\n", filename, cl_strerror(ret));
 
         info.errors++;
     }
@@ -459,7 +466,7 @@ static void scandirs(const char *dirname, struct cl_engine *engine, const struct
         while (opt) {
             if (match_regex(dirname, opt->strarg) == 1) {
                 if (!printinfected)
-                    logg("~%s: Excluded\n", dirname);
+                    logg(LOGG_INFO, "%s: Excluded\n", dirname);
 
                 return;
             }
@@ -481,7 +488,7 @@ static void scandirs(const char *dirname, struct cl_engine *engine, const struct
 
         if (!included) {
             if (!printinfected)
-                logg("~%s: Excluded\n", dirname);
+                logg(LOGG_INFO, "%s: Excluded\n", dirname);
 
             return;
         }
@@ -502,7 +509,7 @@ static void scandirs(const char *dirname, struct cl_engine *engine, const struct
                     /* build the full name */
                     fname = malloc(strlen(dirname) + strlen(dent->d_name) + 2);
                     if (fname == NULL) { /* oops, malloc() failed, print warning and return */
-                        logg("!scandirs: Memory allocation failed for fname\n");
+                        logg(LOGG_ERROR, "scandirs: Memory allocation failed for fname\n");
                         break;
                     }
 
@@ -516,7 +523,7 @@ static void scandirs(const char *dirname, struct cl_engine *engine, const struct
                         if (!optget(opts, "cross-fs")->enabled) {
                             if (sb.st_dev != dev) {
                                 if (!printinfected)
-                                    logg("~%s: Excluded\n", fname);
+                                    logg(LOGG_INFO, "%s: Excluded\n", fname);
 
                                 free(fname);
                                 continue;
@@ -525,7 +532,7 @@ static void scandirs(const char *dirname, struct cl_engine *engine, const struct
                         if (S_ISLNK(sb.st_mode)) {
                             if (dirlnk != 2 && filelnk != 2) {
                                 if (!printinfected)
-                                    logg("%s: Symbolic link\n", fname);
+                                    logg(LOGG_INFO, "%s: Symbolic link\n", fname);
                             } else if (CLAMSTAT(fname, &sb) != -1) {
                                 if (S_ISREG(sb.st_mode) && filelnk == 2) {
                                     scanfile(fname, engine, opts, options);
@@ -534,7 +541,7 @@ static void scandirs(const char *dirname, struct cl_engine *engine, const struct
                                         scandirs(fname, engine, opts, options, depth, dev);
                                 } else {
                                     if (!printinfected)
-                                        logg("%s: Symbolic link\n", fname);
+                                        logg(LOGG_INFO, "%s: Symbolic link\n", fname);
                                 }
                             }
                         } else if (S_ISREG(sb.st_mode)) {
@@ -551,7 +558,7 @@ static void scandirs(const char *dirname, struct cl_engine *engine, const struct
         closedir(dd);
     } else {
         if (!printinfected)
-            logg("~%s: Can't open directory.\n", dirname);
+            logg(LOGG_INFO, "%s: Can't open directory.\n", dirname);
 
         info.errors++;
     }
@@ -574,17 +581,17 @@ static int scanstdin(const struct cl_engine *engine, struct cl_scan_options *opt
     }
 
     if (access(tmpdir, R_OK | W_OK) == -1) {
-        logg("!Can't write to temporary directory\n");
+        logg(LOGG_ERROR, "Can't write to temporary directory\n");
         return 2;
     }
 
     if (!(file = cli_gentemp(tmpdir))) {
-        logg("!Can't generate tempfile name\n");
+        logg(LOGG_ERROR, "Can't generate tempfile name\n");
         return 2;
     }
 
     if (!(fs = fopen(file, "wb"))) {
-        logg("!Can't open %s for writing\n", file);
+        logg(LOGG_ERROR, "Can't open %s for writing\n", file);
         free(file);
         return 2;
     }
@@ -592,7 +599,7 @@ static int scanstdin(const struct cl_engine *engine, struct cl_scan_options *opt
     while ((bread = fread(buff, 1, FILEBUFF, stdin))) {
         fsize += bread;
         if (fwrite(buff, 1, bread, fs) < bread) {
-            logg("!Can't write to %s\n", file);
+            logg(LOGG_ERROR, "Can't write to %s\n", file);
             free(file);
             fclose(fs);
             return 2;
@@ -601,7 +608,7 @@ static int scanstdin(const struct cl_engine *engine, struct cl_scan_options *opt
 
     fclose(fs);
 
-    logg("*Checking %s\n", file);
+    logg(LOGG_DEBUG, "Checking %s\n", file);
 
     info.files++;
     info.rblocks += fsize / CL_COUNT_PRECISION;
@@ -615,10 +622,10 @@ static int scanstdin(const struct cl_engine *engine, struct cl_scan_options *opt
             fprintf(stderr, "\007");
     } else if (ret == CL_CLEAN) {
         if (!printinfected)
-            mprintf("stdin: OK\n");
+            mprintf(LOGG_INFO, "stdin: OK\n");
     } else {
         if (!printinfected)
-            logg("stdin: %s ERROR\n", cl_strerror(ret));
+            logg(LOGG_INFO, "stdin: %s ERROR\n", cl_strerror(ret));
 
         info.errors++;
     }
@@ -628,18 +635,419 @@ static int scanstdin(const struct cl_engine *engine, struct cl_scan_options *opt
     return ret;
 }
 
+struct sigload_progress {
+    time_t startTime;
+    time_t lastRunTime;
+    uint8_t bComplete;
+};
+
+struct engine_compile_progress {
+    time_t startTime;
+    time_t lastRunTime;
+    uint8_t bComplete;
+};
+
+struct engine_free_progress {
+    time_t startTime;
+    time_t lastRunTime;
+    uint8_t bComplete;
+};
+
+static void print_time(time_t seconds)
+{
+    if (seconds >= 3600) {
+        fprintf(stdout, "%2lldh %02lldm", (long long)seconds / 3600, ((long long)seconds % 3600) / 60);
+    } else if (seconds >= 60) {
+        fprintf(stdout, "%2lldm %02llds", (long long)seconds / 60, (long long)seconds % 60);
+    } else {
+        fprintf(stdout, "%3llds", (long long)seconds);
+    }
+}
+
+static void print_num_sigs(size_t sigs, int bPad)
+{
+    if (sigs >= (1000 * 1000)) {
+        const char *format = bPad ? "%7.02fM" : "%.02fM";
+        double megasigs    = sigs / (double)(1000 * 1000);
+        fprintf(stdout, format, megasigs);
+    } else if (sigs >= 1000) {
+        const char *format = bPad ? "%7.02fK" : "%.02fK";
+        double kilosigs    = sigs / (double)(1000);
+        fprintf(stdout, format, kilosigs);
+    } else {
+        const char *format = bPad ? "%8zu" : "%zu";
+        fprintf(stdout, format, sigs);
+    }
+}
+
+/**
+ * @brief Progress callback for sig-load
+ *
+ * @param total_items   Total number of items
+ * @param now_completed Number of items completed
+ * @param context       Opaque application provided data; This maps to sigload_progress
+ */
+static cl_error_t sigload_callback(size_t total_items, size_t now_completed, void *context)
+{
+    time_t curtime = 0;
+    time_t remtime = 0;
+
+    struct sigload_progress *sigloadProgress = (struct sigload_progress *)context;
+
+    uint32_t i             = 0;
+    uint32_t totalNumDots  = 25;
+    uint32_t numDots       = 0;
+    double fraction_loaded = 0.0;
+
+    if ((total_items <= 0) || (sigloadProgress->bComplete)) {
+        return CL_SUCCESS;
+    }
+
+    fraction_loaded = (double)now_completed / (double)total_items;
+    numDots         = round(fraction_loaded * totalNumDots);
+
+    if (0 == sigloadProgress->startTime) {
+        sigloadProgress->startTime = time(0);
+    }
+    curtime = time(0) - sigloadProgress->startTime;
+
+    sigloadProgress->lastRunTime = curtime;
+
+#ifndef _WIN32
+    fprintf(stdout, "\e[?7l");
+#endif
+    if (fraction_loaded <= 0.0) {
+        fprintf(stdout, "Loading:   ");
+        print_time(curtime);
+        fprintf(stdout, "               ");
+    } else {
+        remtime = (curtime / fraction_loaded) - curtime;
+        fprintf(stdout, "Loading:   ");
+        print_time(curtime);
+        fprintf(stdout, ", ETA: ");
+        print_time(remtime);
+        fprintf(stdout, " ");
+    }
+
+    fprintf(stdout, "[");
+    if (numDots > 0) {
+        if (numDots > 1) {
+            for (i = 0; i < numDots - 1; i++) {
+                fprintf(stdout, "=");
+            }
+        }
+        fprintf(stdout, ">");
+        i++;
+    }
+    for (; i < totalNumDots; i++) {
+        fprintf(stdout, " ");
+    }
+
+    fprintf(stdout, "] ");
+
+    print_num_sigs(now_completed, 1);
+    fprintf(stdout, "/");
+    print_num_sigs(total_items, 0);
+    fprintf(stdout, " sigs    ");
+
+    if (now_completed < total_items) {
+        fprintf(stdout, "\r");
+    } else {
+        fprintf(stdout, "\n");
+        sigloadProgress->bComplete = 1;
+    }
+#ifndef _WIN32
+    fprintf(stdout, "\e[?7h");
+#endif
+    fflush(stdout);
+
+    return CL_SUCCESS;
+}
+
+/**
+ * @brief Progress callback for sig-load
+ *
+ * @param total_items   Total number of items
+ * @param now_completed Number of items completed
+ * @param context       Opaque application provided data; This maps to engine_compile_progress
+ */
+static cl_error_t engine_compile_callback(size_t total_items, size_t now_completed, void *context)
+{
+    time_t curtime = 0;
+    time_t remtime = 0;
+
+    struct engine_compile_progress *engineCompileProgress = (struct engine_compile_progress *)context;
+
+    uint32_t i               = 0;
+    uint32_t totalNumDots    = 25;
+    uint32_t numDots         = 0;
+    double fraction_compiled = 0.0;
+
+    if ((total_items <= 0) || (engineCompileProgress->bComplete)) {
+        return CL_SUCCESS;
+    }
+
+    fraction_compiled = (double)now_completed / (double)total_items;
+    numDots           = round(fraction_compiled * totalNumDots);
+
+    if (0 == engineCompileProgress->startTime) {
+        engineCompileProgress->startTime = time(0);
+    }
+    curtime = time(0) - engineCompileProgress->startTime;
+
+    engineCompileProgress->lastRunTime = curtime;
+
+#ifndef _WIN32
+    fprintf(stdout, "\e[?7l");
+#endif
+    if (fraction_compiled <= 0.0) {
+        fprintf(stdout, "Compiling: ");
+        print_time(curtime);
+        fprintf(stdout, "               ");
+    } else {
+        remtime = (curtime / fraction_compiled) - curtime;
+        fprintf(stdout, "Compiling: ");
+        print_time(curtime);
+        fprintf(stdout, ", ETA: ");
+        print_time(remtime);
+        fprintf(stdout, " ");
+    }
+
+    fprintf(stdout, "[");
+    if (numDots > 0) {
+        if (numDots > 1) {
+            for (i = 0; i < numDots - 1; i++) {
+                fprintf(stdout, "=");
+            }
+        }
+        fprintf(stdout, ">");
+        i++;
+    }
+    for (; i < totalNumDots; i++) {
+        fprintf(stdout, " ");
+    }
+
+    fprintf(stdout, "] ");
+
+    print_num_sigs(now_completed, 1);
+    fprintf(stdout, "/");
+    print_num_sigs(total_items, 0);
+    fprintf(stdout, " tasks ");
+
+    if (now_completed < total_items) {
+        fprintf(stdout, "\r");
+    } else {
+        fprintf(stdout, "\n");
+        engineCompileProgress->bComplete = 1;
+    }
+#ifndef _WIN32
+    fprintf(stdout, "\e[?7h");
+#endif
+    fflush(stdout);
+
+    return CL_SUCCESS;
+}
+
+#ifdef ENABLE_ENGINE_FREE_PROGRESSBAR
+/**
+ * @brief Progress callback for sig-load
+ *
+ * @param total_items   Total number of items
+ * @param now_completed Number of items completed
+ * @param context       Opaque application provided data; This maps to engine_free_progress
+ */
+static cl_error_t engine_free_callback(size_t total_items, size_t now_completed, void *context)
+{
+    time_t curtime = 0;
+
+    struct engine_free_progress *engineFreeProgress = (struct engine_free_progress *)context;
+
+    uint32_t i            = 0;
+    uint32_t totalNumDots = 10;
+    uint32_t numDots      = 0;
+    double fraction_freed = 0.0;
+
+    if ((total_items <= 0) || (engineFreeProgress->bComplete)) {
+        return CL_SUCCESS;
+    }
+
+    fraction_freed = (double)now_completed / (double)total_items;
+    numDots        = round(fraction_freed * totalNumDots);
+
+    if (0 == engineFreeProgress->startTime) {
+        engineFreeProgress->startTime = time(0);
+    }
+    curtime = time(0) - engineFreeProgress->startTime;
+
+    engineFreeProgress->lastRunTime = curtime;
+
+#ifndef _WIN32
+    fprintf(stdout, "\e[?7l");
+#endif
+    fprintf(stdout, "Unloading");
+
+    if (numDots > 0) {
+        if (numDots > 1) {
+            for (i = 0; i < numDots - 1; i++) {
+                fprintf(stdout, ".");
+            }
+        }
+        i++;
+    }
+    for (; i < totalNumDots; i++) {
+        fprintf(stdout, " ");
+    }
+
+    fprintf(stdout, " ");
+
+    print_num_sigs(now_completed, 1);
+    fprintf(stdout, "/");
+    print_num_sigs(total_items, 0);
+    fprintf(stdout, " tasks ");
+
+    if (now_completed < total_items) {
+        fprintf(stdout, "\r");
+    } else {
+        fprintf(stdout, "\n");
+        engineFreeProgress->bComplete = 1;
+    }
+#ifndef _WIN32
+    fprintf(stdout, "\e[?7h");
+#endif
+    fflush(stdout);
+
+    return CL_SUCCESS;
+}
+#endif
+
+#ifdef _WIN32
+static int scan_memory(struct cl_engine *engine, const struct optstruct *opts, struct cl_scan_options *options)
+{
+    int ret = 0;
+    struct mem_info minfo;
+
+    minfo.d       = 0;
+    minfo.files   = info.files;
+    minfo.ifiles  = info.ifiles;
+    minfo.blocks  = info.blocks;
+    minfo.engine  = engine;
+    minfo.opts    = opts;
+    minfo.options = options;
+    ret           = scanmem(&minfo);
+
+    info.files  = minfo.files;
+    info.ifiles = minfo.ifiles;
+    info.blocks = minfo.blocks;
+
+    return ret;
+}
+#endif
+
+/**
+ * @brief Scan the files from the --file-list option, or scan the files listed as individual arguments.
+ *
+ * If the user uses both --file-list <LISTFILE> AND one or more files, then clam will only
+ * scan the files listed in the LISTFILE and emit a warning about not scanning the other file parameters.
+ *
+ * @param opts
+ * @param options
+ * @return int
+ */
+static int scan_files(struct cl_engine *engine, const struct optstruct *opts, struct cl_scan_options *options,
+                      unsigned int dirlnk, unsigned int filelnk)
+{
+    int ret = 0;
+    const char *filename;
+    char *file;
+    STATBUF sb;
+
+    if (optget(opts, "file-list")->enabled && opts->filename) {
+        logg(LOGG_WARNING, "Only scanning files from --file-list (files passed at cmdline are ignored)\n");
+    }
+
+#ifdef _WIN32
+    /* scan first memory if requested */
+    if (optget(opts, "memory")->enabled) {
+        ret = scan_memory(engine, opts, options);
+    }
+#endif
+
+    while ((filename = filelist(opts, &ret)) && (file = strdup(filename))) {
+        if (!strcmp(file, "-")) {
+            /* scan data from stdin */
+            ret = scanstdin(engine, options);
+        } else if (LSTAT(file, &sb) == -1) {
+            /* Can't access the file */
+            perror(file);
+            logg(LOGG_WARNING, "%s: Can't access file\n", file);
+            ret = 2;
+        } else {
+            /* Can access the file. Now have to identify what type of file it is */
+            int i;
+            for (i = strlen(file) - 1; i > 0; i--) {
+                if (file[i] == *PATHSEP) {
+                    file[i] = 0;
+                } else {
+                    break;
+                }
+            }
+
+            if (S_ISLNK(sb.st_mode)) {
+                /* found a link */
+                if (dirlnk == 0 && filelnk == 0) {
+                    /* don't follow links */
+                    if (!printinfected) {
+                        logg(LOGG_INFO, "%s: Symbolic link\n", file);
+                    }
+                } else if (CLAMSTAT(file, &sb) != -1) {
+                    /* maybe follow links */
+                    if (S_ISREG(sb.st_mode) && filelnk) {
+                        /* follow file links */
+                        scanfile(file, engine, opts, options);
+                    } else if (S_ISDIR(sb.st_mode) && dirlnk) {
+                        /* follow directory links */
+                        scandirs(file, engine, opts, options, 1, sb.st_dev);
+                    } else {
+                        if (!printinfected) {
+                            logg(LOGG_INFO, "%s: Symbolic link\n", file);
+                        }
+                    }
+                }
+            } else if (S_ISREG(sb.st_mode)) {
+                /* Found a file, scan it. */
+                scanfile(file, engine, opts, options);
+            } else if (S_ISDIR(sb.st_mode)) {
+                /* Found a directory, scan it. */
+                scandirs(file, engine, opts, options, 1, sb.st_dev);
+            } else {
+                logg(LOGG_WARNING, "%s: Not supported file type\n", file);
+                ret = 2;
+            }
+        }
+
+        free(file);
+    }
+
+    return ret;
+}
+
 int scanmanager(const struct optstruct *opts)
 {
-    int ret = 0, i;
+    int ret = 0;
+    int i;
     struct cl_scan_options options;
     unsigned int dboptions = 0, dirlnk = 1, filelnk = 1;
-    struct cl_engine *engine;
+    struct cl_engine *engine = NULL;
     STATBUF sb;
-    char *file, cwd[1024], *pua_cats = NULL;
-    const char *filename;
+    char *pua_cats = NULL;
     const struct optstruct *opt;
 #ifndef _WIN32
     struct rlimit rlim;
+#endif
+    struct sigload_progress sigload_progress_ctx               = {0};
+    struct engine_compile_progress engine_compile_progress_ctx = {0};
+#ifdef ENABLE_ENGINE_FREE_PROGRESSBAR
+    struct engine_free_progress engine_free_progress_ctx = {0};
 #endif
 
     /* Initalize scan options struct */
@@ -647,14 +1055,16 @@ int scanmanager(const struct optstruct *opts)
 
     dirlnk = optget(opts, "follow-dir-symlinks")->numarg;
     if (dirlnk > 2) {
-        logg("!--follow-dir-symlinks: Invalid argument\n");
-        return 2;
+        logg(LOGG_ERROR, "--follow-dir-symlinks: Invalid argument\n");
+        ret = 2;
+        goto done;
     }
 
     filelnk = optget(opts, "follow-file-symlinks")->numarg;
     if (filelnk > 2) {
-        logg("!--follow-file-symlinks: Invalid argument\n");
-        return 2;
+        logg(LOGG_ERROR, "--follow-file-symlinks: Invalid argument\n");
+        ret = 2;
+        goto done;
     }
 
     if (optget(opts, "yara-rules")->enabled) {
@@ -680,17 +1090,34 @@ int scanmanager(const struct optstruct *opts)
         dboptions |= CL_DB_BYTECODE;
 
     if ((ret = cl_init(CL_INIT_DEFAULT))) {
-        logg("!Can't initialize libclamav: %s\n", cl_strerror(ret));
-        return 2;
+        logg(LOGG_ERROR, "Can't initialize libclamav: %s\n", cl_strerror(ret));
+        ret = 2;
+        goto done;
     }
 
     if (!(engine = cl_engine_new())) {
-        logg("!Can't initialize antivirus engine\n");
-        return 2;
+        logg(LOGG_ERROR, "Can't initialize antivirus engine\n");
+        ret = 2;
+        goto done;
     }
 
     cl_engine_set_clcb_virus_found(engine, clamscan_virus_found_cb);
 
+    if (isatty(fileno(stdout)) &&
+        !optget(opts, "debug")->enabled &&
+        !optget(opts, "quiet")->enabled &&
+        !optget(opts, "infected")->enabled &&
+        !optget(opts, "no-summary")->enabled) {
+        /* set progress callbacks */
+        cl_engine_set_clcb_sigload_progress(engine, sigload_callback, &sigload_progress_ctx);
+        cl_engine_set_clcb_engine_compile_progress(engine, engine_compile_callback, &engine_compile_progress_ctx);
+#ifdef ENABLE_ENGINE_FREE_PROGRESSBAR
+        cl_engine_set_clcb_engine_free_progress(engine, engine_free_callback, &engine_free_progress_ctx);
+#endif
+    }
+
+    if ((opt = optget(opts, "cache-size"))->enabled)
+        cl_engine_set_num(engine, CL_ENGINE_CACHE_SIZE, opt->numarg);
     if (optget(opts, "disable-cache")->enabled)
         cl_engine_set_num(engine, CL_ENGINE_DISABLE_CACHE, 1);
 
@@ -701,10 +1128,10 @@ int scanmanager(const struct optstruct *opts)
             i = 0;
             while (opt) {
                 if (!(pua_cats = realloc(pua_cats, i + strlen(opt->strarg) + 3))) {
-                    logg("!Can't allocate memory for pua_cats\n");
+                    logg(LOGG_ERROR, "Can't allocate memory for pua_cats\n");
 
-                    cl_engine_free(engine);
-                    return 2;
+                    ret = 2;
+                    goto done;
                 }
 
                 sprintf(pua_cats + i, ".%s", opt->strarg);
@@ -719,20 +1146,20 @@ int scanmanager(const struct optstruct *opts)
 
         if ((opt = optget(opts, "include-pua"))->enabled) {
             if (pua_cats) {
-                logg("!--exclude-pua and --include-pua cannot be used at the same time\n");
+                logg(LOGG_ERROR, "--exclude-pua and --include-pua cannot be used at the same time\n");
 
-                cl_engine_free(engine);
                 free(pua_cats);
-                return 2;
+                ret = 2;
+                goto done;
             }
 
             dboptions |= CL_DB_PUA_INCLUDE;
             i = 0;
             while (opt) {
                 if (!(pua_cats = realloc(pua_cats, i + strlen(opt->strarg) + 3))) {
-                    logg("!Can't allocate memory for pua_cats\n");
-                    cl_engine_free(engine);
-                    return 2;
+                    logg(LOGG_ERROR, "Can't allocate memory for pua_cats\n");
+                    ret = 2;
+                    goto done;
                 }
 
                 sprintf(pua_cats + i, ".%s", opt->strarg);
@@ -748,11 +1175,11 @@ int scanmanager(const struct optstruct *opts)
 
         if (pua_cats) {
             if ((ret = cl_engine_set_str(engine, CL_ENGINE_PUA_CATEGORIES, pua_cats))) {
-                logg("!cli_engine_set_str(CL_ENGINE_PUA_CATEGORIES) failed: %s\n", cl_strerror(ret));
+                logg(LOGG_ERROR, "cli_engine_set_str(CL_ENGINE_PUA_CATEGORIES) failed: %s\n", cl_strerror(ret));
 
                 free(pua_cats);
-                cl_engine_free(engine);
-                return 2;
+                ret = 2;
+                goto done;
             }
 
             free(pua_cats);
@@ -815,29 +1242,36 @@ int scanmanager(const struct optstruct *opts)
         options.general |= CL_SCAN_GENERAL_COLLECT_METADATA;
 #else
     if (optget(opts, "gen-json")->enabled) {
-        logg("!Can't generate json (gen-json). libjson-c dev library was missing or misconfigured when ClamAV was built.\n");
+        logg(LOGG_ERROR, "Can't generate json (gen-json). libjson-c dev library was missing or misconfigured when ClamAV was built.\n");
 
-        cl_engine_free(engine);
-        return 2;
+        ret = 2;
+        goto done;
     }
 #endif
 
     if ((opt = optget(opts, "tempdir"))->enabled) {
         if ((ret = cl_engine_set_str(engine, CL_ENGINE_TMPDIR, opt->strarg))) {
-            logg("!cli_engine_set_str(CL_ENGINE_TMPDIR) failed: %s\n", cl_strerror(ret));
+            logg(LOGG_ERROR, "cli_engine_set_str(CL_ENGINE_TMPDIR) failed: %s\n", cl_strerror(ret));
 
-            cl_engine_free(engine);
-            return 2;
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "database"))->active) {
         while (opt) {
-            if ((ret = cl_load(opt->strarg, engine, &info.sigs, dboptions))) {
-                logg("!%s\n", cl_strerror(ret));
+            if (optget(opts, "fail-if-cvd-older-than")->enabled) {
+                if (check_if_cvd_outdated(opt->strarg, optget(opts, "fail-if-cvd-older-than")->numarg) != CL_SUCCESS) {
+                    ret = 2;
+                    goto done;
+                }
+            }
 
-                cl_engine_free(engine);
-                return 2;
+            if ((ret = cl_load(opt->strarg, engine, &info.sigs, dboptions))) {
+                logg(LOGG_ERROR, "%s\n", cl_strerror(ret));
+
+                ret = 2;
+                goto done;
             }
 
             opt = opt->nextarg;
@@ -845,12 +1279,19 @@ int scanmanager(const struct optstruct *opts)
     } else {
         char *dbdir = freshdbdir();
 
+        if (optget(opts, "fail-if-cvd-older-than")->enabled) {
+            if (check_if_cvd_outdated(dbdir, optget(opts, "fail-if-cvd-older-than")->numarg) != CL_SUCCESS) {
+                ret = 2;
+                goto done;
+            }
+        }
+
         if ((ret = cl_load(dbdir, engine, &info.sigs, dboptions))) {
-            logg("!%s\n", cl_strerror(ret));
+            logg(LOGG_ERROR, "%s\n", cl_strerror(ret));
 
             free(dbdir);
-            cl_engine_free(engine);
-            return 2;
+            ret = 2;
+            goto done;
         }
 
         free(dbdir);
@@ -859,25 +1300,33 @@ int scanmanager(const struct optstruct *opts)
     /* pcre engine limits - required for cl_engine_compile */
     if ((opt = optget(opts, "pcre-match-limit"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_PCRE_MATCH_LIMIT, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_PCRE_MATCH_LIMIT) failed: %s\n", cl_strerror(ret));
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_PCRE_MATCH_LIMIT) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "pcre-recmatch-limit"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_PCRE_RECMATCH_LIMIT, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_PCRE_RECMATCH_LIMIT) failed: %s\n", cl_strerror(ret));
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_PCRE_RECMATCH_LIMIT) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((ret = cl_engine_compile(engine)) != 0) {
-        logg("!Database initialization error: %s\n", cl_strerror(ret));
+        logg(LOGG_ERROR, "Database initialization error: %s\n", cl_strerror(ret));
+        ret = 2;
+        goto done;
+    }
 
-        cl_engine_free(engine);
-        return 2;
+    if (isatty(fileno(stdout)) &&
+        !optget(opts, "debug")->enabled &&
+        !optget(opts, "quiet")->enabled &&
+        !optget(opts, "infected")->enabled &&
+        !optget(opts, "no-summary")->enabled) {
+        /* For a space after the progress bars */
+        logg(LOGG_INFO, "\n");
     }
 
     if (optget(opts, "archive-verbose")->enabled) {
@@ -891,65 +1340,59 @@ int scanmanager(const struct optstruct *opts)
     /* TODO: Remove deprecated option in a future feature release */
     if ((opt = optget(opts, "timelimit"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_SCANTIME, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_SCANTIME) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_SCANTIME) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
     if ((opt = optget(opts, "max-scantime"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_SCANTIME, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_SCANTIME) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_SCANTIME) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "max-scansize"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_SCANSIZE, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_SCANSIZE) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_SCANSIZE) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "max-filesize"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_FILESIZE, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_FILESIZE) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_FILESIZE) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
 #ifndef _WIN32
     if (getrlimit(RLIMIT_FSIZE, &rlim) == 0) {
         if (rlim.rlim_cur < (rlim_t)cl_engine_get_num(engine, CL_ENGINE_MAX_FILESIZE, NULL))
-            logg("^System limit for file size is lower than engine->maxfilesize\n");
+            logg(LOGG_WARNING, "System limit for file size is lower than engine->maxfilesize\n");
         if (rlim.rlim_cur < (rlim_t)cl_engine_get_num(engine, CL_ENGINE_MAX_SCANSIZE, NULL))
-            logg("^System limit for file size is lower than engine->maxscansize\n");
+            logg(LOGG_WARNING, "System limit for file size is lower than engine->maxscansize\n");
     } else {
-        logg("^Cannot obtain resource limits for file size\n");
+        logg(LOGG_WARNING, "Cannot obtain resource limits for file size\n");
     }
 #endif
 
     if ((opt = optget(opts, "max-files"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_FILES, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_FILES) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_FILES) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "max-recursion"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_RECURSION, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_RECURSION) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_RECURSION) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
@@ -957,81 +1400,73 @@ int scanmanager(const struct optstruct *opts)
 
     if ((opt = optget(opts, "max-embeddedpe"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_EMBEDDEDPE, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_EMBEDDEDPE) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_EMBEDDEDPE) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "max-htmlnormalize"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_HTMLNORMALIZE, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_HTMLNORMALIZE) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_HTMLNORMALIZE) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "max-htmlnotags"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_HTMLNOTAGS, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_HTMLNOTAGS) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_HTMLNOTAGS) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "max-scriptnormalize"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_SCRIPTNORMALIZE, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_SCRIPTNORMALIZE) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_SCRIPTNORMALIZE) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "max-ziptypercg"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_ZIPTYPERCG, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_ZIPTYPERCG) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_ZIPTYPERCG) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "max-partitions"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_PARTITIONS, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_PARTITIONS) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_PARTITIONS) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "max-iconspe"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_ICONSPE, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_ICONSPE) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_ICONSPE) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "max-rechwp3"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_MAX_RECHWP3, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_MAX_RECHWP3) failed: %s\n", cl_strerror(ret));
-
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MAX_RECHWP3) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
     if ((opt = optget(opts, "pcre-max-filesize"))->active) {
         if ((ret = cl_engine_set_num(engine, CL_ENGINE_PCRE_MAX_FILESIZE, opt->numarg))) {
-            logg("!cli_engine_set_num(CL_ENGINE_PCRE_MAX_FILESIZE) failed: %s\n", cl_strerror(ret));
-            cl_engine_free(engine);
-            return 2;
+            logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_PCRE_MAX_FILESIZE) failed: %s\n", cl_strerror(ret));
+            ret = 2;
+            goto done;
         }
     }
 
@@ -1065,6 +1500,10 @@ int scanmanager(const struct optstruct *opts)
     if ((optget(opts, "detect-broken")->enabled) ||
         (optget(opts, "alert-broken")->enabled)) {
         options.heuristic |= CL_SCAN_HEURISTIC_BROKEN;
+    }
+
+    if (optget(opts, "alert-broken-media")->enabled) {
+        options.heuristic |= CL_SCAN_HEURISTIC_BROKEN_MEDIA;
     }
 
     /* TODO: Remove deprecated option in a future feature release */
@@ -1148,8 +1587,9 @@ int scanmanager(const struct optstruct *opts)
                     options.heuristic |= (CL_SCAN_HEURISTIC_STRUCTURED_SSN_NORMAL | CL_SCAN_HEURISTIC_STRUCTURED_SSN_STRIPPED);
                     break;
                 default:
-                    logg("!Invalid argument for --structured-ssn-format\n");
-                    return 2;
+                    logg(LOGG_ERROR, "Invalid argument for --structured-ssn-format\n");
+                    ret = 2;
+                    goto done;
             }
         } else {
             options.heuristic |= CL_SCAN_HEURISTIC_STRUCTURED_SSN_NORMAL;
@@ -1157,18 +1597,17 @@ int scanmanager(const struct optstruct *opts)
 
         if ((opt = optget(opts, "structured-ssn-count"))->active) {
             if ((ret = cl_engine_set_num(engine, CL_ENGINE_MIN_SSN_COUNT, opt->numarg))) {
-                logg("!cli_engine_set_num(CL_ENGINE_MIN_SSN_COUNT) failed: %s\n", cl_strerror(ret));
-
-                cl_engine_free(engine);
-                return 2;
+                logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MIN_SSN_COUNT) failed: %s\n", cl_strerror(ret));
+                ret = 2;
+                goto done;
             }
         }
 
         if ((opt = optget(opts, "structured-cc-count"))->active) {
             if ((ret = cl_engine_set_num(engine, CL_ENGINE_MIN_CC_COUNT, opt->numarg))) {
-                logg("!cli_engine_set_num(CL_ENGINE_MIN_CC_COUNT) failed: %s\n", cl_strerror(ret));
-                cl_engine_free(engine);
-                return 2;
+                logg(LOGG_ERROR, "cli_engine_set_num(CL_ENGINE_MIN_CC_COUNT) failed: %s\n", cl_strerror(ret));
+                ret = 2;
+                goto done;
             }
         }
 
@@ -1180,8 +1619,9 @@ int scanmanager(const struct optstruct *opts)
                     options.heuristic |= CL_SCAN_HEURISTIC_STRUCTURED_CC;
                     break;
                 default:
-                    logg("!Invalid argument for --structured-cc-mode\n");
-                    return 2;
+                    logg(LOGG_ERROR, "Invalid argument for --structured-cc-mode\n");
+                    ret = 2;
+                    goto done;
             }
         }
     } else {
@@ -1190,65 +1630,35 @@ int scanmanager(const struct optstruct *opts)
 
 #ifdef C_LINUX
     procdev = (dev_t)0;
-    if (CLAMSTAT("/proc", &sb) != -1 && !sb.st_size)
+    if (CLAMSTAT("/proc", &sb) != -1 && !sb.st_size) {
         procdev = sb.st_dev;
+    }
 #endif
 
-    /* check filetype */
-    if (!opts->filename && !optget(opts, "file-list")->enabled) {
-        /* we need full path for some reasons (eg. archive handling) */
+    if (optget(opts, "file-list")->enabled || opts->filename) {
+        /* scan the files listed in the --file-list, or it that's not specified, then
+         * scan the list of file arguments (including data from stdin, if `-` specified) */
+        ret = scan_files(engine, opts, &options, dirlnk, filelnk);
+
+#ifdef _WIN32
+    } else if (optget(opts, "memory")->enabled) {
+        /* scan only memory */
+        ret = scan_memory(engine, opts, &options);
+
+#endif
+    } else {
+        /* No list of files provided to scan, and no request to scan memory,
+         * so just scan the current directory. */
+        char cwd[1024];
+
+        /* Get the current workinng directory.
+         * we need full path for some reasons (eg. archive handling) */
         if (!getcwd(cwd, sizeof(cwd))) {
-            logg("!Can't get absolute pathname of current working directory\n");
+            logg(LOGG_ERROR, "Can't get absolute pathname of current working directory\n");
             ret = 2;
         } else {
             CLAMSTAT(cwd, &sb);
             scandirs(cwd, engine, opts, &options, 1, sb.st_dev);
-        }
-
-    } else if (opts->filename && !optget(opts, "file-list")->enabled && !strcmp(opts->filename[0], "-")) { /* read data from stdin */
-        ret = scanstdin(engine, &options);
-    } else {
-        if (opts->filename && optget(opts, "file-list")->enabled)
-            logg("^Only scanning files from --file-list (files passed at cmdline are ignored)\n");
-
-        while ((filename = filelist(opts, &ret)) && (file = strdup(filename))) {
-            if (LSTAT(file, &sb) == -1) {
-                perror(file);
-                logg("^%s: Can't access file\n", file);
-                ret = 2;
-            } else {
-                for (i = strlen(file) - 1; i > 0; i--) {
-                    if (file[i] == *PATHSEP)
-                        file[i] = 0;
-                    else
-                        break;
-                }
-
-                if (S_ISLNK(sb.st_mode)) {
-                    if (dirlnk == 0 && filelnk == 0) {
-                        if (!printinfected)
-                            logg("%s: Symbolic link\n", file);
-                    } else if (CLAMSTAT(file, &sb) != -1) {
-                        if (S_ISREG(sb.st_mode) && filelnk) {
-                            scanfile(file, engine, opts, &options);
-                        } else if (S_ISDIR(sb.st_mode) && dirlnk) {
-                            scandirs(file, engine, opts, &options, 1, sb.st_dev);
-                        } else {
-                            if (!printinfected)
-                                logg("%s: Symbolic link\n", file);
-                        }
-                    }
-                } else if (S_ISREG(sb.st_mode)) {
-                    scanfile(file, engine, opts, &options);
-                } else if (S_ISDIR(sb.st_mode)) {
-                    scandirs(file, engine, opts, &options, 1, sb.st_dev);
-                } else {
-                    logg("^%s: Not supported file type\n", file);
-                    ret = 2;
-                }
-            }
-
-            free(file);
         }
     }
 
@@ -1268,6 +1678,7 @@ int scanmanager(const struct optstruct *opts)
         }
     }
 
+done:
     /* free the engine */
     cl_engine_free(engine);
 

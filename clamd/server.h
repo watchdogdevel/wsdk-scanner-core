@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, Trog, Török Edvin
@@ -26,10 +26,15 @@
 #include <time.h>
 #include <pthread.h>
 
-#include "libclamav/clamav.h"
-#include "shared/optparser.h"
+// libclamav
+#include "clamav.h"
+
+// common
+#include "optparser.h"
+
 #include "thrmgr.h"
 #include "session.h"
+
 struct thrarg {
     int sid;
     struct cl_scan_options *options;

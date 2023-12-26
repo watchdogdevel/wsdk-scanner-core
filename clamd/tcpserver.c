@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, Török Edvin
@@ -37,13 +37,15 @@
 #endif
 #include <errno.h>
 
-#include "libclamav/clamav.h"
+// libclamav
+#include "clamav.h"
 
-#include "shared/optparser.h"
-#include "shared/output.h"
-#include "shared/misc.h"
+// common
+#include "optparser.h"
+#include "output.h"
+#include "misc.h"
 
-#include "others.h"
+#include "clamd_others.h"
 #include "server.h"
 #include "tcpserver.h"
 
@@ -64,7 +66,7 @@ int tcpserver(int **lsockets, unsigned int *nlsockets, char *ipaddr, const struc
 
     num_fd = sd_listen_fds(0);
     if (num_fd > 2) {
-        logg("!TCP: Received more than two file descriptors from systemd.\n");
+        logg(LOGG_ERROR, "TCP: Received more than two file descriptors from systemd.\n");
         return -1;
     } else if (num_fd > 0) {
         /* use socket passed by systemd */
@@ -73,11 +75,11 @@ int tcpserver(int **lsockets, unsigned int *nlsockets, char *ipaddr, const struc
             sockfd = SD_LISTEN_FDS_START + i;
             if (sd_is_socket(sockfd, AF_INET, SOCK_STREAM, 1) == 1) {
                 /* correct socket */
-                logg("#TCP: Received AF_INET SOCK_STREAM socket from systemd.\n");
+                logg(LOGG_INFO_NF, "TCP: Received AF_INET SOCK_STREAM socket from systemd.\n");
                 break;
             } else if (sd_is_socket(sockfd, AF_INET6, SOCK_STREAM, 1) == 1) {
                 /* correct socket */
-                logg("#TCP: Received AF_INET6 SOCK_STREAM socket from systemd.\n");
+                logg(LOGG_INFO_NF, "TCP: Received AF_INET6 SOCK_STREAM socket from systemd.\n");
                 break;
             } else {
                 /* wrong socket */
@@ -85,7 +87,7 @@ int tcpserver(int **lsockets, unsigned int *nlsockets, char *ipaddr, const struc
             }
         }
         if (sockfd == -2) {
-            logg("#TCP: No tcp AF_INET/AF_INET6 SOCK_STREAM socket received from systemd.\n");
+            logg(LOGG_INFO_NF, "TCP: No tcp AF_INET/AF_INET6 SOCK_STREAM socket received from systemd.\n");
             return -2;
         }
 
@@ -114,7 +116,7 @@ int tcpserver(int **lsockets, unsigned int *nlsockets, char *ipaddr, const struc
 #endif
 
     if ((res = getaddrinfo(ipaddr, port, &hints, &info))) {
-        logg("!TCP: getaddrinfo failed: %s\n", gai_strerror(res));
+        logg(LOGG_ERROR, "TCP: getaddrinfo failed: %s\n", gai_strerror(res));
         return -1;
     }
 
@@ -124,32 +126,33 @@ int tcpserver(int **lsockets, unsigned int *nlsockets, char *ipaddr, const struc
             for (i = 0; i < *nlsockets; i++)
                 close(sockets[i]);
 
+            freeaddrinfo(info);
             return -1;
         }
         sockets = t;
 
         if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
             estr = strerror(errno);
-            logg("!TCP: socket() error: %s\n", estr);
+            logg(LOGG_ERROR, "TCP: socket() error: %s\n", estr);
             continue;
         }
 
         if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (void *)&yes, sizeof(yes)) == -1) {
-            logg("!TCP: setsocktopt(SO_REUSEADDR) error: %s\n", strerror(errno));
+            logg(LOGG_ERROR, "TCP: setsocktopt(SO_REUSEADDR) error: %s\n", strerror(errno));
         }
 
 #ifdef IPV6_V6ONLY
         if (p->ai_family == AF_INET6 &&
             setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof(yes)) == -1) {
             estr = strerror(errno);
-            logg("!TCP: setsocktopt(IPV6_V6ONLY) error: %s\n", estr);
+            logg(LOGG_ERROR, "TCP: setsocktopt(IPV6_V6ONLY) error: %s\n", estr);
         }
 #endif /* IPV6_V6ONLY */
 
 #ifdef HAVE_GETNAMEINFO
         if ((res = getnameinfo(p->ai_addr, p->ai_addrlen, host, sizeof(host),
                                serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV))) {
-            logg("!TCP: getnameinfo failed: %s\n", gai_strerror(res));
+            logg(LOGG_ERROR, "TCP: getnameinfo failed: %s\n", gai_strerror(res));
             host[0] = '\0';
             serv[0] = '\0';
         }
@@ -163,19 +166,19 @@ int tcpserver(int **lsockets, unsigned int *nlsockets, char *ipaddr, const struc
 #endif
         if (bind(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
             estr = strerror(errno);
-            logg("!TCP: Cannot bind to [%s]:%s: %s\n", host, serv, estr);
+            logg(LOGG_ERROR, "TCP: Cannot bind to [%s]:%s: %s\n", host, serv, estr);
             closesocket(sockfd);
 
             continue;
         }
-        logg("#TCP: Bound to [%s]:%s\n", host, serv);
+        logg(LOGG_INFO_NF, "TCP: Bound to [%s]:%s\n", host, serv);
 
         backlog = optget(opts, "MaxConnectionQueueLength")->numarg;
-        logg("#TCP: Setting connection queue length to %d\n", backlog);
+        logg(LOGG_INFO_NF, "TCP: Setting connection queue length to %d\n", backlog);
 
         if (listen(sockfd, backlog) == -1) {
             estr = strerror(errno);
-            logg("!TCP: Cannot listen on [%s]:%s: %s\n", host, serv, estr);
+            logg(LOGG_ERROR, "TCP: Cannot listen on [%s]:%s: %s\n", host, serv, estr);
             closesocket(sockfd);
 
             continue;

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -68,6 +68,8 @@ typedef enum cli_file {
     CL_TYPE_GRAPHICS,
     CL_TYPE_GIF,
     CL_TYPE_PNG,
+    CL_TYPE_JPEG,
+    CL_TYPE_TIFF,
     CL_TYPE_RIFF,
     CL_TYPE_BINHEX,
     CL_TYPE_TNEF,
@@ -120,7 +122,7 @@ typedef enum cli_file {
     CL_TYPE_HWPOLE2,
     CL_TYPE_MHTML,
     CL_TYPE_LNK,
-
+    CL_TYPE_UDF,
     CL_TYPE_OTHER,  /* on-the-fly, used for target 14 (OTHER) */
     CL_TYPE_IGNORED /* please don't add anything below */
 } cli_file_t;

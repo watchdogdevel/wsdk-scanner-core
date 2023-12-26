@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *  Copyright (C) 2004-2007 Tomasz Kojm <tkojm@clamav.net>
  *
@@ -27,6 +27,7 @@
 #endif
 
 #ifdef HAVE_RESOLV_H
+#include <sys/types.h>
 #ifndef _WIN32
 #include <netinet/in.h>
 #include <arpa/nameser.h>

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *  Copyright (C) 2002-2007 Tomasz Kojm <tkojm@clamav.net>
  *
@@ -32,6 +32,14 @@
 #define DNS_EXTRADBINFO_RECORDTIME      1
 // clang-format on
 
+#define SIZEOF_UUID_V4 37                 /** For uuid_v4_gen(), includes NULL byte */
+#define MIRRORS_DAT_MAGIC "FreshClamData" /** Magic bytes for freshclam.dat found before freshclam_dat_v1_t */
+typedef struct _freshclam_dat_v1 {
+    uint32_t version;          /** version of this dat format */
+    char uuid[SIZEOF_UUID_V4]; /** uuid to be used in user-agent */
+    time_t retry_after;        /** retry date. If > 0, don't update until after this date */
+} freshclam_dat_v1_t;
+
 /* ----------------------------------------------------------------------------
  * Internal libfreshclam globals
  */
@@ -55,6 +63,12 @@ extern uint32_t g_requestTimeout;
 
 extern uint32_t g_bCompressLocalDatabase;
 
+extern freshclam_dat_v1_t *g_freshclamDat;
+
+fc_error_t load_freshclam_dat(void);
+fc_error_t save_freshclam_dat(void);
+fc_error_t new_freshclam_dat(void);
+
 fc_error_t updatedb(
     const char *database,
     const char *dnsUpdateInfo,
@@ -74,5 +88,8 @@ fc_error_t updatecustomdb(
     int *signo,
     char **dbFilename,
     int *bUpdated);
+
+#define DNS_WARNING_THRESHOLD_HOURS 12
+#define DNS_WARNING_THRESHOLD_SECONDS (DNS_WARNING_THRESHOLD_HOURS * 60 * 60)
 
 #endif // __LIBFRESHCLAM_INTERNAL_H

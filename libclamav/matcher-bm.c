@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -67,11 +67,12 @@ cl_error_t cli_bm_addpatt(struct cli_matcher *root, struct cli_bm_patt *pattern,
      * don't add these to the filter. */
     if (root->filter && !root->bm_offmode) {
         /* the bm_suffix load balancing below can shorten the sig,
-	 * we want to see the entire signature! */
+         * we want to see the entire signature! */
         if (filter_add_static(root->filter, pattern->pattern, pattern->length, pattern->virname) == -1) {
             cli_warnmsg("cli_bm_addpatt: cannot use filter for trie\n");
             MPOOL_FREE(root->mempool, root->filter);
             root->filter = NULL;
+            return CL_EMALFDB;
         }
         /* TODO: should this affect maxpatlen? */
     }
@@ -379,17 +380,20 @@ cl_error_t cli_bm_scanbuff(const unsigned char *buffer, uint32_t length, const c
                             continue;
                         }
                     }
+
+                    viruses_found += 1;
                     if (virname) {
                         *virname = p->virname;
                         if (ctx != NULL && SCAN_ALLMATCHES) {
-                            cli_append_virus(ctx, *virname);
-                            //*viroffset = offset + i + j - BM_MIN_LENGTH + BM_BLOCK_SIZE;
+                            ret = cli_append_virus(ctx, *virname);
+                            if (ret == CL_CLEAN && viruses_found > 0) {
+                                viruses_found -= 1;
+                            }
                         }
                     }
+
                     if (patt)
                         *patt = p;
-
-                    viruses_found = 1;
 
                     if (ctx != NULL && !SCAN_ALLMATCHES)
                         return CL_VIRUS;
@@ -404,8 +408,9 @@ cl_error_t cli_bm_scanbuff(const unsigned char *buffer, uint32_t length, const c
             for (; offdata->pos < offdata->cnt && off >= offdata->offtab[offdata->pos]; offdata->pos++)
                 ;
             if (offdata->pos == offdata->cnt || off >= offdata->offtab[offdata->pos]) {
-                if (viruses_found)
+                if (viruses_found > 0) {
                     return CL_VIRUS;
+                }
                 return CL_CLEAN;
             }
             i += offdata->offtab[offdata->pos] - off;
@@ -414,7 +419,8 @@ cl_error_t cli_bm_scanbuff(const unsigned char *buffer, uint32_t length, const c
         }
     }
 
-    if (viruses_found)
+    if (viruses_found > 0) {
         return CL_VIRUS;
+    }
     return CL_CLEAN;
 }

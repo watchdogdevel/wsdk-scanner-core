@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Alberto Wu
@@ -24,6 +24,6 @@
 
 #include "others.h"
 
-int cli_scansis(cli_ctx *ctx);
+cl_error_t cli_scansis(cli_ctx *ctx);
 
 #endif

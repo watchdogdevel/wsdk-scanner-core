@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Author: aCaB <acab@clamav.net>
@@ -37,17 +37,23 @@
 #include <time.h>
 #include <libmilter/mfapi.h>
 
+// libclamav
 #include "clamav.h"
+#include "default.h"
 
-#include "shared/output.h"
-#include "shared/optparser.h"
-#include "shared/misc.h"
-#include "libclamav/default.h"
+// common
+#include "output.h"
+#include "optparser.h"
+#include "misc.h"
 
 #include "connpool.h"
 #include "netcode.h"
 #include "clamfi.h"
-#include "whitelist.h"
+#include "allow_list.h"
+
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 
 struct smfiDesc descr;
 struct optstruct *opts;
@@ -56,25 +62,25 @@ static void milter_exit(int sig)
 {
     const struct optstruct *opt;
 
-    logg("*clamav-milter: milter_exit, signal %d\n", sig);
+    logg(LOGG_DEBUG, "clamav-milter: milter_exit, signal %d\n", sig);
 
 #ifndef _WIN32
     if ((opt = optget(opts, "MilterSocket"))) {
         if (unlink(opt->strarg) == -1)
-            logg("!Can't unlink the socket file %s\n", opt->strarg);
+            logg(LOGG_ERROR, "Can't unlink the socket file %s\n", opt->strarg);
         else
-            logg("Socket file removed.\n");
+            logg(LOGG_INFO, "Socket file removed.\n");
     }
 #endif
 
-    logg("clamav-milter: stopped\n");
+    logg(LOGG_INFO, "clamav-milter: stopped\n");
 
     optfree(opts);
 
     logg_close();
     cpool_free();
     localnets_free();
-    whitelist_free();
+    allow_list_free();
 }
 
 int main(int argc, char **argv)
@@ -83,25 +89,14 @@ int main(int argc, char **argv)
     const struct optstruct *opt;
     time_t currtime;
     mode_t umsk;
-    int ret;
+    pid_t parentPid = getpid();
+#ifndef _WIN32
+    int dropPrivRet = 0;
+#endif /* _WIN32 */
 
     sigset_t sigset;
     struct sigaction act;
-
-    sigfillset(&sigset);
-    sigdelset(&sigset, SIGUSR1);
-    sigdelset(&sigset, SIGFPE);
-    sigdelset(&sigset, SIGILL);
-    sigdelset(&sigset, SIGSEGV);
-#ifdef SIGBUS
-    sigdelset(&sigset, SIGBUS);
-#endif
-    pthread_sigmask(SIG_SETMASK, &sigset, NULL);
-    memset(&act, 0, sizeof(struct sigaction));
-    act.sa_handler = milter_exit;
-    sigfillset(&(act.sa_mask));
-    sigaction(SIGUSR1, &act, NULL);
-    sigaction(SIGSEGV, &act, NULL);
+    const char *user_name = NULL;
 
     cl_initialize_crypto();
 
@@ -119,7 +114,7 @@ int main(int argc, char **argv)
 
     opts = optparse(NULL, argc, argv, 1, OPT_MILTER, 0, NULL);
     if (!opts) {
-        mprintf("!Can't parse command line options\n");
+        mprintf(LOGG_ERROR, "Can't parse command line options\n");
         return 1;
     }
 
@@ -127,13 +122,14 @@ int main(int argc, char **argv)
         printf("\n");
         printf("                       Clam AntiVirus: Milter Mail Scanner %s\n", get_version());
         printf("           By The ClamAV Team: https://www.clamav.net/about.html#credits\n");
-        printf("           (C) 2020 Cisco Systems, Inc.\n");
+        printf("           (C) 2023 Cisco Systems, Inc.\n");
         printf("\n");
         printf("    %s [-c <config-file>]\n\n", argv[0]);
         printf("\n");
-        printf("    --help                   -h       Show this help\n");
-        printf("    --version                -V       Show version\n");
-        printf("    --config-file <file>     -c       Read configuration from file\n");
+        printf("    --help                   -h             Show this help\n");
+        printf("    --version                -V             Show version\n");
+        printf("    --config-file <file>     -c             Read configuration from file\n");
+        printf("    --pid=FILE               -p FILE        Write the daemon's pid to FILE\n");
         printf("\n");
         optfree(opts);
         return 0;
@@ -142,7 +138,7 @@ int main(int argc, char **argv)
     if (opts->filename) {
         int x;
         for (x = 0; opts->filename[x]; x++)
-            mprintf("^Ignoring option %s\n", opts->filename[x]);
+            mprintf(LOGG_WARNING, "Ignoring option %s\n", opts->filename[x]);
     }
 
     if (optget(opts, "version")->enabled) {
@@ -163,13 +159,17 @@ int main(int argc, char **argv)
     }
     free(pt);
 
+    if ((opt = optget(opts, "User"))->enabled) {
+        user_name = opt->strarg;
+    }
+
     if ((opt = optget(opts, "Chroot"))->enabled) {
         if (chdir(opt->strarg) != 0) {
-            logg("!Cannot change directory to %s\n", opt->strarg);
+            logg(LOGG_ERROR, "Cannot change directory to %s\n", opt->strarg);
             return 1;
         }
         if (chroot(opt->strarg) != 0) {
-            logg("!chroot to %s failed. Are you root?\n", opt->strarg);
+            logg(LOGG_ERROR, "chroot to %s failed. Are you root?\n", opt->strarg);
             return 1;
         }
     }
@@ -179,8 +179,8 @@ int main(int argc, char **argv)
         char myname[255];
 
         if (((opt = optget(opts, "ReportHostname"))->enabled &&
-             strncpy(myname, opt->strarg, sizeof(myname))) ||
-            !gethostname(myname, sizeof(myname))) {
+             strncpy(myname, opt->strarg, sizeof(myname) - 1)) ||
+            !gethostname(myname, sizeof(myname) - 1)) {
 
             myname[sizeof(myname) - 1] = '\0';
             snprintf(xvirushdr, sizeof(xvirushdr), "clamav-milter %s at %s",
@@ -202,20 +202,20 @@ int main(int argc, char **argv)
     }
 
     if (!(my_socket = optget(opts, "MilterSocket")->strarg)) {
-        logg("!Please configure the MilterSocket directive\n");
+        logg(LOGG_ERROR, "Please configure the MilterSocket directive\n");
         logg_close();
         optfree(opts);
         return 1;
     }
 
     if (smfi_setconn(my_socket) == MI_FAILURE) {
-        logg("!smfi_setconn failed\n");
+        logg(LOGG_ERROR, "smfi_setconn failed\n");
         logg_close();
         optfree(opts);
         return 1;
     }
     if (smfi_register(descr) == MI_FAILURE) {
-        logg("!smfi_register failed\n");
+        logg(LOGG_ERROR, "smfi_register failed\n");
         logg_close();
         optfree(opts);
         return 1;
@@ -223,7 +223,7 @@ int main(int argc, char **argv)
     opt  = optget(opts, "FixStaleSocket");
     umsk = umask(0777); /* socket is created with 000 to avoid races */
     if (smfi_opensocket(opt->enabled) == MI_FAILURE) {
-        logg("!Failed to create socket %s\n", my_socket);
+        logg(LOGG_ERROR, "Failed to create socket %s\n", my_socket);
         logg_close();
         optfree(opts);
         return 1;
@@ -246,7 +246,7 @@ int main(int argc, char **argv)
             if (*end) {
                 struct group *pgrp = getgrnam(gname);
                 if (!pgrp) {
-                    logg("!Unknown group %s\n", gname);
+                    logg(LOGG_ERROR, "Unknown group %s\n", gname);
                     logg_close();
                     optfree(opts);
                     return 1;
@@ -254,25 +254,25 @@ int main(int argc, char **argv)
                 sock_gid = pgrp->gr_gid;
             }
             if (chown(sock_name, -1, sock_gid)) {
-                logg("!Failed to change socket ownership to group %s\n", gname);
+                logg(LOGG_ERROR, "Failed to change socket ownership to group %s\n", gname);
                 logg_close();
                 optfree(opts);
                 return 1;
             }
         }
 
-        if ((opt = optget(opts, "User"))->enabled) {
+        if (NULL != user_name) {
             struct passwd *user;
-            if ((user = getpwnam(opt->strarg)) == NULL) {
-                logg("ERROR: Can't get information about user %s.\n",
-                     opt->strarg);
+            if ((user = getpwnam(user_name)) == NULL) {
+                logg(LOGG_INFO, "ERROR: Can't get information about user %s.\n",
+                     user_name);
                 logg_close();
                 optfree(opts);
                 return 1;
             }
 
             if (chown(sock_name, user->pw_uid, -1)) {
-                logg("!Failed to change socket ownership to user %s\n", user->pw_name);
+                logg(LOGG_ERROR, "Failed to change socket ownership to user %s\n", user->pw_name);
                 optfree(opts);
                 logg_close();
                 return 1;
@@ -283,7 +283,7 @@ int main(int argc, char **argv)
             char *end;
             sock_mode = strtol(optget(opts, "MilterSocketMode")->strarg, &end, 8);
             if (*end) {
-                logg("!Invalid MilterSocketMode %s\n", optget(opts, "MilterSocketMode")->strarg);
+                logg(LOGG_ERROR, "Invalid MilterSocketMode %s\n", optget(opts, "MilterSocketMode")->strarg);
                 logg_close();
                 optfree(opts);
                 return 1;
@@ -292,42 +292,8 @@ int main(int argc, char **argv)
             sock_mode = 0777 & ~umsk;
 
         if (chmod(sock_name, sock_mode & 0666)) {
-            logg("!Cannot set milter socket permission to %s\n", optget(opts, "MilterSocketMode")->strarg);
+            logg(LOGG_ERROR, "Cannot set milter socket permission to %s\n", optget(opts, "MilterSocketMode")->strarg);
             logg_close();
-            optfree(opts);
-            return 1;
-        }
-    }
-
-    if (geteuid() == 0 && (opt = optget(opts, "User"))->enabled) {
-        struct passwd *user = NULL;
-        if ((user = getpwnam(opt->strarg)) == NULL) {
-            fprintf(stderr, "ERROR: Can't get information about user %s.\n", opt->strarg);
-            optfree(opts);
-            return 1;
-        }
-
-#ifdef HAVE_INITGROUPS
-        if (initgroups(opt->strarg, user->pw_gid)) {
-            fprintf(stderr, "ERROR: initgroups() failed.\n");
-            optfree(opts);
-            return 1;
-        }
-#elif HAVE_SETGROUPS
-        if (setgroups(1, &user->pw_gid)) {
-            fprintf(stderr, "ERROR: setgroups() failed.\n");
-            optfree(opts);
-            return 1;
-        }
-#endif
-        if (setgid(user->pw_gid)) {
-            fprintf(stderr, "ERROR: setgid(%d) failed.\n", (int)user->pw_gid);
-            optfree(opts);
-            return 1;
-        }
-
-        if (setuid(user->pw_uid)) {
-            fprintf(stderr, "ERROR: setuid(%d) failed.\n", (int)user->pw_uid);
             optfree(opts);
             return 1;
         }
@@ -357,7 +323,7 @@ int main(int argc, char **argv)
 
         opt = optget(opts, "LogFacility");
         if ((fac = logg_facility(opt->strarg)) == -1) {
-            logg("!LogFacility: %s: No such facility.\n", opt->strarg);
+            logg(LOGG_ERROR, "LogFacility: %s: No such facility.\n", opt->strarg);
             logg_close();
             optfree(opts);
             return 1;
@@ -369,7 +335,7 @@ int main(int argc, char **argv)
 #endif
 
     time(&currtime);
-    if (logg("#+++ Started at %s", ctime(&currtime))) {
+    if (logg(LOGG_INFO_NF, "+++ Started at %s", ctime(&currtime))) {
         fprintf(stderr, "ERROR: Can't initialize the internal logger\n");
         logg_close();
         optfree(opts);
@@ -384,7 +350,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if ((opt = optget(opts, "Whitelist"))->enabled && whitelist_init(opt->strarg)) {
+    if (((opt = optget(opts, "Whitelist"))->enabled || (opt = optget(opts, "AllowList"))->enabled) && allow_list_init(opt->strarg)) {
         localnets_free();
         logg_close();
         optfree(opts);
@@ -393,7 +359,7 @@ int main(int argc, char **argv)
 
     if ((opt = optget(opts, "SkipAuthenticated"))->enabled && smtpauth_init(opt->strarg)) {
         localnets_free();
-        whitelist_free();
+        allow_list_free();
         logg_close();
         optfree(opts);
         return 1;
@@ -401,32 +367,51 @@ int main(int argc, char **argv)
 
     multircpt = optget(opts, "SupportMultipleRecipients")->enabled;
 
+#ifndef _WIN32
     if (!optget(opts, "Foreground")->enabled) {
-        if (daemonize() == -1) {
-            logg("!daemonize() failed\n");
+        if (-1 == daemonize_parent_wait(user_name, logg_file)) {
+            logg(LOGG_ERROR, "daemonize() failed\n");
             localnets_free();
-            whitelist_free();
+            allow_list_free();
             cpool_free();
             logg_close();
             optfree(opts);
             return 1;
         }
-        if (chdir("/") == -1)
-            logg("^Can't change current working directory to root\n");
+        if (chdir("/") == -1) {
+            logg(LOGG_WARNING, "Can't change current working directory to root\n");
+        }
     }
+
+    sigfillset(&sigset);
+    sigdelset(&sigset, SIGUSR1);
+    sigdelset(&sigset, SIGFPE);
+    sigdelset(&sigset, SIGILL);
+    sigdelset(&sigset, SIGSEGV);
+#ifdef SIGBUS
+    sigdelset(&sigset, SIGBUS);
+#endif
+    pthread_sigmask(SIG_SETMASK, &sigset, NULL);
+    memset(&act, 0, sizeof(struct sigaction));
+    act.sa_handler = milter_exit;
+    sigfillset(&(act.sa_mask));
+    sigaction(SIGUSR1, &act, NULL);
+    sigaction(SIGSEGV, &act, NULL);
+
+#endif /* _WIN32 */
 
     maxfilesize = optget(opts, "MaxFileSize")->numarg;
     if (!maxfilesize) {
-        logg("^Invalid MaxFileSize, using default (%d)\n", CLI_DEFAULT_MAXFILESIZE);
+        logg(LOGG_WARNING, "Invalid MaxFileSize, using default (%d)\n", CLI_DEFAULT_MAXFILESIZE);
         maxfilesize = CLI_DEFAULT_MAXFILESIZE;
     }
     readtimeout = optget(opts, "ReadTimeout")->numarg;
 
     cpool_init(opts);
     if (!cp) {
-        logg("!Failed to init the socket pool\n");
+        logg(LOGG_ERROR, "Failed to init the socket pool\n");
         localnets_free();
-        whitelist_free();
+        allow_list_free();
         logg_close();
         optfree(opts);
         return 1;
@@ -434,18 +419,60 @@ int main(int argc, char **argv)
 
     if ((opt = optget(opts, "PidFile"))->enabled) {
         FILE *fd;
-        mode_t old_umask = umask(0002);
+        mode_t old_umask = umask(0022);
+        int err          = 0;
 
         if ((fd = fopen(opt->strarg, "w")) == NULL) {
-            logg("!Can't save PID in file %s\n", opt->strarg);
+            logg(LOGG_ERROR, "Can't save PID in file %s\n", opt->strarg);
+            err = 1;
         } else {
             if (fprintf(fd, "%u\n", (unsigned int)getpid()) < 0) {
-                logg("!Can't save PID in file %s\n", opt->strarg);
+                logg(LOGG_ERROR, "Can't save PID in file %s\n", opt->strarg);
+                err = 1;
             }
             fclose(fd);
         }
         umask(old_umask);
+
+#ifndef _WIN32
+        if (0 == err) {
+            /*If the file has already been created by a different user, it will just be
+             * rewritten by us, but not change the ownership, so do that explicitly.
+             */
+            if (0 == geteuid()) {
+                struct passwd *pw = getpwuid(0);
+                int ret           = lchown(opt->strarg, pw->pw_uid, pw->pw_gid);
+                if (ret) {
+                    logg(LOGG_ERROR, "Can't change ownership of PID file %s '%s'\n", opt->strarg, strerror(errno));
+                    err = 1;
+                }
+            }
+        }
+#endif /*_WIN32*/
+
+        if (err) {
+            localnets_free();
+            allow_list_free();
+            logg_close();
+            optfree(opts);
+            return 2;
+        }
     }
+
+#ifndef _WIN32
+    dropPrivRet = drop_privileges(user_name, logg_file);
+    if (dropPrivRet) {
+        optfree(opts);
+        return dropPrivRet;
+    }
+
+    /* We have been daemonized, and initialization is done.  Signal
+     * the parent process so that it can exit cleanly.
+     */
+    if (parentPid != getpid()) { // we have been daemonized
+        daemonize_signal_parent(parentPid);
+    }
+#endif
 
     return smfi_main();
 }

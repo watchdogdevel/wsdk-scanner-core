@@ -1,6 +1,6 @@
+/*	$OpenBSD: utils.h,v 1.4 2003/06/02 20:18:36 millert Exp $	*/
+
 /*-
- * This code is derived from OpenBSD's libc/regex, original license follows:
- *
  * Copyright (c) 1992, 1993, 1994 Henry Spencer.
  * Copyright (c) 1992, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
@@ -46,10 +46,6 @@
 typedef unsigned char uch;
 
 /* switch off assertions (if not already off) if no REDEBUG */
-#ifdef CL_DEBUG
-#define REDEBUG
-#endif
-
 #ifndef REDEBUG
 #ifndef NDEBUG
 #define	NDEBUG	/* no assertions please */

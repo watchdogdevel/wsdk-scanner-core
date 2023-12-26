@@ -1,7 +1,7 @@
 /*
  *  Parse a regular expression, and extract a static suffix.
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -27,7 +27,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
 
 #include "clamav.h"
 #include "others.h"
@@ -136,7 +135,12 @@ static struct node *dup_node(struct node *p)
 
 static struct node *make_charclass(uint8_t *bitmap)
 {
-    struct node *v = cli_malloc(sizeof(*v));
+    struct node *v = NULL;
+    if (NULL == bitmap) {
+        return NULL;
+    }
+
+    v = cli_malloc(sizeof(*v));
     if (!v) {
         cli_errmsg("make_charclass: Unable to allocate memory for character class\n");
         return NULL;
@@ -171,27 +175,44 @@ static void destroy_tree(struct node *n)
             break;
         case leaf_class:
             if (n->u.leaf_class_bitmap != dot_bitmap)
-                free(n->u.leaf_class_bitmap);
+                FREE(n->u.leaf_class_bitmap);
             break;
         case root:
         case leaf:
             break;
     }
-    free(n);
+    FREE(n);
 }
 
-static uint8_t *parse_char_class(const char *pat, size_t *pos)
+static uint8_t *parse_char_class(const uint8_t *pat, size_t patSize, size_t *pos)
 {
+
+#ifndef INC_POS
+#define ADD_POS(posPtr, incVal, posMax)                                \
+    {                                                                  \
+        do {                                                           \
+            if (((*posPtr) + incVal) >= posMax) {                      \
+                cli_warnmsg("parse_char_class: Invalid char class\n"); \
+                FREE(bitmap);                                          \
+                goto done;                                             \
+            }                                                          \
+            (*posPtr)++;                                               \
+        } while (0);                                                   \
+    }
+
+#define INC_POS(posPtr, posMax) ADD_POS(posPtr, 1, posMax)
+#endif
+
     unsigned char range_start = 0;
     int hasprev               = 0;
-    uint8_t *bitmap           = cli_malloc(32);
-    if (!bitmap) {
-        cli_errmsg("parse_char_class: Unable to allocate memory for bitmap\n");
-        return NULL;
-    }
+    uint8_t *bitmap           = NULL;
+
+    CLI_MALLOC(bitmap, 32,
+               cli_errmsg("parse_char_class: Unable to allocate memory for bitmap\n"));
+
     if (pat[*pos] == '^') {
         memset(bitmap, 0xFF, 32); /*match chars not in brackets*/
-        ++*pos;
+        INC_POS(pos, patSize);
     } else
         memset(bitmap, 0x00, 32);
     do {
@@ -200,19 +221,23 @@ static uint8_t *parse_char_class(const char *pat, size_t *pos)
             /* it is a range*/
             unsigned char range_end;
             unsigned int c;
-            assert(range_start);
-            ++*pos;
+            if (0 == range_start) {
+                FREE(bitmap);
+                cli_errmsg("parse_char_class: range_start not initialized\n");
+                goto done;
+            }
+            INC_POS(pos, patSize);
             if (pat[*pos] == '[')
                 if (pat[*pos + 1] == '.') {
                     /* collating sequence not handled */
-                    free(bitmap);
+                    FREE(bitmap);
                     /* we are parsing the regex for a
-					 * filter, be conservative and
-					 * tell the filter that anything could
-					 * match here */
-                    while (pat[*pos] != ']') ++*pos;
-                    ++*pos;
-                    while (pat[*pos] != ']') ++*pos;
+                     * filter, be conservative and
+                     * tell the filter that anything could
+                     * match here */
+                    while (pat[*pos] != ']') INC_POS(pos, patSize);
+                    INC_POS(pos, patSize);
+                    while (pat[*pos] != ']') INC_POS(pos, patSize);
                     return dot_bitmap;
                 } else
                     range_end = pat[*pos];
@@ -223,22 +248,27 @@ static uint8_t *parse_char_class(const char *pat, size_t *pos)
             hasprev = 0;
         } else if (pat[*pos] == '[' && pat[*pos] == ':') {
             /* char class */
-            free(bitmap);
-            while (pat[*pos] != ']') ++*pos;
-            ++*pos;
-            while (pat[*pos] != ']') ++*pos;
+            FREE(bitmap);
+            while (pat[*pos] != ']') INC_POS(pos, patSize);
+            INC_POS(pos, patSize);
+            while (pat[*pos] != ']') INC_POS(pos, patSize);
             return dot_bitmap;
         } else {
             bitmap[pat[*pos] >> 3] ^= 1 << (pat[*pos] & 0x7);
             range_start = pat[*pos];
-            ++*pos;
+            INC_POS(pos, patSize);
             hasprev = 1;
         }
     } while (pat[*pos] != ']');
+
+done:
     return bitmap;
+
+#undef ADD_POS
+#undef INC_POS
 }
 
-static struct node *parse_regex(const char *p, size_t *last)
+static struct node *parse_regex(const uint8_t *p, const size_t pSize, size_t *last)
 {
     struct node *v = NULL;
     struct node *right;
@@ -248,10 +278,12 @@ static struct node *parse_regex(const char *p, size_t *last)
         switch (p[*last]) {
             case '|':
                 ++*last;
-                right = parse_regex(p, last);
+                right = parse_regex(p, pSize, last);
                 v     = make_node(alternate, v, right);
-                if (!v)
+                if (!v) {
+                    destroy_tree(right);
                     return NULL;
+                }
                 break;
             case '*':
             case '?':
@@ -263,25 +295,31 @@ static struct node *parse_regex(const char *p, size_t *last)
             case '+':
                 /* (x)* */
                 tmp = make_node(optional, v, NULL);
-                if (!tmp)
+                if (!tmp) {
+                    destroy_tree(v);
                     return NULL;
+                }
                 /* (x) */
                 right = dup_node(v);
                 if (!right) {
-                    free(tmp);
+                    destroy_tree(tmp);
                     return NULL;
                 }
                 /* (x)*(x) => (x)+ */
                 v = make_node(concat, tmp, right);
-                if (!v)
+                if (!v) {
+                    destroy_tree(right);
                     return NULL;
+                }
                 ++*last;
                 break;
             case '(':
                 ++*last;
-                right = parse_regex(p, last);
-                if (!right)
+                right = parse_regex(p, pSize, last);
+                if (!right) {
+                    destroy_tree(v);
                     return NULL;
+                }
                 ++*last;
                 v = make_node(concat, v, right);
                 break;
@@ -289,8 +327,10 @@ static struct node *parse_regex(const char *p, size_t *last)
                 return v;
             case '.':
                 right = make_charclass(dot_bitmap);
-                if (!right)
+                if (!right) {
+                    destroy_tree(v);
                     return NULL;
+                }
                 v = make_node(concat, v, right);
                 if (!v)
                     return NULL;
@@ -298,23 +338,30 @@ static struct node *parse_regex(const char *p, size_t *last)
                 break;
             case '[':
                 ++*last;
-                right = make_charclass(parse_char_class(p, last));
-                if (!right)
+                right = make_charclass(parse_char_class(p, pSize, last));
+                if (!right) {
+                    destroy_tree(v);
                     return NULL;
+                }
                 v = make_node(concat, v, right);
-                if (!v)
+                if (!v) {
+                    destroy_tree(right);
                     return NULL;
+                }
                 ++*last;
                 break;
             case '\\':
                 /* next char is escaped, advance pointer
-				 * and let fall-through handle it */
+                 * and let fall-through handle it */
                 ++*last;
+                /* fall-through */
             default:
                 right = make_leaf(p[*last]);
                 v     = make_node(concat, v, right);
-                if (!v)
+                if (!v) {
+                    destroy_tree(right);
                     return NULL;
+                }
                 ++*last;
                 break;
         }
@@ -367,7 +414,7 @@ static cl_error_t build_suffixtree_ascend(struct node *n, struct text_buffer *bu
                     if (build_suffixtree_descend(n->u.children.left, buf, cb, cbdata, regex) != CL_SUCCESS)
                         return CL_EMEM;
                     /* we're done here, descend will call
-					 * ascend if needed */
+                     * ascend if needed */
                     return CL_SUCCESS;
                 } else {
                     n = n->parent;
@@ -396,7 +443,7 @@ static cl_error_t build_suffixtree_descend(struct node *n, struct text_buffer *b
     if (!n)
         return CL_SUCCESS;
     /* find out end of the regular expression,
-	 * if it ends with a static pattern */
+     * if it ends with a static pattern */
     switch (n->type) {
         case alternate:
             /* save pos as restart point */
@@ -426,14 +473,18 @@ static cl_error_t build_suffixtree_descend(struct node *n, struct text_buffer *b
 
 cl_error_t cli_regex2suffix(const char *pattern, regex_t *preg, suffix_callback cb, void *cbdata)
 {
-    struct regex_list regex;
-    struct text_buffer buf;
-    struct node root_node;
-    struct node *n;
-    size_t last = 0;
+    struct regex_list regex = {0};
+    struct text_buffer buf  = {0};
+    struct node root_node   = {0};
+    struct node *n          = NULL;
+    size_t last             = 0;
     int rc;
 
-    assert(pattern);
+    if (NULL == pattern) {
+        cli_errmsg("cli_regex2suffix: pattern can't be NULL\n");
+        rc = REG_INVARG;
+        goto done;
+    }
 
     regex.preg = preg;
     rc         = cli_regcomp(regex.preg, pattern, REG_EXTENDED);
@@ -449,19 +500,25 @@ cl_error_t cli_regex2suffix(const char *pattern, regex_t *preg, suffix_callback 
         }
         return rc;
     }
-    regex.nxt     = NULL;
-    regex.pattern = cli_strdup(pattern);
+    regex.nxt = NULL;
+    CLI_STRDUP(pattern, regex.pattern,
+               cli_errmsg("cli_regex2suffix: unable to strdup regex.pattern\n");
+               rc = REG_ESPACE);
 
-    n = parse_regex(pattern, &last);
-    if (!n)
-        return REG_ESPACE;
+    n = parse_regex((const uint8_t *)pattern, strlen(pattern), &last);
+    if (!n) {
+        rc = REG_ESPACE;
+        goto done;
+    }
     memset(&buf, 0, sizeof(buf));
     memset(&root_node, 0, sizeof(buf));
     n->parent = &root_node;
 
     rc = build_suffixtree_descend(n, &buf, cb, cbdata, &regex);
-    free(regex.pattern);
-    free(buf.data);
+
+done:
+    FREE(regex.pattern);
+    FREE(buf.data);
     destroy_tree(n);
     return rc;
 }

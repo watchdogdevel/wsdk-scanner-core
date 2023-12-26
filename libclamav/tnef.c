@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Nigel Horne
@@ -69,14 +69,14 @@ int cli_tnef(const char *dir, cli_ctx *ctx)
     int ret, alldone;
     off_t fsize, pos = 0;
 
-    fsize = ctx->fmap[0]->len;
+    fsize = ctx->fmap->len;
 
     if (fsize < (off_t)MIN_SIZE) {
         cli_dbgmsg("cli_tngs: file too small, ignoring\n");
         return CL_CLEAN;
     }
 
-    if (fmap_readn(*ctx->fmap, &i32, pos, sizeof(uint32_t)) != sizeof(uint32_t)) {
+    if (fmap_readn(ctx->fmap, &i32, pos, sizeof(uint32_t)) != sizeof(uint32_t)) {
         /* The file is at least MIN_SIZE bytes, so it "can't" fail */
         return CL_EREAD;
     }
@@ -86,7 +86,7 @@ int cli_tnef(const char *dir, cli_ctx *ctx)
         return CL_EFORMAT;
     }
 
-    if (fmap_readn(*ctx->fmap, &i16, pos, sizeof(uint16_t)) != sizeof(uint16_t)) {
+    if (fmap_readn(ctx->fmap, &i16, pos, sizeof(uint16_t)) != sizeof(uint16_t)) {
         /* The file is at least MIN_SIZE bytes, so it "can't" fail */
         return CL_EREAD;
     }
@@ -101,7 +101,7 @@ int cli_tnef(const char *dir, cli_ctx *ctx)
         uint16_t type = 0, tag = 0;
         int32_t length = 0;
 
-        switch (tnef_header(*ctx->fmap, &pos, &part, &type, &tag, &length)) {
+        switch (tnef_header(ctx->fmap, &pos, &part, &type, &tag, &length)) {
             case 0:
                 alldone = 1;
                 break;
@@ -109,8 +109,8 @@ int cli_tnef(const char *dir, cli_ctx *ctx)
                 break;
             default:
                 /*
-				 * Assume truncation, not file I/O error
-				 */
+                 * Assume truncation, not file I/O error
+                 */
                 cli_warnmsg("cli_tnef: file truncated, returning CLEAN\n");
                 ret     = CL_CLEAN;
                 alldone = 1;
@@ -134,7 +134,7 @@ int cli_tnef(const char *dir, cli_ctx *ctx)
                     fb = NULL;
                 }
                 fb = fileblobCreate();
-                if (tnef_message(*ctx->fmap, &pos, type, tag, length, fsize) != 0) {
+                if (tnef_message(ctx->fmap, &pos, type, tag, length, fsize) != 0) {
                     cli_dbgmsg("TNEF: Error reading TNEF message\n");
                     ret     = CL_EFORMAT;
                     alldone = 1;
@@ -142,7 +142,7 @@ int cli_tnef(const char *dir, cli_ctx *ctx)
                 break;
             case LVL_ATTACHMENT:
                 cli_dbgmsg("TNEF - found attachment\n");
-                if (tnef_attachment(*ctx->fmap, &pos, type, tag, length, dir, &fb, fsize) != 0) {
+                if (tnef_attachment(ctx->fmap, &pos, type, tag, length, dir, &fb, fsize) != 0) {
                     cli_dbgmsg("TNEF: Error reading TNEF attachment\n");
                     ret     = CL_EFORMAT;
                     alldone = 1;
@@ -154,9 +154,9 @@ int cli_tnef(const char *dir, cli_ctx *ctx)
                 cli_warnmsg("TNEF - unknown level %d tag 0x%x\n", (int)part, (int)tag);
 
                 /*
-				 * Dump the file incase it was part of an
-				 * email that's about to be deleted
-				 */
+                 * Dump the file incase it was part of an
+                 * email that's about to be deleted
+                 */
                 if (cli_debug_flag) {
                     int fout       = -1;
                     char *filename = cli_gentemp(ctx->sub_tmpdir);
@@ -168,10 +168,10 @@ int cli_tnef(const char *dir, cli_ctx *ctx)
                     if (fout >= 0) {
                         size_t count;
 
-                        cli_warnmsg("Saving dump to %s:  refer to https://www.clamav.net/documents/installing-clamav\n", filename);
+                        cli_warnmsg("Saving dump to %s:  refer to https://docs.clamav.net/manual/Installing.html\n", filename);
 
                         pos = 0;
-                        while ((count = fmap_readn(*ctx->fmap, buffer, pos, sizeof(buffer))) != (size_t)-1) {
+                        while ((count = fmap_readn(ctx->fmap, buffer, pos, sizeof(buffer))) != (size_t)-1) {
                             pos += count;
                             cli_writen(fout, buffer, count);
                         }
@@ -206,6 +206,8 @@ tnef_message(fmap_t *map, off_t *pos, uint16_t type, uint16_t tag, int32_t lengt
 #ifdef CL_DEBUG
     uint32_t i32;
     char *string;
+#else
+    UNUSEDPARAM(map);
 #endif
 
     cli_dbgmsg("message tag 0x%x, type 0x%x, length %d\n", tag, type,
@@ -214,8 +216,8 @@ tnef_message(fmap_t *map, off_t *pos, uint16_t type, uint16_t tag, int32_t lengt
     offset = *pos;
 
     /*
-	 * a lot of this stuff should be only discovered in debug mode...
-	 */
+     * a lot of this stuff should be only discovered in debug mode...
+     */
     switch (tag) {
         case attBODY:
             cli_warnmsg("TNEF body not being scanned - if you believe this file contains a virus, submit it to www.clamav.net\n");
@@ -266,7 +268,7 @@ tnef_message(fmap_t *map, off_t *pos, uint16_t type, uint16_t tag, int32_t lengt
 
     /*cli_dbgmsg("%lu %lu\n", (long)(offset + length), ftell(fp));*/
 
-    if (!CLI_ISCONTAINED2(0, fsize, offset, (off_t)length)) {
+    if (!CLI_ISCONTAINED_2_0_TO(fsize, offset, length)) {
         cli_dbgmsg("TNEF: Incorrect length field in tnef_message\n");
         return -1;
     }
@@ -325,13 +327,13 @@ tnef_attachment(fmap_t *map, off_t *pos, uint16_t type, uint16_t tag, int32_t le
             todo = length;
             while (todo) {
                 unsigned char buf[BUFSIZ];
-                int32_t got = fmap_readn(map, buf, *pos, MIN(sizeof(buf), todo));
-                if (got <= 0)
+                size_t got = fmap_readn(map, buf, *pos, MIN(sizeof(buf), todo));
+                if (got == 0 || got == (size_t)-1)
                     break;
-                (*pos) += got;
+                (*pos) += (off_t)got;
 
                 fileblobAddData(*fbref, buf, got);
-                todo -= got;
+                todo -= (uint32_t)got;
             }
             break;
         default:
@@ -342,11 +344,11 @@ tnef_attachment(fmap_t *map, off_t *pos, uint16_t type, uint16_t tag, int32_t le
 
     /*cli_dbgmsg("%lu %lu\n", (long)(offset + length), ftell(fp));*/
 
-    if (!CLI_ISCONTAINED2(0, fsize, (off_t)offset, (off_t)length)) {
+    if (!CLI_ISCONTAINED_2_0_TO(fsize, offset, length)) {
         cli_dbgmsg("TNEF: Incorrect length field in tnef_attachment\n");
         return -1;
     }
-    (*pos) = (long)(offset + length); /* shouldn't be needed */
+    (*pos) = offset + (off_t)length; /* shouldn't be needed */
 
     (*pos) += 2;
 
@@ -370,10 +372,10 @@ tnef_header(fmap_t *map, off_t *pos, uint8_t *part, uint16_t *type, uint16_t *ta
     if (rc != sizeof(uint32_t)) {
         if (((*part == '\n') || (*part == '\r')) && (rc == 0)) {
             /*
-			 * trailing newline in the file, could be caused by
-			 * broken quoted-printable encoding in the source
-			 * message missing a final '='
-			 */
+             * trailing newline in the file, could be caused by
+             * broken quoted-printable encoding in the source
+             * message missing a final '='
+             */
             cli_dbgmsg("tnef_header: ignoring trailing newline\n");
             return 0;
         }

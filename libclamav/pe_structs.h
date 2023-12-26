@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Alberto Wu, Tomasz Kojm, Andrew Williams
@@ -83,7 +83,7 @@ struct pe_image_optional_hdr32 {
     uint32_t SizeOfHeapCommit;
     uint32_t LoaderFlags; /*< ? */
     uint32_t NumberOfRvaAndSizes;
-    //struct pe_image_data_dir DataDirectory[16];
+    // struct pe_image_data_dir DataDirectory[16];
 };
 
 /** PE 64-bit optional header
@@ -119,7 +119,7 @@ struct pe_image_optional_hdr64 {
     uint64_t SizeOfHeapCommit;
     uint32_t LoaderFlags; /* ? */
     uint32_t NumberOfRvaAndSizes;
-    //struct pe_image_data_dir DataDirectory[16];
+    // struct pe_image_data_dir DataDirectory[16];
 };
 
 /** PE section header

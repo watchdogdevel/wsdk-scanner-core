@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -33,6 +33,7 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <stdbool.h>
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #endif
@@ -50,6 +51,9 @@
 #define DCONF_MAIL ctx->dconf->mail
 #define DCONF_OTHER ctx->dconf->other
 
+#include <zlib.h>
+
+#include "clamav_rust.h"
 #include "clamav.h"
 #include "others.h"
 #include "dconf.h"
@@ -77,12 +81,10 @@
 #include "str.h"
 #include "entconv.h"
 #include "rtf.h"
-#include "libclamunrar_iface/unrar_iface.h"
 #include "unarj.h"
 #include "nsis/nulsft.h"
 #include "autoit.h"
 #include "textnorm.h"
-#include <zlib.h>
 #include "unzip.h"
 #include "dlp.h"
 #include "default.h"
@@ -98,6 +100,7 @@
 #include "gif.h"
 #include "png.h"
 #include "iso9660.h"
+#include "udf.h"
 #include "dmg.h"
 #include "xar.h"
 #include "hfsplus.h"
@@ -115,6 +118,9 @@
 #include "execs.h"
 #include "egg.h"
 
+// libclamunrar_iface
+#include "unrar_iface.h"
+
 #ifdef HAVE_BZLIB_H
 #include <bzlib.h>
 #endif
@@ -122,71 +128,64 @@
 #include <fcntl.h>
 #include <string.h>
 
-cl_error_t cli_magic_scan_dir(const char *dirname, cli_ctx *ctx)
+cl_error_t cli_magic_scan_dir(const char *dir, cli_ctx *ctx, uint32_t attributes)
 {
-    DIR *dd;
+    cl_error_t status = CL_CLEAN;
+    DIR *dd           = NULL;
     struct dirent *dent;
     STATBUF statbuf;
-    char *fname;
-    unsigned int viruses_found = 0;
+    char *fname = NULL;
 
-    if ((dd = opendir(dirname)) != NULL) {
+    if ((dd = opendir(dir)) != NULL) {
         while ((dent = readdir(dd))) {
             if (dent->d_ino) {
                 if (strcmp(dent->d_name, ".") && strcmp(dent->d_name, "..")) {
                     /* build the full name */
-                    fname = cli_malloc(strlen(dirname) + strlen(dent->d_name) + 2);
+                    fname = cli_malloc(strlen(dir) + strlen(dent->d_name) + 2);
                     if (!fname) {
-                        closedir(dd);
                         cli_dbgmsg("cli_magic_scan_dir: Unable to allocate memory for filename\n");
-                        return CL_EMEM;
+                        status = CL_EMEM;
+                        goto done;
                     }
 
-                    sprintf(fname, "%s" PATHSEP "%s", dirname, dent->d_name);
+                    sprintf(fname, "%s" PATHSEP "%s", dir, dent->d_name);
 
                     /* stat the file */
                     if (LSTAT(fname, &statbuf) != -1) {
                         if (S_ISDIR(statbuf.st_mode) && !S_ISLNK(statbuf.st_mode)) {
-                            if (cli_magic_scan_dir(fname, ctx) == CL_VIRUS) {
-                                free(fname);
-
-                                if (SCAN_ALLMATCHES) {
-                                    viruses_found++;
-                                    continue;
-                                }
-
-                                closedir(dd);
-                                return CL_VIRUS;
+                            status = cli_magic_scan_dir(fname, ctx, attributes);
+                            if (CL_SUCCESS != status) {
+                                goto done;
                             }
                         } else {
                             if (S_ISREG(statbuf.st_mode)) {
-                                if (cli_magic_scan_file(fname, ctx, dent->d_name) == CL_VIRUS) {
-                                    free(fname);
-
-                                    if (SCAN_ALLMATCHES) {
-                                        viruses_found++;
-                                        continue;
-                                    }
-
-                                    closedir(dd);
-                                    return CL_VIRUS;
+                                status = cli_magic_scan_file(fname, ctx, dent->d_name, attributes);
+                                if (CL_SUCCESS != status) {
+                                    goto done;
                                 }
                             }
                         }
                     }
                     free(fname);
+                    fname = NULL;
                 }
             }
         }
     } else {
-        cli_dbgmsg("cli_magic_scan_dir: Can't open directory %s.\n", dirname);
-        return CL_EOPEN;
+        cli_dbgmsg("cli_magic_scan_dir: Can't open directory %s.\n", dir);
+        status = CL_EOPEN;
+        goto done;
     }
 
-    closedir(dd);
-    if (SCAN_ALLMATCHES && viruses_found)
-        return CL_VIRUS;
-    return CL_CLEAN;
+done:
+    if (NULL != dd) {
+        closedir(dd);
+    }
+    if (NULL != fname) {
+        free(fname);
+    }
+
+    return status;
 }
 
 /**
@@ -216,13 +215,12 @@ static cl_error_t cli_unrar_scanmetadata(unrar_metadata_t *metadata, cli_ctx *ct
     return status;
 }
 
-static cl_error_t cli_scanrar(const char *filepath, int desc, cli_ctx *ctx)
+static cl_error_t cli_scanrar_file(const char *filepath, int desc, cli_ctx *ctx)
 {
     cl_error_t status          = CL_EPARSE;
     cl_unrar_error_t unrar_ret = UNRAR_ERR;
 
-    unsigned int file_count    = 0;
-    unsigned int viruses_found = 0;
+    unsigned int file_count = 0;
 
     uint32_t nEncryptedFilesFound = 0;
     uint32_t nTooLargeFilesFound  = 0;
@@ -255,7 +253,8 @@ static cl_error_t cli_scanrar(const char *filepath, int desc, cli_ctx *ctx)
     if (UNRAR_OK != (unrar_ret = cli_unrar_open(filepath, &hArchive, &comment, &comment_size, cli_debug_flag))) {
         if (unrar_ret == UNRAR_ENCRYPTED) {
             cli_dbgmsg("RAR: Encrypted main header\n");
-            status = CL_EUNPACK;
+            status = CL_SUCCESS;
+            nEncryptedFilesFound += 1;
             goto done;
         }
         if (unrar_ret == UNRAR_EMEM) {
@@ -272,37 +271,30 @@ static cl_error_t cli_scanrar(const char *filepath, int desc, cli_ctx *ctx)
 
     /* If the archive header had a comment, write it to the comment dir. */
     if ((comment != NULL) && (comment_size > 0)) {
-        int comment_fd = -1;
-        if (!(comment_fullpath = cli_gentemp_with_prefix(ctx->sub_tmpdir, "comments"))) {
-            status = CL_EMEM;
-            goto done;
+
+        if (ctx->engine->keeptmp) {
+            int comment_fd = -1;
+            if (!(comment_fullpath = cli_gentemp_with_prefix(ctx->sub_tmpdir, "comments"))) {
+                status = CL_EMEM;
+                goto done;
+            }
+
+            comment_fd = open(comment_fullpath, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
+            if (comment_fd < 0) {
+                cli_dbgmsg("RAR: ERROR: Failed to open output file\n");
+            } else {
+                cli_dbgmsg("RAR: Writing the archive comment to temp file: %s\n", comment_fullpath);
+                if (0 == write(comment_fd, comment, comment_size)) {
+                    cli_dbgmsg("RAR: ERROR: Failed to write to output file\n");
+                }
+                close(comment_fd);
+            }
         }
 
-        comment_fd = open(comment_fullpath, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
-        if (comment_fd < 0) {
-            cli_dbgmsg("RAR: ERROR: Failed to open output file\n");
-        } else {
-            cli_dbgmsg("RAR: Writing the archive comment to temp file: %s\n", comment_fullpath);
-            if (0 == write(comment_fd, comment, comment_size)) {
-                cli_dbgmsg("RAR: ERROR: Failed to write to output file\n");
-            } else {
-                /* Scan the comment file */
-                status = cli_magic_scan_file(comment_fullpath, ctx, NULL);
-
-                /* Delete the tempfile if not --leave-temps */
-                if (!ctx->engine->keeptmp)
-                    if (cli_unlink(comment_fullpath))
-                        cli_dbgmsg("RAR: Failed to unlink the extracted comment file: %s\n", comment_fullpath);
-
-                if ((status == CL_VIRUS) && SCAN_ALLMATCHES) {
-                    status = CL_CLEAN;
-                    viruses_found++;
-                }
-                if ((status == CL_VIRUS) || (status == CL_BREAK)) {
-                    goto done;
-                }
-            }
-            close(comment_fd);
+        /* Scan the comment */
+        status = cli_magic_scan_buff(comment, comment_size, ctx, NULL, LAYER_ATTRIBUTES_NONE);
+        if (status != CL_SUCCESS) {
+            goto done;
         }
     }
 
@@ -350,14 +342,12 @@ static cl_error_t cli_scanrar(const char *filepath, int desc, cli_ctx *ctx)
             file_count += 1;
 
             /*
-            * Scan the metadata for the file in question since the content was clean, or we're running in all-match.
-            */
+             * Scan the metadata for the file in question since the content was clean, or we're running in all-match.
+             */
             status = cli_unrar_scanmetadata(&metadata, ctx, file_count);
-            if ((status == CL_VIRUS) && SCAN_ALLMATCHES) {
-                status = CL_CLEAN;
-                viruses_found++;
-            }
-            if ((status == CL_VIRUS) || (status == CL_BREAK)) {
+            if (status == CL_EUNPACK) {
+                nEncryptedFilesFound += 1;
+            } else if (status != CL_SUCCESS) {
                 break;
             }
 
@@ -376,7 +366,7 @@ static cl_error_t cli_scanrar(const char *filepath, int desc, cli_ctx *ctx)
                 }
             } else if (cli_checklimits("RAR", ctx, metadata.unpack_size, 0, 0)) {
                 /* File size exceeds maxfilesize, must skip extraction.
-                * Although we may be able to scan the metadata */
+                 * Although we may be able to scan the metadata */
                 nTooLargeFilesFound += 1;
 
                 cli_dbgmsg("RAR: Next file is too large (%" PRIu64 " bytes); it would exceed max scansize.  Skipping to next file.\n", metadata.unpack_size);
@@ -451,20 +441,23 @@ static cl_error_t cli_scanrar(const char *filepath, int desc, cli_ctx *ctx)
                      * ... scan the extracted file.
                      */
                     cli_dbgmsg("RAR: Extraction complete.  Scanning now...\n");
-                    status = cli_magic_scan_file(extract_fullpath, ctx, filename_base);
+                    status = cli_magic_scan_file(extract_fullpath, ctx, filename_base, LAYER_ATTRIBUTES_NONE);
                     if (status == CL_EOPEN) {
                         cli_dbgmsg("RAR: File not found, Extraction failed!\n");
-                        status = CL_CLEAN;
+
+                        // Don't abort the scan just because one file failed to extract.
+                        status = CL_SUCCESS;
                     } else {
                         /* Delete the tempfile if not --leave-temps */
-                        if (!ctx->engine->keeptmp)
-                            if (cli_unlink(extract_fullpath))
+                        if (!ctx->engine->keeptmp) {
+                            if (cli_unlink(extract_fullpath)) {
                                 cli_dbgmsg("RAR: Failed to unlink the extracted file: %s\n", extract_fullpath);
+                            }
+                        }
 
-                        if (status == CL_VIRUS) {
-                            cli_dbgmsg("RAR: infected with %s\n", cli_get_last_virus(ctx));
-                            status = CL_VIRUS;
-                            viruses_found++;
+                        if (status != CL_SUCCESS) {
+                            // Bail out if "virus" and also if exceeded scan maximums, etc.
+                            goto done;
                         }
                     }
                 }
@@ -475,18 +468,6 @@ static cl_error_t cli_scanrar(const char *filepath, int desc, cli_ctx *ctx)
                     extract_fullpath = NULL;
                 }
             }
-        }
-
-        if (status == CL_VIRUS) {
-            if (SCAN_ALLMATCHES)
-                status = CL_SUCCESS;
-            else
-                break;
-        }
-
-        if (ctx->engine->maxscansize && ctx->scansize >= ctx->engine->maxscansize) {
-            status = CL_CLEAN;
-            break;
         }
 
         /*
@@ -501,10 +482,11 @@ static cl_error_t cli_scanrar(const char *filepath, int desc, cli_ctx *ctx)
             filename_base = NULL;
         }
 
-    } while (status == CL_CLEAN);
+    } while (status == CL_SUCCESS);
 
-    if (status == CL_BREAK)
-        status = CL_CLEAN;
+    if (status == CL_BREAK) {
+        status = CL_SUCCESS;
+    }
 
 done:
     if (NULL != comment) {
@@ -540,23 +522,83 @@ done:
         extract_fullpath = NULL;
     }
 
-    if ((CL_VIRUS != status) && ((CL_EUNPACK == status) || (nEncryptedFilesFound > 0))) {
+    if ((CL_VIRUS != status) && (nEncryptedFilesFound > 0)) {
         /* If user requests enabled the Heuristic for encrypted archives... */
         if (SCAN_HEURISTIC_ENCRYPTED_ARCHIVE) {
-            if (CL_VIRUS == cli_append_virus(ctx, "Heuristics.Encrypted.RAR")) {
+            if (CL_VIRUS == cli_append_potentially_unwanted(ctx, "Heuristics.Encrypted.RAR")) {
                 status = CL_VIRUS;
             }
-        }
-        if (status != CL_VIRUS) {
-            status = CL_CLEAN;
         }
     }
 
     cli_dbgmsg("RAR: Exit code: %d\n", status);
 
-    if (SCAN_ALLMATCHES && viruses_found)
-        status = CL_VIRUS;
+    return status;
+}
 
+static cl_error_t cli_scanrar(cli_ctx *ctx)
+{
+    cl_error_t status = CL_SUCCESS;
+
+    const char *filepath = NULL;
+    int fd               = -1;
+
+    char *tmpname = NULL;
+    int tmpfd     = -1;
+
+#ifdef _WIN32
+    if ((SCAN_UNPRIVILEGED) || (NULL == ctx->sub_filepath) || (0 != _access_s(ctx->sub_filepath, R_OK))) {
+#else
+    if ((SCAN_UNPRIVILEGED) || (NULL == ctx->sub_filepath) || (0 != access(ctx->sub_filepath, R_OK))) {
+#endif
+        /* If map is not file-backed have to dump to file for scanrar. */
+        status = fmap_dump_to_file(ctx->fmap, ctx->sub_filepath, ctx->sub_tmpdir, &tmpname, &tmpfd, 0, SIZE_MAX);
+        if (status != CL_SUCCESS) {
+            cli_dbgmsg("cli_magic_scan: failed to generate temporary file.\n");
+            goto done;
+        }
+        filepath = tmpname;
+        fd       = tmpfd;
+    } else {
+        /* Use the original file and file descriptor. */
+        filepath = ctx->sub_filepath;
+        fd       = fmap_fd(ctx->fmap);
+    }
+
+    /* scan file */
+    status = cli_scanrar_file(filepath, fd, ctx);
+
+    if ((NULL == tmpname) && (CL_EOPEN == status)) {
+        /*
+         * Failed to open the file using the original filename.
+         * Try writing the file descriptor to a temp file and try again.
+         */
+        status = fmap_dump_to_file(ctx->fmap, ctx->sub_filepath, ctx->sub_tmpdir, &tmpname, &tmpfd, 0, SIZE_MAX);
+        if (status != CL_SUCCESS) {
+            cli_dbgmsg("cli_magic_scan: failed to generate temporary file.\n");
+            goto done;
+        }
+        filepath = tmpname;
+        fd       = tmpfd;
+
+        /* try to scan again */
+        status = cli_scanrar_file(filepath, fd, ctx);
+    }
+
+done:
+    if (tmpfd != -1) {
+        /* If dumped tempfile, need to cleanup */
+        close(tmpfd);
+        if (!ctx->engine->keeptmp) {
+            if (cli_unlink(tmpname)) {
+                status = CL_EUNLINK;
+            }
+        }
+    }
+
+    if (tmpname != NULL) {
+        free(tmpname);
+    }
     return status;
 }
 
@@ -587,13 +629,12 @@ static cl_error_t cli_egg_scanmetadata(cl_egg_metadata *metadata, cli_ctx *ctx, 
     return status;
 }
 
-static cl_error_t cli_scanegg(cli_ctx *ctx, size_t sfx_offset)
+static cl_error_t cli_scanegg(cli_ctx *ctx)
 {
-    cl_error_t status  = CL_EPARSE;
-    cl_error_t egg_ret = CL_EPARSE;
+    cl_error_t status = CL_SUCCESS;
+    cl_error_t egg_ret;
 
-    unsigned int file_count    = 0;
-    unsigned int viruses_found = 0;
+    unsigned int file_count = 0;
 
     uint32_t nEncryptedFilesFound = 0;
     uint32_t nTooLargeFilesFound  = 0;
@@ -608,6 +649,10 @@ static cl_error_t cli_scanegg(cli_ctx *ctx, size_t sfx_offset)
     char *extract_fullpath = NULL;
     char *comment_fullpath = NULL;
 
+    char *extract_filename    = NULL;
+    char *extract_buffer      = NULL;
+    size_t extract_buffer_len = 0;
+
     if (ctx == NULL) {
         cli_dbgmsg("EGG: Invalid arguments!\n");
         return CL_EARG;
@@ -621,10 +666,11 @@ static cl_error_t cli_scanegg(cli_ctx *ctx, size_t sfx_offset)
     /*
      * Open the archive.
      */
-    if (CL_SUCCESS != (egg_ret = cli_egg_open(*ctx->fmap, sfx_offset, &hArchive, &comments, &nComments))) {
+    if (CL_SUCCESS != (egg_ret = cli_egg_open(ctx->fmap, &hArchive, &comments, &nComments))) {
         if (egg_ret == CL_EUNPACK) {
             cli_dbgmsg("EGG: Encrypted main header\n");
-            status = CL_EUNPACK;
+            nEncryptedFilesFound += 1;
+            status = CL_SUCCESS;
             goto done;
         }
         if (egg_ret == CL_EMEM) {
@@ -641,8 +687,8 @@ static cl_error_t cli_scanegg(cli_ctx *ctx, size_t sfx_offset)
         uint32_t i;
         for (i = 0; i < nComments; i++) {
             /*
-            * Drop the comment to a temp file, if requested
-            */
+             * Drop the comment to a temp file, if requested
+             */
             if (ctx->engine->keeptmp) {
                 int comment_fd   = -1;
                 size_t prefixLen = strlen("comments_") + 5;
@@ -657,7 +703,6 @@ static cl_error_t cli_scanegg(cli_ctx *ctx, size_t sfx_offset)
                     goto done;
                 }
                 free(prefix);
-                prefix = NULL;
 
                 comment_fd = open(comment_fullpath, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
                 if (comment_fd < 0) {
@@ -666,25 +711,18 @@ static cl_error_t cli_scanegg(cli_ctx *ctx, size_t sfx_offset)
                     cli_dbgmsg("EGG: Writing the archive comment to temp file: %s\n", comment_fullpath);
                     if (0 == write(comment_fd, comments[i], nComments)) {
                         cli_dbgmsg("EGG: ERROR: Failed to write to output file\n");
-                    } else {
-                        close(comment_fd);
-                        comment_fd = -1;
                     }
+                    close(comment_fd);
                 }
                 free(comment_fullpath);
                 comment_fullpath = NULL;
             }
 
             /*
-            * Scan the comment.
-            */
-            status = cli_magic_scan_buff(comments[i], strlen(comments[i]), ctx, NULL);
-
-            if ((status == CL_VIRUS) && SCAN_ALLMATCHES) {
-                status = CL_CLEAN;
-                viruses_found++;
-            }
-            if ((status == CL_VIRUS) || (status == CL_BREAK)) {
+             * Scan the comment.
+             */
+            status = cli_magic_scan_buff(comments[i], strlen(comments[i]), ctx, NULL, LAYER_ATTRIBUTES_NONE);
+            if (status != CL_SUCCESS) {
                 goto done;
             }
         }
@@ -734,16 +772,15 @@ static cl_error_t cli_scanegg(cli_ctx *ctx, size_t sfx_offset)
             file_count += 1;
 
             /*
-            * Scan the metadata for the file in question since the content was clean, or we're running in all-match.
-            */
+             * Scan the metadata for the file in question since the content was clean, or we're running in all-match.
+             */
             status = cli_egg_scanmetadata(&metadata, ctx, file_count);
-            if ((status == CL_VIRUS) && SCAN_ALLMATCHES) {
-                status = CL_CLEAN;
-                viruses_found++;
-            }
-            if ((status == CL_VIRUS) || (status == CL_BREAK)) {
+            if (status == CL_EUNPACK) {
+                nEncryptedFilesFound += 1;
+            } else if (status != CL_SUCCESS) {
                 break;
             }
+
             /* Check if we've already exceeded the scan limit */
             if (cli_checklimits("EGG", ctx, 0, 0, 0))
                 break;
@@ -759,7 +796,7 @@ static cl_error_t cli_scanegg(cli_ctx *ctx, size_t sfx_offset)
                 }
             } else if (cli_checklimits("EGG", ctx, metadata.unpack_size, 0, 0)) {
                 /* File size exceeds maxfilesize, must skip extraction.
-                * Although we may be able to scan the metadata */
+                 * Although we may be able to scan the metadata */
                 nTooLargeFilesFound += 1;
 
                 cli_dbgmsg("EGG: Next file is too large (%" PRIu64 " bytes); it would exceed max scansize.  Skipping to next file.\n", metadata.unpack_size);
@@ -781,11 +818,8 @@ static cl_error_t cli_scanegg(cli_ctx *ctx, size_t sfx_offset)
                 }
             } else {
                 /*
-                * Extract the file...
-                */
-                char *extract_filename    = NULL;
-                char *extract_buffer      = NULL;
-                size_t extract_buffer_len = 0;
+                 * Extract the file...
+                 */
 
                 cli_dbgmsg("EGG: Extracting file: %s\n", metadata.filename);
 
@@ -848,11 +882,9 @@ static cl_error_t cli_scanegg(cli_ctx *ctx, size_t sfx_offset)
                      * Scan the extracted file...
                      */
                     cli_dbgmsg("EGG: Extraction complete.  Scanning now...\n");
-                    status = cli_magic_scan_buff(extract_buffer, extract_buffer_len, ctx, filename_base);
-                    if (status == CL_VIRUS) {
-                        cli_dbgmsg("EGG: infected with %s\n", cli_get_last_virus(ctx));
-                        status = CL_VIRUS;
-                        viruses_found++;
+                    status = cli_magic_scan_buff(extract_buffer, extract_buffer_len, ctx, filename_base, LAYER_ATTRIBUTES_NONE);
+                    if (status != CL_SUCCESS) {
+                        goto done;
                     }
 
                     if (NULL != filename_base) {
@@ -877,13 +909,6 @@ static cl_error_t cli_scanegg(cli_ctx *ctx, size_t sfx_offset)
             }
         }
 
-        if (status == CL_VIRUS) {
-            if (SCAN_ALLMATCHES)
-                status = CL_SUCCESS;
-            else
-                break;
-        }
-
         if (ctx->engine->maxscansize && ctx->scansize >= ctx->engine->maxscansize) {
             status = CL_CLEAN;
             break;
@@ -899,10 +924,21 @@ static cl_error_t cli_scanegg(cli_ctx *ctx, size_t sfx_offset)
 
     } while (status == CL_CLEAN);
 
-    if (status == CL_BREAK)
+    if (status == CL_BREAK) {
         status = CL_CLEAN;
+    }
 
 done:
+
+    if (NULL != extract_filename) {
+        free(extract_filename);
+        extract_filename = NULL;
+    }
+
+    if (NULL != extract_buffer) {
+        free(extract_buffer);
+        extract_buffer = NULL;
+    }
 
     if (NULL != comment_fullpath) {
         free(comment_fullpath);
@@ -929,34 +965,26 @@ done:
         extract_fullpath = NULL;
     }
 
-    if ((CL_VIRUS != status) && ((CL_EUNPACK == status) || (nEncryptedFilesFound > 0))) {
+    if ((CL_VIRUS != status) && (nEncryptedFilesFound > 0)) {
         /* If user requests enabled the Heuristic for encrypted archives... */
         if (SCAN_HEURISTIC_ENCRYPTED_ARCHIVE) {
-            if (CL_VIRUS == cli_append_virus(ctx, "Heuristics.Encrypted.EGG")) {
+            if (CL_VIRUS == cli_append_potentially_unwanted(ctx, "Heuristics.Encrypted.EGG")) {
                 status = CL_VIRUS;
             }
-        }
-        if (status != CL_VIRUS) {
-            status = CL_CLEAN;
         }
     }
 
     cli_dbgmsg("EGG: Exit code: %d\n", status);
 
-    if (SCAN_ALLMATCHES && viruses_found)
-        status = CL_VIRUS;
-
     return status;
 }
 
-static cl_error_t cli_scanarj(cli_ctx *ctx, off_t sfx_offset)
+static cl_error_t cli_scanarj(cli_ctx *ctx)
 {
     cl_error_t ret = CL_CLEAN;
-    cl_error_t rc;
-    int file = 0;
+    int file       = 0;
     arj_metadata_t metadata;
-    char *dir;
-    int virus_found = 0;
+    char *dir = NULL;
 
     cli_dbgmsg("in cli_scanarj()\n");
 
@@ -972,7 +1000,7 @@ static cl_error_t cli_scanarj(cli_ctx *ctx, off_t sfx_offset)
         return CL_ETMPDIR;
     }
 
-    ret = cli_unarj_open(*ctx->fmap, dir, &metadata, sfx_offset);
+    ret = cli_unarj_open(ctx->fmap, dir, &metadata);
     if (ret != CL_SUCCESS) {
         if (!ctx->engine->keeptmp)
             cli_rmdirs(dir);
@@ -982,22 +1010,20 @@ static cl_error_t cli_scanarj(cli_ctx *ctx, off_t sfx_offset)
     }
 
     do {
-
         metadata.filename = NULL;
-        ret               = cli_unarj_prepare_file(dir, &metadata);
+
+        ret = cli_unarj_prepare_file(dir, &metadata);
         if (ret != CL_SUCCESS) {
             cli_dbgmsg("ARJ: cli_unarj_prepare_file Error: %s\n", cl_strerror(ret));
             break;
         }
+
         file++;
-        if (cli_matchmeta(ctx, metadata.filename, metadata.comp_size, metadata.orig_size, metadata.encrypted, file, 0, NULL) == CL_VIRUS) {
-            if (!SCAN_ALLMATCHES) {
-                cli_rmdirs(dir);
-                free(dir);
-                return CL_VIRUS;
-            }
-            virus_found = 1;
-            ret         = CL_SUCCESS;
+
+        if (CL_VIRUS == cli_matchmeta(ctx, metadata.filename, metadata.comp_size, metadata.orig_size, metadata.encrypted, file, 0, NULL)) {
+            cli_rmdirs(dir);
+            free(dir);
+            return CL_VIRUS;
         }
 
         if ((ret = cli_checklimits("ARJ", ctx, metadata.orig_size, metadata.comp_size, 0)) != CL_CLEAN) {
@@ -1006,30 +1032,24 @@ static cl_error_t cli_scanarj(cli_ctx *ctx, off_t sfx_offset)
                 free(metadata.filename);
             continue;
         }
+
         ret = cli_unarj_extract_file(dir, &metadata);
         if (ret != CL_SUCCESS) {
             cli_dbgmsg("ARJ: cli_unarj_extract_file Error: %s\n", cl_strerror(ret));
         }
+
         if (metadata.ofd >= 0) {
             if (lseek(metadata.ofd, 0, SEEK_SET) == -1) {
                 cli_dbgmsg("ARJ: call to lseek() failed\n");
             }
-            rc = cli_magic_scan_desc(metadata.ofd, NULL, ctx, metadata.filename);
+
+            ret = cli_magic_scan_desc(metadata.ofd, NULL, ctx, metadata.filename, LAYER_ATTRIBUTES_NONE);
             close(metadata.ofd);
-            if (rc == CL_VIRUS) {
-                cli_dbgmsg("ARJ: infected with %s\n", cli_get_last_virus(ctx));
-                if (!SCAN_ALLMATCHES) {
-                    ret = CL_VIRUS;
-                    if (metadata.filename) {
-                        free(metadata.filename);
-                        metadata.filename = NULL;
-                    }
-                    break;
-                }
-                virus_found = 1;
-                ret         = CL_SUCCESS;
+            if (ret != CL_SUCCESS) {
+                break;
             }
         }
+
         if (metadata.filename) {
             free(metadata.filename);
             metadata.filename = NULL;
@@ -1037,19 +1057,23 @@ static cl_error_t cli_scanarj(cli_ctx *ctx, off_t sfx_offset)
 
     } while (ret == CL_SUCCESS);
 
-    if (!ctx->engine->keeptmp)
+    if (!ctx->engine->keeptmp) {
         cli_rmdirs(dir);
+    }
 
-    free(dir);
+    if (NULL != dir) {
+        free(dir);
+    }
+
     if (metadata.filename) {
         free(metadata.filename);
     }
 
-    if (virus_found != 0)
-        ret = CL_VIRUS;
     cli_dbgmsg("ARJ: Exit code: %d\n", ret);
-    if (ret == CL_BREAK)
-        ret = CL_CLEAN;
+
+    if (ret == CL_BREAK) {
+        ret = CL_SUCCESS;
+    }
 
     return ret;
 }
@@ -1060,7 +1084,7 @@ static cl_error_t cli_scangzip_with_zib_from_the_80s(cli_ctx *ctx, unsigned char
     cl_error_t ret;
     size_t outsize = 0;
     int bytes;
-    fmap_t *map = *ctx->fmap;
+    fmap_t *map = ctx->fmap;
     char *tmpname;
     gzFile gz;
 
@@ -1101,22 +1125,20 @@ static cl_error_t cli_scangzip_with_zib_from_the_80s(cli_ctx *ctx, unsigned char
 
     gzclose(gz);
 
-    if ((ret = cli_magic_scan_desc(fd, tmpname, ctx, NULL)) == CL_VIRUS) {
-        cli_dbgmsg("GZip: Infected with %s\n", cli_get_last_virus(ctx));
+    if (CL_SUCCESS != (ret = cli_magic_scan_desc(fd, tmpname, ctx, NULL, LAYER_ATTRIBUTES_NONE))) {
         close(fd);
         if (!ctx->engine->keeptmp) {
-            if (cli_unlink(tmpname)) {
-                free(tmpname);
-                return CL_EUNLINK;
-            }
+            (void)cli_unlink(tmpname);
         }
         free(tmpname);
-        return CL_VIRUS;
+        return ret;
     }
     close(fd);
-    if (!ctx->engine->keeptmp)
-        if (cli_unlink(tmpname))
+    if (!ctx->engine->keeptmp) {
+        if (cli_unlink(tmpname)) {
             ret = CL_EUNLINK;
+        }
+    }
     free(tmpname);
     return ret;
 }
@@ -1129,7 +1151,7 @@ static cl_error_t cli_scangzip(cli_ctx *ctx)
     char *tmpname;
     z_stream z;
     size_t at = 0, outsize = 0;
-    fmap_t *map = *ctx->fmap;
+    fmap_t *map = ctx->fmap;
 
     cli_dbgmsg("in cli_scangzip()\n");
 
@@ -1203,8 +1225,7 @@ static cl_error_t cli_scangzip(cli_ctx *ctx)
 
     inflateEnd(&z);
 
-    if ((ret = cli_magic_scan_desc(fd, tmpname, ctx, NULL)) == CL_VIRUS) {
-        cli_dbgmsg("GZip: Infected with %s\n", cli_get_last_virus(ctx));
+    if (CL_SUCCESS != (ret = cli_magic_scan_desc(fd, tmpname, ctx, NULL, LAYER_ATTRIBUTES_NONE))) {
         close(fd);
         if (!ctx->engine->keeptmp) {
             if (cli_unlink(tmpname)) {
@@ -1213,13 +1234,14 @@ static cl_error_t cli_scangzip(cli_ctx *ctx)
             }
         }
         free(tmpname);
-        return CL_VIRUS;
+        return ret;
     }
     close(fd);
     if (!ctx->engine->keeptmp)
         if (cli_unlink(tmpname))
             ret = CL_EUNLINK;
     free(tmpname);
+
     return ret;
 }
 
@@ -1250,9 +1272,9 @@ static cl_error_t cli_scanbzip(cli_ctx *ctx)
     char buf[FILEBUFF];
 
     memset(&strm, 0, sizeof(strm));
-    strm.next_out = buf;
+    strm.next_out  = buf;
     strm.avail_out = sizeof(buf);
-    rc = BZ2_bzDecompressInit(&strm, 0, 0);
+    rc             = BZ2_bzDecompressInit(&strm, 0, 0);
     if (BZ_OK != rc) {
         cli_dbgmsg("Bzip: DecompressInit failed: %d\n", rc);
         return CL_EOPEN;
@@ -1266,7 +1288,7 @@ static cl_error_t cli_scanbzip(cli_ctx *ctx)
 
     do {
         if (!strm.avail_in) {
-            strm.next_in = (void *)fmap_need_off_once_len(*ctx->fmap, off, FILEBUFF, &avail);
+            strm.next_in  = (void *)fmap_need_off_once_len(ctx->fmap, off, FILEBUFF, &avail);
             strm.avail_in = avail;
             off += avail;
             if (!strm.avail_in) {
@@ -1302,25 +1324,23 @@ static cl_error_t cli_scanbzip(cli_ctx *ctx)
             if (cli_checklimits("Bzip", ctx, size, 0, 0) != CL_CLEAN)
                 break;
 
-            strm.next_out = buf;
+            strm.next_out  = buf;
             strm.avail_out = sizeof(buf);
         }
     } while (BZ_STREAM_END != rc);
 
     BZ2_bzDecompressEnd(&strm);
 
-    if ((ret = cli_magic_scan_desc(fd, tmpname, ctx, NULL)) == CL_VIRUS) {
-        cli_dbgmsg("Bzip: Infected with %s\n", cli_get_last_virus(ctx));
+    if (CL_SUCCESS != (ret = cli_magic_scan_desc(fd, tmpname, ctx, NULL, LAYER_ATTRIBUTES_NONE))) {
         close(fd);
         if (!ctx->engine->keeptmp) {
             if (cli_unlink(tmpname)) {
-                ret = CL_EUNLINK;
                 free(tmpname);
-                return ret;
+                return CL_EUNLINK;
             }
         }
         free(tmpname);
-        return CL_VIRUS;
+        return ret;
     }
     close(fd);
     if (!ctx->engine->keeptmp)
@@ -1369,7 +1389,7 @@ static cl_error_t cli_scanxz(cli_ctx *ctx)
     do {
         /* set up input buffer */
         if (!strm.avail_in) {
-            strm.next_in  = (void *)fmap_need_off_once_len(*ctx->fmap, off, CLI_XZ_IBUF_SIZE, &avail);
+            strm.next_in  = (void *)fmap_need_off_once_len(ctx->fmap, off, CLI_XZ_IBUF_SIZE, &avail);
             strm.avail_in = avail;
             off += avail;
             if (!strm.avail_in) {
@@ -1383,23 +1403,23 @@ static cl_error_t cli_scanxz(cli_ctx *ctx)
         rc = cli_XzDecode(&strm);
         if (XZ_RESULT_OK != rc && XZ_STREAM_END != rc) {
             if (rc == XZ_DIC_HEURISTIC) {
-                ret = cli_append_virus(ctx, "Heuristics.XZ.DicSizeLimit");
+                ret = cli_append_potentially_unwanted(ctx, "Heuristics.XZ.DicSizeLimit");
                 goto xz_exit;
             }
             cli_errmsg("cli_scanxz: decompress error: %d\n", rc);
             ret = CL_EFORMAT;
             goto xz_exit;
         }
-        //cli_dbgmsg("cli_scanxz: xz decompressed %li of %li available bytes\n",
-        //           avail - strm.avail_in, avail);
+        // cli_dbgmsg("cli_scanxz: xz decompressed %li of %li available bytes\n",
+        //            avail - strm.avail_in, avail);
 
         /* write decompress buffer */
         if (!strm.avail_out || rc == XZ_STREAM_END) {
             size_t towrite = CLI_XZ_OBUF_SIZE - strm.avail_out;
             size += towrite;
 
-            //cli_dbgmsg("Writing %li bytes to XZ decompress temp file(%li byte total)\n",
-            //           towrite, size);
+            // cli_dbgmsg("Writing %li bytes to XZ decompress temp file(%li byte total)\n",
+            //            towrite, size);
 
             if (cli_writen(fd, buf, towrite) != towrite) {
                 cli_errmsg("cli_scanxz: Can't write to file.\n");
@@ -1418,16 +1438,16 @@ static cl_error_t cli_scanxz(cli_ctx *ctx)
     } while (XZ_STREAM_END != rc);
 
     /* scan decompressed file */
-    if ((ret = cli_magic_scan_desc(fd, tmpname, ctx, NULL)) == CL_VIRUS) {
-        cli_dbgmsg("cli_scanxz: Infected with %s\n", cli_get_last_virus(ctx));
-    }
+    ret = cli_magic_scan_desc(fd, tmpname, ctx, NULL, LAYER_ATTRIBUTES_NONE);
 
 xz_exit:
     cli_XzShutdown(&strm);
     close(fd);
-    if (!ctx->engine->keeptmp)
-        if (cli_unlink(tmpname) && ret == CL_CLEAN)
+    if (!ctx->engine->keeptmp) {
+        if (cli_unlink(tmpname) && ret == CL_CLEAN) {
             ret = CL_EUNLINK;
+        }
+    }
     free(tmpname);
     free(buf);
     return ret;
@@ -1458,7 +1478,7 @@ static cl_error_t cli_scanszdd(cli_ctx *ctx)
     }
 
     cli_dbgmsg("MSEXPAND: Decompressed into %s\n", tmpname);
-    ret = cli_magic_scan_desc(ofd, tmpname, ctx, NULL);
+    ret = cli_magic_scan_desc(ofd, tmpname, ctx, NULL, LAYER_ATTRIBUTES_NONE);
     close(ofd);
     if (!ctx->engine->keeptmp)
         if (cli_unlink(tmpname))
@@ -1470,45 +1490,79 @@ static cl_error_t cli_scanszdd(cli_ctx *ctx)
 
 static cl_error_t vba_scandata(const unsigned char *data, size_t len, cli_ctx *ctx)
 {
-    struct cli_matcher *groot = ctx->engine->root[0];
-    struct cli_matcher *troot = ctx->engine->root[2];
+    cl_error_t ret                      = CL_SUCCESS;
+    struct cli_matcher *generic_ac_root = ctx->engine->root[0];
+    struct cli_matcher *target_ac_root  = ctx->engine->root[2];
     struct cli_ac_data gmdata, tmdata;
+    bool gmdata_initialized = false;
+    bool tmdata_initialized = false;
     struct cli_ac_data *mdata[2];
-    cl_error_t ret;
-    unsigned int viruses_found = 0;
+    bool must_pop_stack = false;
 
-    if ((ret = cli_ac_initdata(&tmdata, troot->ac_partsigs, troot->ac_lsigs, troot->ac_reloff_num, CLI_DEFAULT_AC_TRACKLEN)))
-        return ret;
+    cl_fmap_t *new_map = NULL;
 
-    if ((ret = cli_ac_initdata(&gmdata, groot->ac_partsigs, groot->ac_lsigs, groot->ac_reloff_num, CLI_DEFAULT_AC_TRACKLEN))) {
-        cli_ac_freedata(&tmdata);
-        return ret;
+    if ((ret = cli_ac_initdata(&tmdata, target_ac_root->ac_partsigs, target_ac_root->ac_lsigs, target_ac_root->ac_reloff_num, CLI_DEFAULT_AC_TRACKLEN))) {
+        goto done;
     }
+    tmdata_initialized = true;
+
+    if ((ret = cli_ac_initdata(&gmdata, generic_ac_root->ac_partsigs, generic_ac_root->ac_lsigs, generic_ac_root->ac_reloff_num, CLI_DEFAULT_AC_TRACKLEN))) {
+        goto done;
+    }
+    gmdata_initialized = true;
+
     mdata[0] = &tmdata;
     mdata[1] = &gmdata;
 
     ret = cli_scan_buff(data, len, 0, ctx, CL_TYPE_MSOLE2, mdata);
-    if (ret == CL_VIRUS)
-        viruses_found++;
-
-    if (ret == CL_CLEAN || (ret == CL_VIRUS && SCAN_ALLMATCHES)) {
-        fmap_t *map = *ctx->fmap;
-        *ctx->fmap  = fmap_open_memory(data, len, NULL);
-        if (*ctx->fmap == NULL)
-            return CL_EMEM;
-        ret = cli_exp_eval(ctx, troot, &tmdata, NULL, NULL);
-        if (ret == CL_VIRUS)
-            viruses_found++;
-
-        if (ret == CL_CLEAN || (ret == CL_VIRUS && SCAN_ALLMATCHES))
-            ret = cli_exp_eval(ctx, groot, &gmdata, NULL, NULL);
-        funmap(*ctx->fmap);
-        *ctx->fmap = map;
+    if (CL_SUCCESS != ret) {
+        goto done;
     }
-    cli_ac_freedata(&tmdata);
-    cli_ac_freedata(&gmdata);
 
-    return (ret != CL_CLEAN) ? ret : viruses_found ? CL_VIRUS : CL_CLEAN;
+    /*
+     * Evaluate logical & yara rules given the new matches to see if anything alerts.
+     */
+    new_map = fmap_open_memory(data, len, NULL);
+    if (new_map == NULL) {
+        cli_dbgmsg("Failed to create fmap for evaluating logical/yara rules after call to cli_scan_buff()\n");
+        ret = CL_EMEM;
+        goto done;
+    }
+
+    ret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_MSOLE2, true, LAYER_ATTRIBUTES_NONE); /* Perform exp_eval with child fmap */
+    if (CL_SUCCESS != ret) {
+        cli_dbgmsg("Failed to scan fmap.\n");
+        goto done;
+    }
+
+    must_pop_stack = true;
+
+    ret = cli_exp_eval(ctx, target_ac_root, &tmdata, NULL, NULL);
+    if (CL_SUCCESS != ret) {
+        goto done;
+    }
+
+    ret = cli_exp_eval(ctx, generic_ac_root, &gmdata, NULL, NULL);
+
+done:
+
+    if (must_pop_stack) {
+        (void)cli_recursion_stack_pop(ctx); /* Restore the parent fmap */
+    }
+
+    if (NULL != new_map) {
+        funmap(new_map);
+    }
+
+    if (tmdata_initialized) {
+        cli_ac_freedata(&tmdata);
+    }
+
+    if (gmdata_initialized) {
+        cli_ac_freedata(&gmdata);
+    }
+
+    return ret;
 }
 
 #define min(x, y) ((x) < (y) ? (x) : (y))
@@ -1570,60 +1624,94 @@ cl_error_t find_file(const char *filename, const char *dir, char *result, size_t
 
 /**
  * Scan an OLE directory for a VBA project.
- * Contrary to cli_vba_scandir, this function uses the dir file to locate VBA modules.
+ * Contrary to cli_ole2_tempdir_scan_vba, this function uses the dir file to locate VBA modules.
  */
-static cl_error_t cli_vba_scandir_new(const char *dirname, cli_ctx *ctx, struct uniq *U)
+static cl_error_t cli_ole2_tempdir_scan_vba_new(const char *dir, cli_ctx *ctx, struct uniq *U, int *has_macros)
 {
     cl_error_t ret   = CL_SUCCESS;
     uint32_t hashcnt = 0;
     char *hash       = NULL;
     char path[PATH_MAX];
     char filename[PATH_MAX];
-    int tempfd = -1;
+    int tempfd     = -1;
+    char *tempfile = NULL;
 
     if (CL_SUCCESS != (ret = uniq_get(U, "dir", 3, &hash, &hashcnt))) {
-        cli_dbgmsg("cli_vba_scandir_new: uniq_get('dir') failed with ret code (%d)!\n", ret);
+        cli_dbgmsg("cli_ole2_tempdir_scan_vba_new: uniq_get('dir') failed with ret code (%d)!\n", ret);
         return ret;
     }
 
     while (hashcnt) {
-        //Find the directory containing the extracted dir file. This is complicated
-        //because ClamAV doesn't use the file names from the OLE file, but temporary names,
-        //and we have neither the complete path of the dir file in the OLE container,
-        //nor the mapping of the temporary directory names to their OLE names.
+        // Find the directory containing the extracted dir file. This is complicated
+        // because ClamAV doesn't use the file names from the OLE file, but temporary names,
+        // and we have neither the complete path of the dir file in the OLE container,
+        // nor the mapping of the temporary directory names to their OLE names.
         snprintf(filename, sizeof(filename), "%s_%u", hash, hashcnt);
         filename[sizeof(filename) - 1] = '\0';
 
-        if (CL_SUCCESS == find_file(filename, dirname, path, sizeof(path))) {
-            cli_dbgmsg("cli_vba_scandir_new: Found dir file: %s\n", path);
-            if ((ret = cli_vba_readdir_new(ctx, path, U, hash, hashcnt, &tempfd)) != CL_SUCCESS) {
-                //FIXME: Since we only know the stream name of the OLE2 stream, but not its path inside the
-                //       OLE2 archive, we don't know if we have the right file. The only thing we can do is
-                //       iterate all of them until one succeeds.
-                cli_dbgmsg("cli_vba_scandir_new: Failed to read dir from %s, trying others (error: %s (%d))\n", path, cl_strerror(ret), (int)ret);
+        if (CL_SUCCESS == find_file(filename, dir, path, sizeof(path))) {
+            cli_dbgmsg("cli_ole2_tempdir_scan_vba_new: Found dir file: %s\n", path);
+            if ((ret = cli_vba_readdir_new(ctx, path, U, hash, hashcnt, &tempfd, has_macros, &tempfile)) != CL_SUCCESS) {
+                // FIXME: Since we only know the stream name of the OLE2 stream, but not its path inside the
+                //        OLE2 archive, we don't know if we have the right file. The only thing we can do is
+                //        iterate all of them until one succeeds.
+                cli_dbgmsg("cli_ole2_tempdir_scan_vba_new: Failed to read dir from %s, trying others (error: %s (%d))\n", path, cl_strerror(ret), (int)ret);
+
+                if (tempfile) {
+                    if (!ctx->engine->keeptmp) {
+                        remove(tempfile);
+                    }
+                    free(tempfile);
+                    tempfile = NULL;
+                }
+
                 ret = CL_SUCCESS;
                 hashcnt--;
                 continue;
             }
 
+#if HAVE_JSON
+            if (*has_macros && SCAN_COLLECT_METADATA && (ctx->wrkproperty != NULL)) {
+                cli_jsonbool(ctx->wrkproperty, "HasMacros", 1);
+                json_object *macro_languages = cli_jsonarray(ctx->wrkproperty, "MacroLanguages");
+                if (macro_languages) {
+                    cli_jsonstr(macro_languages, NULL, "VBA");
+                } else {
+                    cli_dbgmsg("[cli_ole2_tempdir_scan_vba_new] Failed to add \"VBA\" entry to MacroLanguages JSON array\n");
+                }
+            }
+#endif
+            if (SCAN_HEURISTIC_MACROS && *has_macros) {
+                ret = cli_append_potentially_unwanted(ctx, "Heuristics.OLE2.ContainsMacros.VBA");
+                if (ret == CL_VIRUS) {
+                    goto done;
+                }
+            }
+
+            /*
+             * Now rewind the extracted vba-project output FD and scan it!
+             */
             if (lseek(tempfd, 0, SEEK_SET) != 0) {
-                cli_dbgmsg("cli_vba_scandir_new: Failed to seek to beginning of temporary VBA project file\n");
+                cli_dbgmsg("cli_ole2_tempdir_scan_vba_new: Failed to seek to beginning of temporary VBA project file\n");
                 ret = CL_ESEEK;
                 goto done;
             }
 
-            ctx->recursion += 1;
-            cli_set_container(ctx, CL_TYPE_MSOLE2, 0); //TODO: set correct container size
-
-            if (cli_scan_desc(tempfd, ctx, CL_TYPE_SCRIPT, 0, NULL, AC_SCAN_VIR, NULL, NULL) == CL_VIRUS) {
-                ctx->recursion -= 1;
-                ret = CL_VIRUS;
+            ret = cli_scan_desc(tempfd, ctx, CL_TYPE_SCRIPT, false, NULL, AC_SCAN_VIR, NULL, NULL, LAYER_ATTRIBUTES_NONE);
+            if (CL_SUCCESS != ret) {
                 goto done;
             }
 
             close(tempfd);
             tempfd = -1;
-            ctx->recursion -= 1;
+
+            if (tempfile) {
+                if (!ctx->engine->keeptmp) {
+                    remove(tempfile);
+                }
+                free(tempfile);
+                tempfile = NULL;
+            }
         }
 
         hashcnt--;
@@ -1634,31 +1722,162 @@ done:
         close(tempfd);
         tempfd = -1;
     }
+
+    if (tempfile) {
+        if (!ctx->engine->keeptmp) {
+            remove(tempfile);
+        }
+        free(tempfile);
+        tempfile = NULL;
+    }
+
     return ret;
 }
 
-static cl_error_t cli_vba_scandir(const char *dirname, cli_ctx *ctx, struct uniq *U)
+/**
+ * @brief find the summary information files and write out the meta to the JSON.
+ *
+ * @param dir   The directory containing ole2 temp files
+ * @param ctx       The scan context
+ * @param U         The unique structure indicating while files exist in the directory
+ * @return cl_error_t
+ */
+static cl_error_t cli_ole2_tempdir_scan_summary(const char *dir, cli_ctx *ctx, struct uniq *U)
 {
-    cl_error_t ret = CL_CLEAN;
-    int i, j, fd, hasmacros = 0;
-    size_t data_len;
-    vba_project_t *vba_project;
-    DIR *dd;
-    struct dirent *dent;
-    STATBUF statbuf;
-    char *fullname, vbaname[1024];
-    unsigned char *data;
+    cl_error_t status = CL_CLEAN;
+    cl_error_t ret;
+    char summary_filename[1024];
     char *hash;
-    uint32_t hashcnt           = 0;
-    unsigned int viruses_found = 0;
+    uint32_t hashcnt = 0;
 
-    cli_dbgmsg("VBADir: %s\n", dirname);
-    if (CL_SUCCESS != (ret = uniq_get(U, "_vba_project", 12, NULL, &hashcnt))) {
-        cli_dbgmsg("VBADir: uniq_get('_vba_project') failed with ret code (%d)!\n", ret);
-        return ret;
+#if HAVE_JSON
+    if (CL_SUCCESS != (ret = uniq_get(U, "_5_summaryinformation", 21, &hash, &hashcnt))) {
+        cli_dbgmsg("cli_ole2_tempdir_scan_summary: uniq_get('_5_summaryinformation') failed with ret code (%d)!\n", ret);
+        status = ret;
+        goto done;
     }
     while (hashcnt) {
-        if (!(vba_project = (vba_project_t *)cli_vba_readdir(dirname, U, hashcnt))) {
+        int fd = -1;
+
+        snprintf(summary_filename, sizeof(summary_filename), "%s" PATHSEP "%s_%u", dir, hash, hashcnt);
+        summary_filename[sizeof(summary_filename) - 1] = '\0';
+
+        fd = open(summary_filename, O_RDONLY | O_BINARY);
+        if (fd >= 0) {
+            cli_dbgmsg("cli_ole2_tempdir_scan_summary: detected a '_5_summaryinformation' stream\n");
+            /* JSONOLE2 - what to do if something breaks? */
+            cli_ole2_summary_json(ctx, fd, 0);
+            close(fd);
+        }
+        hashcnt--;
+    }
+
+    if (CL_SUCCESS != (ret = uniq_get(U, "_5_documentsummaryinformation", 29, &hash, &hashcnt))) {
+        cli_dbgmsg("cli_ole2_tempdir_scan_summary: uniq_get('_5_documentsummaryinformation') failed with ret code (%d)!\n", ret);
+        status = ret;
+        goto done;
+    }
+    while (hashcnt) {
+        int fd = -1;
+
+        snprintf(summary_filename, sizeof(summary_filename), "%s" PATHSEP "%s_%u", dir, hash, hashcnt);
+        summary_filename[sizeof(summary_filename) - 1] = '\0';
+
+        fd = open(summary_filename, O_RDONLY | O_BINARY);
+        if (fd >= 0) {
+            cli_dbgmsg("cli_ole2_tempdir_scan_summary: detected a '_5_documentsummaryinformation' stream\n");
+            /* JSONOLE2 - what to do if something breaks? */
+            cli_ole2_summary_json(ctx, fd, 1);
+            close(fd);
+        }
+        hashcnt--;
+    }
+#endif
+
+done:
+
+    return status;
+}
+
+/**
+ * @brief Check the ole2 temp directory for embedded OLE objects
+ *
+ * @param dir   The ole2 temp directory
+ * @param ctx       The scan context
+ * @param U         The uniq structure which recors what files are in the temp directory
+ * @return cl_error_t
+ */
+static cl_error_t cli_ole2_tempdir_scan_embedded_ole10(const char *dir, cli_ctx *ctx, struct uniq *U)
+{
+    cl_error_t status = CL_CLEAN;
+    cl_error_t ret;
+    char ole10_filename[1024];
+    char *hash;
+    uint32_t hashcnt = 0;
+
+    int fd = -1;
+
+    /* Check directory for embedded OLE objects */
+    if (CL_SUCCESS != (ret = uniq_get(U, "_1_ole10native", 14, &hash, &hashcnt))) {
+        cli_dbgmsg("cli_ole2_tempdir_scan_embedded_ole10: uniq_get('_1_ole10native') failed with ret code (%d)!\n", ret);
+        status = ret;
+        goto done;
+    }
+    while (hashcnt) {
+        snprintf(ole10_filename, sizeof(ole10_filename), "%s" PATHSEP "%s_%u", dir, hash, hashcnt);
+        ole10_filename[sizeof(ole10_filename) - 1] = '\0';
+
+        fd = open(ole10_filename, O_RDONLY | O_BINARY);
+        if (fd < 0) {
+            hashcnt--;
+            continue;
+        }
+
+        ret = cli_scan_ole10(fd, ctx);
+        if (CL_SUCCESS != ret) {
+            status = ret;
+            goto done;
+        }
+
+        close(fd);
+        fd = -1;
+
+        hashcnt--;
+    }
+
+done:
+
+    if (fd >= 0) {
+        close(fd);
+    }
+
+    return status;
+}
+
+static cl_error_t cli_ole2_tempdir_scan_vba(const char *dir, cli_ctx *ctx, struct uniq *U, int *has_macros)
+{
+    cl_error_t status = CL_SUCCESS;
+    cl_error_t ret;
+    int i, j;
+    size_t data_len;
+    vba_project_t *vba_project;
+    char *fullname = NULL;
+    char vbaname[1024];
+    unsigned char *data = NULL;
+    char *hash;
+    uint32_t hashcnt = 0;
+
+    int fd = -1;
+
+    int proj_contents_fd      = -1;
+    char *proj_contents_fname = NULL;
+
+    if (CL_SUCCESS != (status = uniq_get(U, "_vba_project", 12, NULL, &hashcnt))) {
+        cli_dbgmsg("cli_ole2_tempdir_scan_vba: uniq_get('_vba_project') failed with ret code (%d)!\n", status);
+        goto done;
+    }
+    while (hashcnt) {
+        if (!(vba_project = (vba_project_t *)cli_vba_readdir(dir, U, hashcnt))) {
             hashcnt--;
             continue;
         }
@@ -1667,48 +1886,53 @@ static cl_error_t cli_vba_scandir(const char *dirname, cli_ctx *ctx, struct uniq
             for (j = 1; (unsigned int)j <= vba_project->colls[i]; j++) {
                 snprintf(vbaname, 1024, "%s" PATHSEP "%s_%u", vba_project->dir, vba_project->name[i], j);
                 vbaname[sizeof(vbaname) - 1] = '\0';
-                fd                           = open(vbaname, O_RDONLY | O_BINARY);
+
+                fd = open(vbaname, O_RDONLY | O_BINARY);
                 if (fd == -1) {
                     continue;
                 }
-                cli_dbgmsg("VBADir: Decompress VBA project '%s_%u'\n", vba_project->name[i], j);
+
+                cli_dbgmsg("cli_ole2_tempdir_scan_vba: Decompress VBA project '%s_%u'\n", vba_project->name[i], j);
+
                 data = (unsigned char *)cli_vba_inflate(fd, vba_project->offset[i], &data_len);
+
                 close(fd);
-                hasmacros++;
-                if (!data) {
-                } else {
+                fd = -1;
+
+                *has_macros = *has_macros + 1;
+
+                if (NULL != data) {
                     /* cli_dbgmsg("Project content:\n%s", data); */
                     if (ctx->scanned)
                         *ctx->scanned += data_len / CL_COUNT_PRECISION;
                     if (ctx->engine->keeptmp) {
-                        char *tempfile;
-                        int of;
-
-                        if ((ret = cli_gentempfd(ctx->sub_tmpdir, &tempfile, &of)) != CL_SUCCESS) {
-                            cli_warnmsg("VBADir: WARNING: VBA project '%s_%u' cannot be dumped to file\n", vba_project->name[i], j);
-                            return ret;
-                        }
-                        if (cli_writen(of, data, data_len) != data_len) {
-                            cli_warnmsg("VBADir: WARNING: VBA project '%s_%u' failed to write to file\n", vba_project->name[i], j);
-                            close(of);
-                            free(tempfile);
-                            return CL_EWRITE;
+                        if (CL_SUCCESS != (status = cli_gentempfd(ctx->sub_tmpdir, &proj_contents_fname, &proj_contents_fd))) {
+                            cli_warnmsg("WARNING: VBA project '%s_%u' cannot be dumped to file\n", vba_project->name[i], j);
+                            goto done;
                         }
 
-                        cli_dbgmsg("VBADir: VBA project '%s_%u' dumped to %s\n", vba_project->name[i], j, tempfile);
-                        free(tempfile);
+                        if (cli_writen(proj_contents_fd, data, data_len) != data_len) {
+                            cli_warnmsg("WARNING: VBA project '%s_%u' failed to write to file\n", vba_project->name[i], j);
+                            status = CL_EWRITE;
+                            goto done;
+                        }
+
+                        close(proj_contents_fd);
+                        proj_contents_fd = -1;
+
+                        cli_dbgmsg("cli_ole2_tempdir_scan_vba: VBA project '%s_%u' dumped to %s\n", vba_project->name[i], j, proj_contents_fname);
+
+                        free(proj_contents_fname);
+                        proj_contents_fname = NULL;
                     }
 
-                    if (vba_scandata(data, data_len, ctx) == CL_VIRUS) {
-                        if (SCAN_ALLMATCHES)
-                            viruses_found++;
-                        else {
-                            free(data);
-                            ret = CL_VIRUS;
-                            break;
-                        }
+                    status = vba_scandata(data, data_len, ctx);
+                    if (CL_SUCCESS != status) {
+                        goto done;
                     }
+
                     free(data);
+                    data = NULL;
                 }
             }
         }
@@ -1716,369 +1940,318 @@ static cl_error_t cli_vba_scandir(const char *dirname, cli_ctx *ctx, struct uniq
         cli_free_vba_project(vba_project);
         vba_project = NULL;
 
-        if (ret == CL_VIRUS && !SCAN_ALLMATCHES)
-            break;
-
         hashcnt--;
     }
 
-    if (ret == CL_CLEAN || (ret == CL_VIRUS && SCAN_ALLMATCHES)) {
-        if (CL_SUCCESS != (ret = uniq_get(U, "powerpoint document", 19, &hash, &hashcnt))) {
-            cli_dbgmsg("VBADir: uniq_get('powerpoint document') failed with ret code (%d)!\n", ret);
-            return ret;
-        }
-        while (hashcnt) {
-            snprintf(vbaname, 1024, "%s" PATHSEP "%s_%u", dirname, hash, hashcnt);
-            vbaname[sizeof(vbaname) - 1] = '\0';
-            fd                           = open(vbaname, O_RDONLY | O_BINARY);
-            if (fd == -1) {
-                hashcnt--;
-                continue;
-            }
-            if ((fullname = cli_ppt_vba_read(fd, ctx))) {
-                if (cli_magic_scan_dir(fullname, ctx) == CL_VIRUS) {
-                    ret = CL_VIRUS;
-                    viruses_found++;
-                }
-                if (!ctx->engine->keeptmp)
-                    cli_rmdirs(fullname);
-                free(fullname);
-            }
-            close(fd);
-            hashcnt--;
-        }
-    }
-
-    if (ret == CL_CLEAN || (ret == CL_VIRUS && SCAN_ALLMATCHES)) {
-        if (CL_SUCCESS != (ret = uniq_get(U, "worddocument", 12, &hash, &hashcnt))) {
-            cli_dbgmsg("VBADir: uniq_get('worddocument') failed with ret code (%d)!\n", ret);
-            return ret;
-        }
-        while (hashcnt) {
-            snprintf(vbaname, sizeof(vbaname), "%s" PATHSEP "%s_%u", dirname, hash, hashcnt);
-            vbaname[sizeof(vbaname) - 1] = '\0';
-            fd                           = open(vbaname, O_RDONLY | O_BINARY);
-            if (fd == -1) {
-                hashcnt--;
-                continue;
-            }
-
-            if (!(vba_project = (vba_project_t *)cli_wm_readdir(fd))) {
-                close(fd);
-                hashcnt--;
-                continue;
-            }
-
-            for (i = 0; i < vba_project->count; i++) {
-                cli_dbgmsg("VBADir: Decompress WM project macro:%d key:%d length:%d\n", i, vba_project->key[i], vba_project->length[i]);
-                data = (unsigned char *)cli_wm_decrypt_macro(fd, vba_project->offset[i], vba_project->length[i], vba_project->key[i]);
-                if (!data) {
-                    cli_dbgmsg("VBADir: WARNING: WM project '%s' macro %d decrypted to NULL\n", vba_project->name[i], i);
-                } else {
-                    cli_dbgmsg("Project content:\n%s", data);
-                    if (ctx->scanned)
-                        *ctx->scanned += vba_project->length[i] / CL_COUNT_PRECISION;
-                    if (vba_scandata(data, vba_project->length[i], ctx) == CL_VIRUS) {
-                        if (SCAN_ALLMATCHES)
-                            viruses_found++;
-                        else {
-                            free(data);
-                            ret = CL_VIRUS;
-                            break;
-                        }
-                    }
-                    free(data);
-                }
-            }
-
-            close(fd);
-            cli_free_vba_project(vba_project);
-            vba_project = NULL;
-
-            if (ret == CL_VIRUS) {
-                if (SCAN_ALLMATCHES)
-                    viruses_found++;
-                else
-                    break;
-            }
-            hashcnt--;
-        }
-    }
-
-    if (ret != CL_CLEAN && !(ret == CL_VIRUS && SCAN_ALLMATCHES))
-        return ret;
-
-#if HAVE_JSON
-    /* JSON Output Summary Information */
-    if (SCAN_COLLECT_METADATA && (ctx->wrkproperty != NULL)) {
-        if (CL_SUCCESS != (ret = uniq_get(U, "_5_summaryinformation", 21, &hash, &hashcnt))) {
-            cli_dbgmsg("VBADir: uniq_get('_5_summaryinformation') failed with ret code (%d)!\n", ret);
-            return ret;
-        }
-        while (hashcnt) {
-            snprintf(vbaname, sizeof(vbaname), "%s" PATHSEP "%s_%u", dirname, hash, hashcnt);
-            vbaname[sizeof(vbaname) - 1] = '\0';
-
-            fd = open(vbaname, O_RDONLY | O_BINARY);
-            if (fd >= 0) {
-                cli_dbgmsg("VBADir: detected a '_5_summaryinformation' stream\n");
-                /* JSONOLE2 - what to do if something breaks? */
-                cli_ole2_summary_json(ctx, fd, 0);
-                close(fd);
-            }
-            hashcnt--;
-        }
-
-        if (CL_SUCCESS != (ret = uniq_get(U, "_5_documentsummaryinformation", 29, &hash, &hashcnt))) {
-            cli_dbgmsg("VBADir: uniq_get('_5_documentsummaryinformation') failed with ret code (%d)!\n", ret);
-            return ret;
-        }
-        while (hashcnt) {
-            snprintf(vbaname, sizeof(vbaname), "%s" PATHSEP "%s_%u", dirname, hash, hashcnt);
-            vbaname[sizeof(vbaname) - 1] = '\0';
-
-            fd = open(vbaname, O_RDONLY | O_BINARY);
-            if (fd >= 0) {
-                cli_dbgmsg("VBADir: detected a '_5_documentsummaryinformation' stream\n");
-                /* JSONOLE2 - what to do if something breaks? */
-                cli_ole2_summary_json(ctx, fd, 1);
-                close(fd);
-            }
-            hashcnt--;
-        }
-    }
-#endif
-
-    /* Check directory for embedded OLE objects */
-    if (CL_SUCCESS != (ret = uniq_get(U, "_1_ole10native", 14, &hash, &hashcnt))) {
-        cli_dbgmsg("VBADir: uniq_get('_1_ole10native') failed with ret code (%d)!\n", ret);
-        return ret;
+    if (CL_SUCCESS != (status = uniq_get(U, "powerpoint document", 19, &hash, &hashcnt))) {
+        cli_dbgmsg("cli_ole2_tempdir_scan_vba: uniq_get('powerpoint document') failed with ret code (%d)!\n", status);
+        goto done;
     }
     while (hashcnt) {
-        snprintf(vbaname, sizeof(vbaname), "%s" PATHSEP "%s_%u", dirname, hash, hashcnt);
+        snprintf(vbaname, 1024, "%s" PATHSEP "%s_%u", dir, hash, hashcnt);
         vbaname[sizeof(vbaname) - 1] = '\0';
 
         fd = open(vbaname, O_RDONLY | O_BINARY);
-        if (fd >= 0) {
-            ret = cli_scan_ole10(fd, ctx);
-            close(fd);
-            if (ret != CL_CLEAN && !(ret == CL_VIRUS && SCAN_ALLMATCHES))
-                return ret;
+        if (fd == -1) {
+            hashcnt--;
+            continue;
         }
+
+        fullname = cli_ppt_vba_read(fd, ctx);
+        if (NULL != fullname) {
+            status = cli_magic_scan_dir(fullname, ctx, LAYER_ATTRIBUTES_NONE);
+            if (CL_SUCCESS != status) {
+                goto done;
+            }
+
+            if (!ctx->engine->keeptmp) {
+                cli_rmdirs(fullname);
+            }
+            free(fullname);
+            fullname = NULL;
+        }
+
+        close(fd);
+        fd = -1;
+
         hashcnt--;
     }
 
-    /* ACAB: since we now hash filenames and handle collisions we
-     * could avoid recursion by removing the block below and by
-     * flattening the paths in ole2_walk_property_tree (case 1) */
+    if (CL_SUCCESS != (status = uniq_get(U, "worddocument", 12, &hash, &hashcnt))) {
+        cli_dbgmsg("cli_ole2_tempdir_scan_vba: uniq_get('worddocument') failed with ret code (%d)!\n", status);
+        goto done;
+    }
+    while (hashcnt) {
+        snprintf(vbaname, sizeof(vbaname), "%s" PATHSEP "%s_%u", dir, hash, hashcnt);
+        vbaname[sizeof(vbaname) - 1] = '\0';
 
-    if ((dd = opendir(dirname)) != NULL) {
-        while ((dent = readdir(dd))) {
-            if (dent->d_ino) {
-                if (strcmp(dent->d_name, ".") && strcmp(dent->d_name, "..")) {
-                    /* build the full name */
-                    fullname = cli_malloc(strlen(dirname) + strlen(dent->d_name) + 2);
-                    if (!fullname) {
-                        cli_dbgmsg("cli_vba_scandir: Unable to allocate memory for fullname\n");
-                        ret = CL_EMEM;
-                        break;
-                    }
-                    sprintf(fullname, "%s" PATHSEP "%s", dirname, dent->d_name);
+        fd = open(vbaname, O_RDONLY | O_BINARY);
+        if (fd == -1) {
+            hashcnt--;
+            continue;
+        }
 
-                    /* stat the file */
-                    if (LSTAT(fullname, &statbuf) != -1) {
-                        if (S_ISDIR(statbuf.st_mode) && !S_ISLNK(statbuf.st_mode))
-                            if (cli_vba_scandir(fullname, ctx, U) == CL_VIRUS) {
-                                if (SCAN_ALLMATCHES)
-                                    viruses_found++;
-                                else {
-                                    ret = CL_VIRUS;
-                                    free(fullname);
-                                    break;
-                                }
-                            }
-                    }
-                    free(fullname);
+        if (!(vba_project = (vba_project_t *)cli_wm_readdir(fd))) {
+            close(fd);
+            fd = -1;
+            hashcnt--;
+            continue;
+        }
+
+        for (i = 0; i < vba_project->count; i++) {
+            cli_dbgmsg("cli_ole2_tempdir_scan_vba: Decompress WM project macro:%d key:%d length:%d\n", i, vba_project->key[i], vba_project->length[i]);
+
+            data = (unsigned char *)cli_wm_decrypt_macro(fd, vba_project->offset[i], vba_project->length[i], vba_project->key[i]);
+            if (!data) {
+                cli_dbgmsg("cli_ole2_tempdir_scan_vba: WARNING: WM project '%s' macro %d decrypted to NULL\n", vba_project->name[i], i);
+            } else {
+                cli_dbgmsg("cli_ole2_tempdir_scan_vba: Project content:\n%s", data);
+
+                if (ctx->scanned) {
+                    *ctx->scanned += vba_project->length[i] / CL_COUNT_PRECISION;
                 }
+
+                status = vba_scandata(data, vba_project->length[i], ctx);
+                if (CL_SUCCESS != status) {
+                    goto done;
+                }
+
+                free(data);
+                data = NULL;
             }
         }
-    } else {
-        cli_dbgmsg("VBADir: Can't open directory %s.\n", dirname);
-        return CL_EOPEN;
+
+        close(fd);
+        fd = -1;
+
+        cli_free_vba_project(vba_project);
+        vba_project = NULL;
+
+        hashcnt--;
     }
 
-    closedir(dd);
+done:
+
+    if (*has_macros) {
 #if HAVE_JSON
-    if (hasmacros && SCAN_COLLECT_METADATA && (ctx->wrkproperty != NULL)) {
-        cli_jsonbool(ctx->wrkproperty, "HasMacros", 1);
-        json_object *macro_languages = cli_jsonarray(ctx->wrkproperty, "MacroLanguages");
-        if (macro_languages) {
-            cli_jsonstr(macro_languages, NULL, "VBA");
-        } else {
-            cli_dbgmsg("[cli_scan_vbadir] Failed to add \"VBA\" entry to MacroLanguages JSON array\n");
+        if (SCAN_COLLECT_METADATA && (ctx->wrkproperty != NULL)) {
+            cli_jsonbool(ctx->wrkproperty, "HasMacros", 1);
+            json_object *macro_languages = cli_jsonarray(ctx->wrkproperty, "MacroLanguages");
+            if (macro_languages) {
+                cli_jsonstr(macro_languages, NULL, "VBA");
+            } else {
+                cli_dbgmsg("cli_ole2_tempdir_scan_vba: Failed to add \"VBA\" entry to MacroLanguages JSON array\n");
+            }
+        }
+#endif
+
+        if (SCAN_HEURISTIC_MACROS) {
+            ret = cli_append_potentially_unwanted(ctx, "Heuristics.OLE2.ContainsMacros.VBA");
+            if (ret == CL_VIRUS) {
+                status = ret;
+            }
         }
     }
-#endif
-    if (SCAN_HEURISTIC_MACROS && hasmacros) {
-        ret = cli_append_virus(ctx, "Heuristics.OLE2.ContainsMacros");
-        if (ret == CL_VIRUS)
-            viruses_found++;
+
+    if (proj_contents_fd >= 0) {
+        close(proj_contents_fd);
     }
-    if (SCAN_ALLMATCHES && viruses_found)
-        return CL_VIRUS;
-    return ret;
+    if (NULL != proj_contents_fname) {
+        free(proj_contents_fname);
+    }
+
+    if (NULL != data) {
+        free(data);
+    }
+
+    if (NULL != fullname) {
+        if (!ctx->engine->keeptmp) {
+            (void)cli_rmdirs(fullname);
+        }
+
+        free(fullname);
+    }
+
+    if (fd >= 0) {
+        close(fd);
+    }
+
+    return status;
 }
 
-static cl_error_t cli_xlm_scandir(const char *dirname, cli_ctx *ctx, struct uniq *U)
+static cl_error_t cli_ole2_tempdir_scan_for_xlm_and_images(const char *dir, cli_ctx *ctx, struct uniq *U)
 {
-    cl_error_t ret             = CL_CLEAN;
-    char *hash                 = NULL;
-    uint32_t hashcnt           = 0;
-    unsigned int viruses_found = 0;
-    char STR_WORKBOOK[]        = "workbook";
-    char STR_BOOK[]            = "book";
-
-    cli_dbgmsg("XLMDir: %s\n", dirname);
+    cl_error_t ret      = CL_CLEAN;
+    char *hash          = NULL;
+    uint32_t hashcnt    = 0;
+    char STR_WORKBOOK[] = "workbook";
+    char STR_BOOK[]     = "book";
 
     if (CL_SUCCESS != (ret = uniq_get(U, STR_WORKBOOK, sizeof(STR_WORKBOOK) - 1, &hash, &hashcnt))) {
         if (CL_SUCCESS != (ret = uniq_get(U, STR_BOOK, sizeof(STR_BOOK) - 1, &hash, &hashcnt))) {
-            cli_dbgmsg("XLMDir: uniq_get('%s') failed with ret code (%d)!\n", STR_BOOK, ret);
-            return ret;
+            cli_dbgmsg("cli_ole2_tempdir_scan_for_xlm_and_images: uniq_get('%s') failed with ret code (%d)!\n", STR_BOOK, ret);
+            goto done;
         }
     }
 
     for (; hashcnt > 0; hashcnt--) {
-        if ((ret = cli_xlm_extract_macros(dirname, ctx, U, hash, hashcnt)) != CL_SUCCESS) {
-            return ret;
+        if (CL_SUCCESS != (ret = cli_extract_xlm_macros_and_images(dir, ctx, hash, hashcnt))) {
+            switch (ret) {
+                case CL_VIRUS:
+                case CL_EMEM:
+                    goto done;
+                default:
+                    cli_dbgmsg("cli_ole2_tempdir_scan_for_xlm_and_images: An error occured when parsing XLM BIFF temp file, skipping to next file.\n");
+            }
         }
     }
 
-    if (SCAN_HEURISTIC_MACROS) {
-        ret = cli_append_virus(ctx, "Heuristics.OLE2.ContainsMacros");
-        if (ret == CL_VIRUS)
-            viruses_found++;
-    }
-    if (SCAN_ALLMATCHES && viruses_found)
-        return CL_VIRUS;
+done:
     return ret;
 }
 
 static cl_error_t cli_scanhtml(cli_ctx *ctx)
 {
-    char *tempname, fullname[1024];
-    cl_error_t ret = CL_CLEAN;
-    int fd;
-    fmap_t *map                = *ctx->fmap;
-    unsigned int viruses_found = 0;
-    uint64_t curr_len          = map->len;
+    cl_error_t status = CL_SUCCESS;
+    char *tempname    = NULL;
+    char fullname[1024];
+    int fd            = -1;
+    fmap_t *map       = ctx->fmap;
+    uint64_t curr_len = map->len;
 
     cli_dbgmsg("in cli_scanhtml()\n");
 
     /* CL_ENGINE_MAX_HTMLNORMALIZE */
     if (curr_len > ctx->engine->maxhtmlnormalize) {
         cli_dbgmsg("cli_scanhtml: exiting (file larger than MaxHTMLNormalize)\n");
-        return CL_CLEAN;
+        status = CL_SUCCESS;
+        goto done;
     }
 
-    if (!(tempname = cli_gentemp_with_prefix(ctx->sub_tmpdir, "html-tmp")))
-        return CL_EMEM;
+    if (NULL == (tempname = cli_gentemp_with_prefix(ctx->sub_tmpdir, "html-tmp"))) {
+        status = CL_EMEM;
+        goto done;
+    }
 
     if (mkdir(tempname, 0700)) {
         cli_errmsg("cli_scanhtml: Can't create temporary directory %s\n", tempname);
-        free(tempname);
-        return CL_ETMPDIR;
+        status = CL_ETMPDIR;
+        goto done;
     }
 
     cli_dbgmsg("cli_scanhtml: using tempdir %s\n", tempname);
 
-    html_normalise_map(map, tempname, NULL, ctx->dconf);
+    (void)html_normalise_map(ctx, map, tempname, NULL, ctx->dconf);
+
     snprintf(fullname, 1024, "%s" PATHSEP "nocomment.html", tempname);
     fd = open(fullname, O_RDONLY | O_BINARY);
     if (fd >= 0) {
-        if ((ret = cli_scan_desc(fd, ctx, CL_TYPE_HTML, 0, NULL, AC_SCAN_VIR, NULL, NULL)) == CL_VIRUS)
-            viruses_found++;
-        close(fd);
-    }
+        // nocomment.html file exists, so lets scan it.
 
-    if (ret == CL_CLEAN || (ret == CL_VIRUS && SCAN_ALLMATCHES)) {
-        /* CL_ENGINE_MAX_HTMLNOTAGS */
-        curr_len = map->len;
-        if (curr_len > ctx->engine->maxhtmlnotags) {
-            /* we're not interested in scanning large files in notags form */
-            /* TODO: don't even create notags if file is over limit */
-            cli_dbgmsg("cli_scanhtml: skipping notags (normalized size over MaxHTMLNoTags)\n");
-        } else {
-            snprintf(fullname, 1024, "%s" PATHSEP "notags.html", tempname);
-            fd = open(fullname, O_RDONLY | O_BINARY);
-            if (fd >= 0) {
-                if ((ret = cli_scan_desc(fd, ctx, CL_TYPE_HTML, 0, NULL, AC_SCAN_VIR, NULL, NULL)) == CL_VIRUS)
-                    viruses_found++;
-                close(fd);
-            }
+        status = cli_scan_desc(fd, ctx, CL_TYPE_HTML, false, NULL, AC_SCAN_VIR, NULL, NULL, LAYER_ATTRIBUTES_NORMALIZED);
+        if (CL_SUCCESS != status) {
+            goto done;
         }
+
+        close(fd);
+        fd = -1;
     }
 
-    if (ret == CL_CLEAN || (ret == CL_VIRUS && SCAN_ALLMATCHES)) {
-        snprintf(fullname, 1024, "%s" PATHSEP "javascript", tempname);
+    /* CL_ENGINE_MAX_HTMLNOTAGS */
+    curr_len = map->len;
+    if (curr_len > ctx->engine->maxhtmlnotags) {
+        /* we're not interested in scanning large files in notags form */
+        /* TODO: don't even create notags if file is over limit */
+        cli_dbgmsg("cli_scanhtml: skipping notags (normalized size over MaxHTMLNoTags)\n");
+    } else {
+        snprintf(fullname, 1024, "%s" PATHSEP "notags.html", tempname);
+
         fd = open(fullname, O_RDONLY | O_BINARY);
         if (fd >= 0) {
-            if ((ret = cli_scan_desc(fd, ctx, CL_TYPE_HTML, 0, NULL, AC_SCAN_VIR, NULL, NULL)) == CL_VIRUS)
-                viruses_found++;
-            if (ret == CL_CLEAN || (ret == CL_VIRUS && SCAN_ALLMATCHES)) {
-                if ((ret = cli_scan_desc(fd, ctx, CL_TYPE_TEXT_ASCII, 0, NULL, AC_SCAN_VIR, NULL, NULL)) == CL_VIRUS)
-                    viruses_found++;
+            // notags.html file exists, so lets scan it.
+
+            status = cli_scan_desc(fd, ctx, CL_TYPE_HTML, false, NULL, AC_SCAN_VIR, NULL, NULL, LAYER_ATTRIBUTES_NORMALIZED);
+            if (CL_SUCCESS != status) {
+                goto done;
             }
+
             close(fd);
+            fd = -1;
         }
     }
 
-    if (ret == CL_CLEAN || (ret == CL_VIRUS && SCAN_ALLMATCHES)) {
-        snprintf(fullname, 1024, "%s" PATHSEP "rfc2397", tempname);
-        ret = cli_magic_scan_dir(fullname, ctx);
-        if (CL_EOPEN == ret) {
-            /* If the directory doesn't exist, that's fine */
-            ret = CL_CLEAN;
+    snprintf(fullname, 1024, "%s" PATHSEP "javascript", tempname);
+    fd = open(fullname, O_RDONLY | O_BINARY);
+    if (fd >= 0) {
+        // javascript file exists, so lets scan it (twice, as different types).
+
+        status = cli_scan_desc(fd, ctx, CL_TYPE_HTML, false, NULL, AC_SCAN_VIR, NULL, NULL, LAYER_ATTRIBUTES_NORMALIZED);
+        if (CL_SUCCESS != status) {
+            goto done;
         }
+
+        status = cli_scan_desc(fd, ctx, CL_TYPE_TEXT_ASCII, false, NULL, AC_SCAN_VIR, NULL, NULL, LAYER_ATTRIBUTES_NORMALIZED);
+        if (CL_SUCCESS != status) {
+            goto done;
+        }
+
+        close(fd);
+        fd = -1;
     }
 
-    if (!ctx->engine->keeptmp)
-        cli_rmdirs(tempname);
+    snprintf(fullname, 1024, "%s" PATHSEP "rfc2397", tempname);
 
-    free(tempname);
-    if (SCAN_ALLMATCHES && viruses_found)
-        return CL_VIRUS;
-    return ret;
+    status = cli_magic_scan_dir(fullname, ctx, LAYER_ATTRIBUTES_NORMALIZED);
+    if (CL_EOPEN == status) {
+        /* If the directory doesn't exist, that's fine */
+        status = CL_SUCCESS;
+    } else {
+        goto done;
+    }
+
+done:
+    if (fd >= 0) {
+        close(fd);
+    }
+    if (NULL != tempname) {
+        if (!ctx->engine->keeptmp) {
+            cli_rmdirs(tempname);
+        }
+        free(tempname);
+    }
+
+    return status;
 }
 
 static cl_error_t cli_scanscript(cli_ctx *ctx)
 {
+    cl_error_t ret = CL_SUCCESS;
     const unsigned char *buff;
     unsigned char *normalized = NULL;
     struct text_norm_state state;
     char *tmpname = NULL;
     int ofd       = -1;
-    cl_error_t ret;
-    struct cli_matcher *troot;
+    struct cli_matcher *target_ac_root;
     uint32_t maxpatlen, offset = 0;
-    struct cli_matcher *groot;
+    struct cli_matcher *generic_ac_root;
     struct cli_ac_data gmdata, tmdata;
     int gmdata_initialized = 0;
     int tmdata_initialized = 0;
     struct cli_ac_data *mdata[2];
+    cl_fmap_t *new_map = NULL;
     fmap_t *map;
-    size_t at                  = 0;
-    unsigned int viruses_found = 0;
+    size_t at = 0;
     uint64_t curr_len;
     struct cli_target_info info;
 
     if (!ctx || !ctx->engine->root)
         return CL_ENULLARG;
 
-    map       = *ctx->fmap;
-    curr_len  = map->len;
-    groot     = ctx->engine->root[0];
-    troot     = ctx->engine->root[7];
-    maxpatlen = troot ? troot->maxpatlen : 0;
+    map             = ctx->fmap;
+    curr_len        = map->len;
+    generic_ac_root = ctx->engine->root[0];
+    target_ac_root  = ctx->engine->root[7];
+    maxpatlen       = target_ac_root ? target_ac_root->maxpatlen : 0;
 
     // Initialize info so it's safe to pass to destroy later
     cli_targetinfo_init(&info);
@@ -2099,12 +2272,12 @@ static cl_error_t cli_scanscript(cli_ctx *ctx)
     }
     text_normalize_init(&state, normalized, SCANBUFF + maxpatlen);
 
-    if ((ret = cli_ac_initdata(&tmdata, troot ? troot->ac_partsigs : 0, troot ? troot->ac_lsigs : 0, troot ? troot->ac_reloff_num : 0, CLI_DEFAULT_AC_TRACKLEN))) {
+    if ((ret = cli_ac_initdata(&tmdata, target_ac_root ? target_ac_root->ac_partsigs : 0, target_ac_root ? target_ac_root->ac_lsigs : 0, target_ac_root ? target_ac_root->ac_reloff_num : 0, CLI_DEFAULT_AC_TRACKLEN))) {
         goto done;
     }
     tmdata_initialized = 1;
 
-    if ((ret = cli_ac_initdata(&gmdata, groot->ac_partsigs, groot->ac_lsigs, groot->ac_reloff_num, CLI_DEFAULT_AC_TRACKLEN))) {
+    if ((ret = cli_ac_initdata(&gmdata, generic_ac_root->ac_partsigs, generic_ac_root->ac_lsigs, generic_ac_root->ac_reloff_num, CLI_DEFAULT_AC_TRACKLEN))) {
         goto done;
     }
     gmdata_initialized = 1;
@@ -2112,7 +2285,7 @@ static cl_error_t cli_scanscript(cli_ctx *ctx)
     /* dump to disk only if explicitly asked to
      * or if necessary to check relative offsets,
      * otherwise we can process just in-memory */
-    if (ctx->engine->keeptmp || (troot && (troot->ac_reloff_num > 0 || troot->linked_bcs))) {
+    if (ctx->engine->keeptmp || (target_ac_root && (target_ac_root->ac_reloff_num > 0 || target_ac_root->linked_bcs))) {
         if ((ret = cli_gentempfd(ctx->sub_tmpdir, &tmpname, &ofd))) {
             cli_dbgmsg("cli_scanscript: Can't generate temporary file/descriptor\n");
             goto done;
@@ -2124,8 +2297,8 @@ static cl_error_t cli_scanscript(cli_ctx *ctx)
     mdata[0] = &tmdata;
     mdata[1] = &gmdata;
 
-    /* If there's a relative offset in troot or triggered bytecodes, normalize to file.*/
-    if (troot && (troot->ac_reloff_num > 0 || troot->linked_bcs)) {
+    /* If there's a relative offset in target_ac_root or triggered bytecodes, normalize to file.*/
+    if (target_ac_root && (target_ac_root->ac_reloff_num > 0 || target_ac_root->linked_bcs)) {
         size_t map_off = 0;
         while (map_off < map->len) {
             size_t written;
@@ -2142,26 +2315,35 @@ static cl_error_t cli_scanscript(cli_ctx *ctx)
         }
 
         /* Temporarily store the normalized file map in the context. */
-        *ctx->fmap = fmap(ofd, 0, 0, NULL);
-        if (!(*ctx->fmap)) {
+        new_map = fmap(ofd, 0, 0, NULL);
+        if (new_map == NULL) {
             cli_dbgmsg("cli_scanscript: could not map file %s\n", tmpname);
-        } else {
-
-            /* scan map */
-            ret = cli_scan_fmap(ctx, CL_TYPE_TEXT_ASCII, 0, NULL, AC_SCAN_VIR, NULL, NULL);
-            if (ret == CL_VIRUS) {
-                viruses_found++;
-            }
-            funmap(*ctx->fmap);
+            goto done;
         }
-        *ctx->fmap = map;
+
+        /* Perform cli_scan_fmap with child fmap */
+        ret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_TEXT_ASCII, true, LAYER_ATTRIBUTES_NORMALIZED);
+        if (CL_SUCCESS != ret) {
+            cli_dbgmsg("Failed to scan fmap.\n");
+            goto done;
+        }
+
+        /* scan map */
+        ret = cli_scan_fmap(ctx, CL_TYPE_TEXT_ASCII, false, NULL, AC_SCAN_VIR, NULL, NULL);
+
+        (void)cli_recursion_stack_pop(ctx); /* Restore the parent fmap */
+
+        if (CL_SUCCESS != ret) {
+            goto done;
+        }
+
     } else {
         /* Since the above is moderately costly all in all,
          * do the old stuff if there's no relative offsets. */
 
-        if (troot) {
-            cli_targetinfo(&info, 7, map);
-            ret = cli_ac_caloff(troot, &tmdata, &info);
+        if (target_ac_root) {
+            cli_targetinfo(&info, 7, ctx);
+            ret = cli_ac_caloff(target_ac_root, &tmdata, &info);
             if (ret)
                 goto done;
         }
@@ -2179,17 +2361,15 @@ static cl_error_t cli_scanscript(cli_ctx *ctx)
                     /* we can continue to scan in memory */
                 }
                 /* when we flush the buffer also scan */
-                if (cli_scan_buff(state.out, state.out_pos, offset, ctx, CL_TYPE_TEXT_ASCII, mdata) == CL_VIRUS) {
-                    if (SCAN_ALLMATCHES)
-                        viruses_found++;
-                    else {
-                        ret = CL_VIRUS;
-                        break;
-                    }
+                ret = cli_scan_buff(state.out, state.out_pos, offset, ctx, CL_TYPE_TEXT_ASCII, mdata);
+                if (CL_SUCCESS != ret) {
+                    goto done;
                 }
+
                 if (ctx->scanned)
                     *ctx->scanned += state.out_pos / CL_COUNT_PRECISION;
                 offset += state.out_pos;
+
                 /* carry over maxpatlen from previous buffer */
                 if (state.out_pos > maxpatlen)
                     memmove(state.out, state.out + state.out_pos - maxpatlen, maxpatlen);
@@ -2204,15 +2384,21 @@ static cl_error_t cli_scanscript(cli_ctx *ctx)
         }
     }
 
-    if (ret != CL_VIRUS || SCAN_ALLMATCHES) {
-        if ((ret = cli_exp_eval(ctx, troot, &tmdata, NULL, NULL)) == CL_VIRUS)
-            viruses_found++;
-        if (ret != CL_VIRUS || SCAN_ALLMATCHES)
-            if ((ret = cli_exp_eval(ctx, groot, &gmdata, NULL, NULL)) == CL_VIRUS)
-                viruses_found++;
+    ret = cli_exp_eval(ctx, target_ac_root, &tmdata, NULL, NULL);
+    if (CL_SUCCESS != ret) {
+        goto done;
+    }
+
+    ret = cli_exp_eval(ctx, generic_ac_root, &gmdata, NULL, NULL);
+    if (CL_SUCCESS != ret) {
+        goto done;
     }
 
 done:
+    if (NULL != new_map) {
+        funmap(new_map);
+    }
+
     cli_targetinfo_destroy(&info);
 
     if (NULL != normalized) {
@@ -2227,148 +2413,296 @@ done:
         cli_ac_freedata(&gmdata);
     }
 
-    if (ofd != -1)
+    if (ofd != -1) {
         close(ofd);
-    if (tmpname != NULL) {
-        if (!ctx->engine->keeptmp)
-            cli_unlink(tmpname);
-        free(tmpname);
     }
 
-    if (viruses_found)
-        return CL_VIRUS;
+    if (tmpname != NULL) {
+        if (!ctx->engine->keeptmp) {
+            (void)cli_unlink(tmpname);
+        }
+        free(tmpname);
+    }
 
     return ret;
 }
 
 static cl_error_t cli_scanhtml_utf16(cli_ctx *ctx)
 {
-    char *tempname, *decoded;
+    cl_error_t status = CL_ERROR;
+    char *tempname    = NULL;
+    char *decoded     = NULL;
     const char *buff;
-    cl_error_t ret = CL_CLEAN;
-    int fd, bytes;
-    size_t at   = 0;
-    fmap_t *map = *ctx->fmap;
+    int fd = -1;
+    int bytes;
+    size_t at       = 0;
+    fmap_t *new_map = NULL;
 
     cli_dbgmsg("in cli_scanhtml_utf16()\n");
 
-    if (!(tempname = cli_gentemp_with_prefix(ctx->sub_tmpdir, "html-utf16-tmp")))
-        return CL_EMEM;
+    if (!(tempname = cli_gentemp_with_prefix(ctx->sub_tmpdir, "html-utf16-tmp"))) {
+        status = CL_EMEM;
+        goto done;
+    }
 
     if ((fd = open(tempname, O_RDWR | O_CREAT | O_TRUNC | O_BINARY, S_IRUSR | S_IWUSR)) < 0) {
         cli_errmsg("cli_scanhtml_utf16: Can't create file %s\n", tempname);
-        free(tempname);
-        return CL_EOPEN;
+        status = CL_EOPEN;
+        goto done;
     }
 
     cli_dbgmsg("cli_scanhtml_utf16: using tempfile %s\n", tempname);
 
-    while (at < map->len) {
-        bytes = MIN(map->len - at, map->pgsz * 16);
-        if (!(buff = fmap_need_off_once(map, at, bytes))) {
-            close(fd);
-            cli_unlink(tempname);
-            free(tempname);
-            return CL_EREAD;
+    while (at < ctx->fmap->len) {
+        bytes = MIN(ctx->fmap->len - at, ctx->fmap->pgsz * 16);
+        if (!(buff = fmap_need_off_once(ctx->fmap, at, bytes))) {
+            status = CL_EREAD;
+            goto done;
         }
         at += bytes;
         decoded = cli_utf16toascii(buff, bytes);
         if (decoded) {
             if (write(fd, decoded, bytes / 2) == -1) {
                 cli_errmsg("cli_scanhtml_utf16: Can't write to file %s\n", tempname);
-                free(decoded);
-                close(fd);
-                cli_unlink(tempname);
-                free(tempname);
-                return CL_EWRITE;
+                status = CL_EWRITE;
+                goto done;
             }
             free(decoded);
+            decoded = NULL;
         }
     }
 
-    *ctx->fmap = fmap(fd, 0, 0, NULL);
-    if (*ctx->fmap) {
-        ret = cli_scanhtml(ctx);
-        funmap(*ctx->fmap);
-    } else
-        cli_errmsg("cli_scanhtml_utf16: fmap of %s failed\n", tempname);
+    new_map = fmap(fd, 0, 0, NULL);
+    if (NULL == new_map) {
+        cli_errmsg("cli_scanhtml_utf16: failed to create fmap for ascii HTML file decoded from utf16: %s\n.", tempname);
+        status = CL_EMEM;
+        goto done;
+    }
 
-    *ctx->fmap = map;
-    close(fd);
+    /* Perform exp_eval with child fmap */
+    status = cli_recursion_stack_push(ctx, new_map, CL_TYPE_HTML, true, LAYER_ATTRIBUTES_NORMALIZED);
+    if (CL_SUCCESS != status) {
+        cli_dbgmsg("Failed to scan fmap.\n");
+        goto done;
+    }
 
-    if (!ctx->engine->keeptmp) {
-        if (cli_unlink(tempname))
-            ret = CL_EUNLINK;
-    } else
-        cli_dbgmsg("cli_scanhtml_utf16: Decoded HTML data saved in %s\n", tempname);
-    free(tempname);
+    status = cli_scanhtml(ctx);
 
-    return ret;
+    (void)cli_recursion_stack_pop(ctx); /* Restore the parent fmap */
+
+    if (CL_SUCCESS != status) {
+        goto done;
+    }
+
+done:
+    if (NULL != new_map) {
+        funmap(new_map);
+    }
+    if (-1 != fd) {
+        close(fd);
+    }
+
+    if (NULL != decoded) {
+        free(decoded);
+    }
+
+    if (NULL != tempname) {
+        if (!ctx->engine->keeptmp) {
+            (void)cli_unlink(tempname);
+        } else {
+            cli_dbgmsg("cli_scanhtml_utf16: Decoded HTML data saved in %s\n", tempname);
+        }
+
+        free(tempname);
+    }
+
+    return status;
+}
+
+static cl_error_t cli_ole2_scan_tempdir(
+    cli_ctx *ctx,
+    const char *dir,
+    struct uniq *files,
+    int has_vba,
+    int has_xlm,
+    int has_image)
+{
+    cl_error_t status = CL_CLEAN;
+    DIR *dd           = NULL;
+    int has_macros    = 0;
+
+    struct dirent *dent;
+    STATBUF statbuf;
+    char *subdirectory = NULL;
+
+    cli_dbgmsg("cli_ole2_scan_tempdir: %s\n", dir);
+
+    /* Output JSON Summary Information */
+    if (SCAN_COLLECT_METADATA && (ctx->wrkproperty != NULL)) {
+        (void)cli_ole2_tempdir_scan_summary(dir, ctx, files);
+    }
+
+    status = cli_ole2_tempdir_scan_embedded_ole10(dir, ctx, files);
+    if (CL_SUCCESS != status) {
+        goto done;
+    }
+
+    if (has_vba) {
+        status = cli_ole2_tempdir_scan_vba(dir, ctx, files, &has_macros);
+        if (CL_SUCCESS != status) {
+            goto done;
+        }
+
+        status = cli_ole2_tempdir_scan_vba_new(dir, ctx, files, &has_macros);
+        if (CL_SUCCESS != status) {
+            goto done;
+        }
+    }
+
+    if (has_xlm) {
+        if (SCAN_HEURISTIC_MACROS) {
+            status = cli_append_potentially_unwanted(ctx, "Heuristics.OLE2.ContainsMacros.XLM");
+            if (CL_SUCCESS != status) {
+                goto done;
+            }
+        }
+    }
+
+    if (has_xlm || has_image) {
+        /* TODO: Consider moving image extraction to handler_enum and
+         * removing the has_image and found_image stuff. */
+        status = cli_ole2_tempdir_scan_for_xlm_and_images(dir, ctx, files);
+        if (CL_SUCCESS != status) {
+            goto done;
+        }
+    }
+
+    if (has_xlm || has_vba) {
+        status = cli_magic_scan_dir(dir, ctx, LAYER_ATTRIBUTES_NONE);
+        if (CL_SUCCESS != status) {
+            goto done;
+        }
+    }
+
+    /* ACAB: since we now hash filenames and handle collisions we
+     * could avoid recursion by removing the block below and by
+     * flattening the paths in ole2_walk_property_tree (case 1) */
+
+    if ((dd = opendir(dir)) != NULL) {
+        while ((dent = readdir(dd))) {
+            if (dent->d_ino) {
+                if (strcmp(dent->d_name, ".") && strcmp(dent->d_name, "..")) {
+                    /* build the full name */
+                    subdirectory = cli_malloc(strlen(dir) + strlen(dent->d_name) + 2);
+                    if (!subdirectory) {
+                        cli_dbgmsg("cli_ole2_tempdir_scan_vba: Unable to allocate memory for subdirectory path\n");
+                        status = CL_EMEM;
+                        break;
+                    }
+                    sprintf(subdirectory, "%s" PATHSEP "%s", dir, dent->d_name);
+
+                    /* stat the file */
+                    if (LSTAT(subdirectory, &statbuf) != -1) {
+                        if (S_ISDIR(statbuf.st_mode) && !S_ISLNK(statbuf.st_mode)) {
+                            /*
+                             * Process subdirectory
+                             */
+                            status = cli_ole2_scan_tempdir(
+                                ctx,
+                                subdirectory,
+                                files,
+                                has_vba,
+                                has_xlm,
+                                has_image);
+                            if (CL_SUCCESS != status) {
+                                goto done;
+                            }
+                        }
+                    }
+                    free(subdirectory);
+                    subdirectory = NULL;
+                }
+            }
+        }
+    } else {
+        cli_dbgmsg("VBADir: Can't open directory %s.\n", dir);
+        status = CL_EOPEN;
+        goto done;
+    }
+
+done:
+    if (NULL != dd) {
+        closedir(dd);
+    }
+    if (NULL != subdirectory) {
+        free(subdirectory);
+    }
+
+    return status;
 }
 
 static cl_error_t cli_scanole2(cli_ctx *ctx)
 {
-    char *dir;
+    char *dir          = NULL;
     cl_error_t ret     = CL_CLEAN;
     struct uniq *files = NULL;
-    int has_vba = 0, has_xlm = 0;
+    int has_vba        = 0;
+    int has_xlm        = 0;
+    int has_image      = 0;
 
     cli_dbgmsg("in cli_scanole2()\n");
 
-    if (ctx->engine->maxreclevel && ctx->recursion >= ctx->engine->maxreclevel)
-        return CL_EMAXREC;
-
     /* generate the temporary directory */
-    if (!(dir = cli_gentemp_with_prefix(ctx->sub_tmpdir, "ole2-tmp")))
-        return CL_EMEM;
+    if (NULL == (dir = cli_gentemp_with_prefix(ctx->sub_tmpdir, "ole2-tmp"))) {
+        ret = CL_EMEM;
+        goto done;
+    }
 
     if (mkdir(dir, 0700)) {
         cli_dbgmsg("OLE2: Can't create temporary directory %s\n", dir);
         free(dir);
-        return CL_ETMPDIR;
+        dir = NULL;
+        ret = CL_ETMPDIR;
+        goto done;
     }
 
-    ret = cli_ole2_extract(dir, ctx, &files, &has_vba, &has_xlm);
-    if (ret != CL_CLEAN && ret != CL_VIRUS) {
-        cli_dbgmsg("OLE2: %s\n", cl_strerror(ret));
-        if (!ctx->engine->keeptmp)
-            cli_rmdirs(dir);
-        free(dir);
-        return ret;
-    }
-
-    if (has_vba && files) {
-        ctx->recursion++;
-
-        ret = cli_vba_scandir(dir, ctx, files);
-        if (ret != CL_VIRUS) {
-            ret = cli_vba_scandir_new(dir, ctx, files);
-        }
-
-        if (ret != CL_VIRUS)
-            if (cli_magic_scan_dir(dir, ctx) == CL_VIRUS)
-                ret = CL_VIRUS;
-        ctx->recursion--;
-    }
-
-    if (has_xlm && files) {
-        ctx->recursion++;
-
-        ret = cli_xlm_scandir(dir, ctx, files);
-        if (ret != CL_VIRUS)
-            if (cli_magic_scan_dir(dir, ctx) == CL_VIRUS)
-                ret = CL_VIRUS;
-        ctx->recursion--;
+    ret = cli_ole2_extract(dir, ctx, &files, &has_vba, &has_xlm, &has_image);
+    if (CL_SUCCESS != ret) {
+        goto done;
     }
 
     if (files) {
-        uniq_free(files);
-        files = NULL;
+        /*
+         * Files containing the document summary, any VBA or XLM macros, or
+         * images were previously extracted from an ole2 file.
+         * This happens if cli_ole2_extract() executes the handler_writer()
+         * because XLM, VBA, or images were found.
+         * So now we need to process them.
+         *
+         * TODO: consider maybe processes all that stuff in memory instead of
+         * writing everything to temp files?
+         */
+        ret = cli_ole2_scan_tempdir(
+            ctx,
+            dir,
+            files,
+            has_vba,
+            has_xlm,
+            has_image);
     }
 
-    if (!ctx->engine->keeptmp)
-        cli_rmdirs(dir);
-    free(dir);
+done:
+    if (files) {
+        uniq_free(files);
+    }
+
+    if (NULL != dir) {
+        if (!ctx->engine->keeptmp) {
+            cli_rmdirs(dir);
+        }
+        free(dir);
+    }
+
     return ret;
 }
 
@@ -2414,8 +2748,8 @@ static cl_error_t cli_scanscrenc(cli_ctx *ctx)
         return CL_ETMPDIR;
     }
 
-    if (html_screnc_decode(*ctx->fmap, tempname))
-        ret = cli_magic_scan_dir(tempname, ctx);
+    if (html_screnc_decode(ctx->fmap, tempname))
+        ret = cli_magic_scan_dir(tempname, ctx, LAYER_ATTRIBUTES_NONE);
 
     if (!ctx->engine->keeptmp)
         cli_rmdirs(tempname);
@@ -2429,17 +2763,7 @@ static cl_error_t cli_scanriff(cli_ctx *ctx)
     cl_error_t ret = CL_CLEAN;
 
     if (cli_check_riff_exploit(ctx) == 2)
-        ret = cli_append_virus(ctx, "Heuristics.Exploit.W32.MS05-002");
-
-    return ret;
-}
-
-static cl_error_t cli_scanjpeg(cli_ctx *ctx)
-{
-    cl_error_t ret = CL_CLEAN;
-
-    if (cli_check_jpeg_exploit(ctx, 0) == 1)
-        ret = cli_append_virus(ctx, "Heuristics.Exploit.W32.MS04-028");
+        ret = cli_append_potentially_unwanted(ctx, "Heuristics.Exploit.W32.MS05-002");
 
     return ret;
 }
@@ -2474,7 +2798,7 @@ static cl_error_t cli_scancryptff(cli_ctx *ctx)
         return CL_ECREAT;
     }
 
-    for (; (src = fmap_need_off_once_len(*ctx->fmap, pos, FILEBUFF, &bread)) && bread; pos += bread) {
+    for (; (src = fmap_need_off_once_len(ctx->fmap, pos, FILEBUFF, &bread)) && bread; pos += bread) {
         for (i = 0; i < bread; i++)
             dest[i] = src[i] ^ (unsigned char)0xff;
         if (cli_writen(ndesc, dest, bread) == (size_t)-1) {
@@ -2490,15 +2814,17 @@ static cl_error_t cli_scancryptff(cli_ctx *ctx)
 
     cli_dbgmsg("CryptFF: Scanning decrypted data\n");
 
-    if ((ret = cli_magic_scan_desc(ndesc, tempfile, ctx, NULL)) == CL_VIRUS)
-        cli_dbgmsg("CryptFF: Infected with %s\n", cli_get_last_virus(ctx));
+    ret = cli_magic_scan_desc(ndesc, tempfile, ctx, NULL, LAYER_ATTRIBUTES_NONE);
 
     close(ndesc);
 
-    if (ctx->engine->keeptmp)
+    if (ctx->engine->keeptmp) {
         cli_dbgmsg("CryptFF: Decompressed data saved in %s\n", tempfile);
-    else if (cli_unlink(tempfile))
-        ret = CL_EUNLINK;
+    } else {
+        if (CL_SUCCESS != cli_unlink(tempfile)) {
+            ret = CL_EUNLINK;
+        }
+    }
 
     free(tempfile);
     return ret;
@@ -2544,7 +2870,7 @@ static cl_error_t cli_scantnef(cli_ctx *ctx)
     ret = cli_tnef(dir, ctx);
 
     if (ret == CL_CLEAN)
-        ret = cli_magic_scan_dir(dir, ctx);
+        ret = cli_magic_scan_dir(dir, ctx, LAYER_ATTRIBUTES_NONE);
 
     if (!ctx->engine->keeptmp)
         cli_rmdirs(dir);
@@ -2567,10 +2893,10 @@ static cl_error_t cli_scanuuencoded(cli_ctx *ctx)
         return CL_ETMPDIR;
     }
 
-    ret = cli_uuencode(dir, *ctx->fmap);
+    ret = cli_uuencode(dir, ctx->fmap);
 
     if (ret == CL_CLEAN)
-        ret = cli_magic_scan_dir(dir, ctx);
+        ret = cli_magic_scan_dir(dir, ctx, LAYER_ATTRIBUTES_NONE);
 
     if (!ctx->engine->keeptmp)
         cli_rmdirs(dir);
@@ -2581,44 +2907,45 @@ static cl_error_t cli_scanuuencoded(cli_ctx *ctx)
 
 static cl_error_t cli_scanmail(cli_ctx *ctx)
 {
-    char *dir;
+    char *dir = NULL;
     cl_error_t ret;
-    unsigned int viruses_found = 0;
 
-    cli_dbgmsg("Starting cli_scanmail(), recursion = %u\n", ctx->recursion);
+    cli_dbgmsg("Starting cli_scanmail()\n");
 
     /* generate the temporary directory */
-    if (!(dir = cli_gentemp_with_prefix(ctx->sub_tmpdir, "mail-tmp")))
-        return CL_EMEM;
+    if (NULL == (dir = cli_gentemp_with_prefix(ctx->sub_tmpdir, "mail-tmp"))) {
+        ret = CL_EMEM;
+        goto done;
+    }
 
     if (mkdir(dir, 0700)) {
         cli_dbgmsg("Mail: Can't create temporary directory %s\n", dir);
-        free(dir);
-        return CL_ETMPDIR;
+        ret = CL_ETMPDIR;
+        goto done;
     }
 
     /*
      * Extract the attachments into the temporary directory
      */
-    if ((ret = cli_mbox(dir, ctx))) {
-        if (ret == CL_VIRUS && SCAN_ALLMATCHES)
-            viruses_found++;
-        else {
-            if (!ctx->engine->keeptmp)
-                cli_rmdirs(dir);
-            free(dir);
-            return ret;
-        }
+    ret = cli_mbox(dir, ctx);
+    if (CL_SUCCESS != ret) {
+        goto done;
     }
 
-    ret = cli_magic_scan_dir(dir, ctx);
+    ret = cli_magic_scan_dir(dir, ctx, LAYER_ATTRIBUTES_NONE);
+    if (CL_SUCCESS != ret) {
+        goto done;
+    }
 
-    if (!ctx->engine->keeptmp)
-        cli_rmdirs(dir);
+done:
+    if (NULL != dir) {
+        if (!ctx->engine->keeptmp) {
+            cli_rmdirs(dir);
+        }
 
-    free(dir);
-    if (viruses_found)
-        return CL_VIRUS;
+        free(dir);
+    }
+
     return ret;
 }
 
@@ -2628,17 +2955,16 @@ static cl_error_t cli_scan_structured(cli_ctx *ctx)
     size_t result          = 0;
     unsigned int cc_count  = 0;
     unsigned int ssn_count = 0;
-    int done               = 0;
+    bool done              = false;
     fmap_t *map;
     size_t pos = 0;
     int (*ccfunc)(const unsigned char *buffer, size_t length, int cc_only);
     int (*ssnfunc)(const unsigned char *buffer, size_t length);
-    unsigned int viruses_found = 0;
 
     if (ctx == NULL)
         return CL_ENULLARG;
 
-    map = *ctx->fmap;
+    map = ctx->fmap;
 
     if (ctx->engine->min_cc_count == 1)
         ccfunc = dlp_has_cc;
@@ -2675,38 +3001,28 @@ static cl_error_t cli_scan_structured(cli_ctx *ctx)
         pos += result;
         if ((cc_count += ccfunc((const unsigned char *)buf, result,
                                 (ctx->options->heuristic & CL_SCAN_HEURISTIC_STRUCTURED_CC) ? 1 : 0)) >= ctx->engine->min_cc_count) {
-            done = 1;
+            done = true;
         }
 
         if (ssnfunc && ((ssn_count += ssnfunc((const unsigned char *)buf, result)) >= ctx->engine->min_ssn_count)) {
-            done = 1;
+            done = true;
         }
     }
 
     if (cc_count != 0 && cc_count >= ctx->engine->min_cc_count) {
         cli_dbgmsg("cli_scan_structured: %u credit card numbers detected\n", cc_count);
-        if (CL_VIRUS == cli_append_virus(ctx, "Heuristics.Structured.CreditCardNumber")) {
-            if (SCAN_ALLMATCHES) {
-                viruses_found++;
-            } else {
-                return CL_VIRUS;
-            }
+        if (CL_VIRUS == cli_append_potentially_unwanted(ctx, "Heuristics.Structured.CreditCardNumber")) {
+            return CL_VIRUS;
         }
     }
 
     if (ssn_count != 0 && ssn_count >= ctx->engine->min_ssn_count) {
         cli_dbgmsg("cli_scan_structured: %u social security numbers detected\n", ssn_count);
-        if (CL_VIRUS == cli_append_virus(ctx, "Heuristics.Structured.SSN")) {
-            if (SCAN_ALLMATCHES) {
-                viruses_found++;
-            } else {
-                return CL_VIRUS;
-            }
+        if (CL_VIRUS == cli_append_potentially_unwanted(ctx, "Heuristics.Structured.SSN")) {
+            return CL_VIRUS;
         }
     }
 
-    if (viruses_found)
-        return CL_VIRUS;
     return CL_CLEAN;
 }
 
@@ -2719,7 +3035,7 @@ static cl_error_t cli_scanembpe(cli_ctx *ctx, off_t offset)
     size_t todo;
     const char *buff;
     char *tmpname;
-    fmap_t *map = *ctx->fmap;
+    fmap_t *map = ctx->fmap;
     unsigned int corrupted_input;
 
     tmpname = cli_gentemp_with_prefix(ctx->sub_tmpdir, "embedded-pe");
@@ -2769,26 +3085,22 @@ static cl_error_t cli_scanembpe(cli_ctx *ctx, off_t offset)
         }
     }
 
-    ctx->recursion++;
+    // Setting ctx->corrupted_input will prevent the PE parser from reporting "broken executable" for unpacked/reconstructed files that may not be 100% to spec.
     corrupted_input      = ctx->corrupted_input;
     ctx->corrupted_input = 1;
-    ret                  = cli_magic_scan_desc(fd, tmpname, ctx, NULL);
+    ret                  = cli_magic_scan_desc(fd, tmpname, ctx, NULL, LAYER_ATTRIBUTES_NONE);
     ctx->corrupted_input = corrupted_input;
-    if (ret == CL_VIRUS) {
-        cli_dbgmsg("cli_scanembpe: Infected with %s\n", cli_get_last_virus(ctx));
+    if (ret != CL_SUCCESS) {
         close(fd);
         if (!ctx->engine->keeptmp) {
             if (cli_unlink(tmpname)) {
                 free(tmpname);
-                ctx->recursion--;
                 return CL_EUNLINK;
             }
         }
         free(tmpname);
-        ctx->recursion--;
-        return CL_VIRUS;
+        return ret;
     }
-    ctx->recursion--;
 
     close(fd);
     if (!ctx->engine->keeptmp) {
@@ -2799,7 +3111,6 @@ static cl_error_t cli_scanembpe(cli_ctx *ctx, off_t offset)
     }
     free(tmpname);
 
-    /* intentionally ignore possible errors from cli_magic_scan_desc */
     return CL_CLEAN;
 }
 
@@ -2971,13 +3282,13 @@ static inline void perf_done(cli_ctx *ctx)
 /**
  * @brief Perform raw scan of current fmap.
  *
- * @param ctx       Current scan context.
- * @param type      File type
- * @param typercg   Enable type recognition (file typing scan results).
- *                  If 0, will be a regular ac-mode scan.
- * @param dettype   [out] If typercg enabled and scan detects HTML or MAIL types,
- *                  will output HTML or MAIL types after performing HTML/MAIL scans
- * @param refhash   Hash of current fmap
+ * @param ctx           Current scan context.
+ * @param type          File type
+ * @param typercg       Enable type recognition (file typing scan results).
+ *                      If 0, will be a regular ac-mode scan.
+ * @param[out] dettype  If typercg enabled and scan detects HTML or MAIL types,
+ *                      will output HTML or MAIL types after performing HTML/MAIL scans
+ * @param refhash       Hash of current fmap
  * @return cl_error_t
  */
 static cl_error_t scanraw(cli_ctx *ctx, cli_file_t type, uint8_t typercg, cli_file_t *dettype, unsigned char *refhash)
@@ -2986,41 +3297,56 @@ static cl_error_t scanraw(cli_ctx *ctx, cli_file_t type, uint8_t typercg, cli_fi
     struct cli_matched_type *ftoffset = NULL, *fpt;
     struct cli_exe_info peinfo;
     unsigned int acmode = AC_SCAN_VIR, break_loop = 0;
-    fmap_t *map = *ctx->fmap;
+
+    cli_file_t found_type;
+
 #if HAVE_JSON
     struct json_object *parent_property = NULL;
 #else
     void *parent_property = NULL;
 #endif
 
-    if (ctx->engine->maxreclevel && ctx->recursion >= ctx->engine->maxreclevel) {
-        cli_check_blockmax(ctx, CL_EMAXREC);
-        return CL_EMAXREC;
+    if ((typercg) &&
+        // We should also omit bzips, but DMG's may be detected in bzips. (type != CL_TYPE_BZ) &&        /* Omit BZ files because they can contain portions of original files like zip file entries that cause invalid extractions and lots of warnings. Decompress first, then scan! */
+        (type != CL_TYPE_GZ) &&        /* Omit GZ files because they can contain portions of original files like zip file entries that cause invalid extractions and lots of warnings. Decompress first, then scan! */
+        (type != CL_TYPE_CPIO_OLD) &&  /* Omit CPIO_OLD files because it's an image format that we can extract and scan manually. */
+        (type != CL_TYPE_ZIP) &&       /* Omit ZIP files because it'll detect each zip file entry as SFXZIP, which is a waste. We'll extract it and then scan. */
+        (type != CL_TYPE_ZIPSFX) &&    /* Omit SFX archive types from being checked for embedded content. They should only be parsed for contained files. Those contained files could be EXE's with more SFX, but that's the nature of containers. */
+        (type != CL_TYPE_ARJSFX) &&    /* " */
+        (type != CL_TYPE_RARSFX) &&    /* " */
+        (type != CL_TYPE_EGGSFX) &&    /* " */
+        (type != CL_TYPE_CABSFX) &&    /* " */
+        (type != CL_TYPE_7ZSFX) &&     /* " */
+        (type != CL_TYPE_OLD_TAR) &&   /* Omit OLD TAR files because it's a raw archive format that we can extract and scan manually. */
+        (type != CL_TYPE_POSIX_TAR)) { /* Omit POSIX TAR files because it's a raw archive format that we can extract and scan manually. */
+        /*
+         * Enable file type recognition scan mode if requested, except for some some problematic types (above).
+         */
+        acmode |= AC_SCAN_FT;
     }
 
     perf_start(ctx, PERFT_RAW);
-    if (typercg && type != CL_TYPE_GPT)
-        acmode |= AC_SCAN_FT;
-
-    ret = cli_scan_fmap(ctx, type == CL_TYPE_TEXT_ASCII ? CL_TYPE_ANY : type, 0, &ftoffset, acmode, NULL, refhash);
+    ret = cli_scan_fmap(ctx, type == CL_TYPE_TEXT_ASCII ? CL_TYPE_ANY : type, false, &ftoffset, acmode, NULL, refhash);
     perf_stop(ctx, PERFT_RAW);
 
-    // TODO I think this causes embedded file extraction to stop when a
-    // signature has matched in cli_scan_fmap, which wouldn't be what
-    // we want if allmatch is specified.
+    // In allmatch-mode, ret will never be CL_VIRUS, so ret may be used exlusively for file type detection and for terminal errors.
+    // When not in allmatch-mode, it's more important to return right away if ret is CL_VIRUS, so we don't care if file type matches were found.
     if (ret >= CL_TYPENO) {
+        // Matched 1+ file type signatures. Handle them.
+        found_type = (cli_file_t)ret;
+
         perf_nested_start(ctx, PERFT_RAWTYPENO, PERFT_SCAN);
-        ctx->recursion++;
+
         fpt = ftoffset;
 
         while (fpt) {
-            /* set current level as container AFTER recursing */
-            cli_set_container(ctx, fpt->type, map->len);
             if (fpt->offset > 0) {
-                /*
-                 * Scan embedded file types.
-                 */
+                bool type_has_been_handled = true;
+
 #if HAVE_JSON
+                /*
+                 * Add embedded file to metadata JSON.
+                 */
                 if (SCAN_COLLECT_METADATA && ctx->wrkproperty) {
                     json_object *arrobj;
 
@@ -3057,287 +3383,517 @@ static cl_error_t scanraw(cli_ctx *ctx, cli_file_t type, uint8_t typercg, cli_fi
                     }
                 }
 #endif
+                /*
+                 * First, use "embedded type recognition" to identify a file's actual type.
+                 * (a.k.a. not embedded files, but file type detection corrections)
+                 *
+                 * Do this at all fmap layers. Though we should only reassign the types
+                 * if the current type makes sense for the reassignment.
+                 */
                 switch (fpt->type) {
                     case CL_TYPE_MHTML:
                         if (SCAN_PARSE_MAIL && (DCONF_MAIL & MAIL_CONF_MBOX)) {
-                            cli_dbgmsg("MHTML signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = ret = cli_scanmail(ctx);
+                            if ((ctx->recursion_stack[ctx->recursion_level].type >= CL_TYPE_TEXT_ASCII) &&
+                                (ctx->recursion_stack[ctx->recursion_level].type <= CL_TYPE_BINARY_DATA)) {
+                                // HTML files may contain special characters and could be
+                                // misidentified as BINARY_DATA by cli_compare_ftm_file()
+
+                                // Reassign type of current layer based on what we discovered
+                                cli_recursion_stack_change_type(ctx, fpt->type);
+
+                                cli_dbgmsg("MHTML signature found at %u\n", (unsigned int)fpt->offset);
+                                nret = ret = cli_scanmail(ctx);
+                            }
                         }
                         break;
 
                     case CL_TYPE_XDP:
                         if (SCAN_PARSE_PDF && (DCONF_DOC & DOC_CONF_PDF)) {
-                            cli_dbgmsg("XDP signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = ret = cli_scanxdp(ctx);
+                            if ((ctx->recursion_stack[ctx->recursion_level].type >= CL_TYPE_TEXT_ASCII) &&
+                                (ctx->recursion_stack[ctx->recursion_level].type <= CL_TYPE_BINARY_DATA)) {
+                                // XML files may contain special characters and could be
+                                // misidentified as BINARY_DATA by cli_compare_ftm_file()
+
+                                // Reassign type of current layer based on what we discovered
+                                cli_recursion_stack_change_type(ctx, fpt->type);
+
+                                cli_dbgmsg("XDP signature found at %u\n", (unsigned int)fpt->offset);
+                                nret = ret = cli_scanxdp(ctx);
+                            }
                         }
                         break;
+
                     case CL_TYPE_XML_WORD:
                         if (SCAN_PARSE_XMLDOCS && (DCONF_DOC & DOC_CONF_MSXML)) {
-                            cli_dbgmsg("XML-WORD signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = ret = cli_scanmsxml(ctx);
+                            if ((ctx->recursion_stack[ctx->recursion_level].type >= CL_TYPE_TEXT_ASCII) &&
+                                (ctx->recursion_stack[ctx->recursion_level].type <= CL_TYPE_BINARY_DATA)) {
+                                // XML files may contain special characters and could be
+                                // misidentified as BINARY_DATA by cli_compare_ftm_file()
+
+                                // Reassign type of current layer based on what we discovered
+                                cli_recursion_stack_change_type(ctx, fpt->type);
+
+                                cli_dbgmsg("XML-WORD signature found at %u\n", (unsigned int)fpt->offset);
+                                nret = ret = cli_scanmsxml(ctx);
+                            }
                         }
                         break;
                     case CL_TYPE_XML_XL:
                         if (SCAN_PARSE_XMLDOCS && (DCONF_DOC & DOC_CONF_MSXML)) {
-                            cli_dbgmsg("XML-XL signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = ret = cli_scanmsxml(ctx);
+                            if ((ctx->recursion_stack[ctx->recursion_level].type >= CL_TYPE_TEXT_ASCII) &&
+                                (ctx->recursion_stack[ctx->recursion_level].type <= CL_TYPE_BINARY_DATA)) {
+                                // XML files may contain special characters and could be
+                                // misidentified as BINARY_DATA by cli_compare_ftm_file()
+
+                                // Reassign type of current layer based on what we discovered
+                                cli_recursion_stack_change_type(ctx, fpt->type);
+
+                                cli_dbgmsg("XML-XL signature found at %u\n", (unsigned int)fpt->offset);
+                                nret = ret = cli_scanmsxml(ctx);
+                            }
                         }
                         break;
                     case CL_TYPE_XML_HWP:
                         if (SCAN_PARSE_XMLDOCS && (DCONF_DOC & DOC_CONF_HWP)) {
-                            cli_dbgmsg("XML-HWP signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = ret = cli_scanhwpml(ctx);
-                        }
-                        break;
-                    case CL_TYPE_RARSFX:
-                        if (type != CL_TYPE_RAR && have_rar && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_RAR)) {
-                            const char *filepath = NULL;
-                            int fd               = -1;
+                            if ((ctx->recursion_stack[ctx->recursion_level].type >= CL_TYPE_TEXT_ASCII) &&
+                                (ctx->recursion_stack[ctx->recursion_level].type <= CL_TYPE_BINARY_DATA)) {
+                                // XML files may contain special characters and could be
+                                // misidentified as BINARY_DATA by cli_compare_ftm_file()
 
-                            char *tmpname = NULL;
-                            int tmpfd     = -1;
-                            size_t csize  = map->len - fpt->offset; /* not precise */
+                                // Reassign type of current layer based on what we discovered
+                                cli_recursion_stack_change_type(ctx, fpt->type);
 
-                            cli_set_container(ctx, CL_TYPE_RAR, csize);
-                            cli_dbgmsg("RAR/RAR-SFX signature found at %u\n", (unsigned int)fpt->offset);
-
-#ifdef _WIN32
-                            if ((fpt->offset != 0) || (SCAN_UNPRIVILEGED) || (NULL == ctx->sub_filepath) || (0 != _access_s(ctx->sub_filepath, R_OK))) {
-#else
-                            if ((fpt->offset != 0) || (SCAN_UNPRIVILEGED) || (NULL == ctx->sub_filepath) || (0 != access(ctx->sub_filepath, R_OK))) {
-#endif
-                                /*
-                                 * If map is not file-backed, or offset is not at the start of the file...
-                                 * ...have to dump to file for scanrar.
-                                 */
-                                nret = fmap_dump_to_file(map, ctx->sub_filepath, ctx->sub_tmpdir, &tmpname, &tmpfd, fpt->offset, fpt->offset + csize);
-                                if (nret != CL_SUCCESS) {
-                                    cli_dbgmsg("scanraw: failed to generate temporary file.\n");
-                                    ret        = nret;
-                                    break_loop = 1;
-                                    break;
-                                }
-                                filepath = tmpname;
-                                fd       = tmpfd;
-                            } else {
-                                /* Use the original file and file descriptor. */
-                                filepath = ctx->sub_filepath;
-                                fd       = fmap_fd(map);
+                                cli_dbgmsg("XML-HWP signature found at %u\n", (unsigned int)fpt->offset);
+                                nret = ret = cli_scanhwpml(ctx);
                             }
-
-                            /* scan file */
-                            nret = cli_scanrar(filepath, fd, ctx);
-
-                            if ((NULL == tmpname) && (CL_EOPEN == nret)) {
-                                /*
-                                 * Failed to open the file using the original filename.
-                                 * Try writing the file descriptor to a temp file and try again.
-                                 */
-                                nret = fmap_dump_to_file(map, ctx->sub_filepath, ctx->sub_tmpdir, &tmpname, &tmpfd, fpt->offset, fpt->offset + csize);
-                                if (nret != CL_SUCCESS) {
-                                    cli_dbgmsg("scanraw: failed to generate temporary file.\n");
-                                    ret        = nret;
-                                    break_loop = 1;
-                                    break;
-                                }
-                                filepath = tmpname;
-                                fd       = tmpfd;
-
-                                /* try to scan again */
-                                nret = cli_scanrar(filepath, fd, ctx);
-                            }
-
-                            if (tmpfd != -1) {
-                                /* If dumped tempfile, need to cleanup */
-                                close(tmpfd);
-                                if (!ctx->engine->keeptmp) {
-                                    if (cli_unlink(tmpname)) {
-                                        ret = nret = CL_EUNLINK;
-                                        break_loop = 1;
-                                    }
-                                }
-                            }
-
-                            if (tmpname != NULL) {
-                                free(tmpname);
-                            }
-                        }
-                        break;
-
-                    case CL_TYPE_EGGSFX:
-                        if (type != CL_TYPE_EGG && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_EGG)) {
-                            size_t csize = map->len - fpt->offset; /* not precise */
-                            cli_set_container(ctx, CL_TYPE_EGG, csize);
-                            cli_dbgmsg("EGG/EGG-SFX signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = cli_scanegg(ctx, fpt->offset);
-                        }
-                        break;
-
-                    case CL_TYPE_ZIPSFX:
-                        if (type != CL_TYPE_ZIP && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_ZIP)) {
-                            size_t csize = map->len - fpt->offset; /* not precise */
-                            cli_set_container(ctx, CL_TYPE_ZIP, csize);
-                            cli_dbgmsg("ZIP/ZIP-SFX signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = cli_unzip_single(ctx, fpt->offset);
-                        }
-                        break;
-
-                    case CL_TYPE_CABSFX:
-                        if (type != CL_TYPE_MSCAB && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_CAB)) {
-                            size_t csize = map->len - fpt->offset; /* not precise */
-                            cli_set_container(ctx, CL_TYPE_MSCAB, csize);
-                            cli_dbgmsg("CAB/CAB-SFX signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = cli_scanmscab(ctx, fpt->offset);
-                        }
-                        break;
-
-                    case CL_TYPE_ARJSFX:
-                        if (type != CL_TYPE_ARJ && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_ARJ)) {
-                            size_t csize = map->len - fpt->offset; /* not precise */
-                            cli_set_container(ctx, CL_TYPE_ARJ, csize);
-                            cli_dbgmsg("ARJ-SFX signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = cli_scanarj(ctx, fpt->offset);
-                        }
-                        break;
-
-                    case CL_TYPE_7ZSFX:
-                        if (type != CL_TYPE_7Z && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_7Z)) {
-                            size_t csize = map->len - fpt->offset; /* not precise */
-                            cli_set_container(ctx, CL_TYPE_7Z, csize);
-                            cli_dbgmsg("7Zip-SFX signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = cli_7unz(ctx, fpt->offset);
-                        }
-                        break;
-
-                    case CL_TYPE_ISO9660:
-                        if (SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_ISO9660)) {
-                            size_t csize = map->len - fpt->offset; /* not precise */
-                            cli_set_container(ctx, CL_TYPE_ISO9660, csize);
-                            cli_dbgmsg("ISO9660 signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = cli_scaniso(ctx, fpt->offset);
-                        }
-                        break;
-
-                    case CL_TYPE_NULSFT:
-                        if (SCAN_PARSE_ARCHIVE && type == CL_TYPE_MSEXE && (DCONF_ARCH & ARCH_CONF_NSIS) &&
-                            fpt->offset > 4) {
-                            size_t csize = map->len - fpt->offset; /* not precise */
-                            cli_set_container(ctx, CL_TYPE_NULSFT, csize);
-                            cli_dbgmsg("NSIS signature found at %u\n", (unsigned int)fpt->offset - 4);
-                            nret = cli_scannulsft(ctx, fpt->offset - 4);
-                        }
-                        break;
-
-                    case CL_TYPE_AUTOIT:
-                        if (SCAN_PARSE_ARCHIVE && type == CL_TYPE_MSEXE && (DCONF_ARCH & ARCH_CONF_AUTOIT)) {
-                            size_t csize = map->len - fpt->offset; /* not precise */
-                            cli_set_container(ctx, CL_TYPE_AUTOIT, csize);
-                            cli_dbgmsg("AUTOIT signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = cli_scanautoit(ctx, fpt->offset + 23);
-                        }
-                        break;
-
-                    case CL_TYPE_ISHIELD_MSI:
-                        if (SCAN_PARSE_ARCHIVE && type == CL_TYPE_MSEXE && (DCONF_ARCH & ARCH_CONF_ISHIELD)) {
-                            size_t csize = map->len - fpt->offset; /* not precise */
-                            cli_set_container(ctx, CL_TYPE_AUTOIT, csize);
-                            cli_dbgmsg("ISHIELD-MSI signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = cli_scanishield_msi(ctx, fpt->offset + 14);
                         }
                         break;
 
                     case CL_TYPE_DMG:
                         if (SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_DMG)) {
-                            cli_dbgmsg("DMG signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = cli_scandmg(ctx);
+                            // TODO: determine all types that DMG may start with
+                            // if ((ctx->recursion_stack[ctx->recursion_level].type == CL_TYPE_BZIP2) || ...))
+                            {
+                                // Reassign type of current layer based on what we discovered
+                                cli_recursion_stack_change_type(ctx, fpt->type);
+
+                                cli_dbgmsg("DMG signature found at %u\n", (unsigned int)fpt->offset);
+                                nret = cli_scandmg(ctx);
+                            }
+                        }
+                        break;
+
+                    case CL_TYPE_ISO9660:
+                        if (SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_ISO9660)) {
+                            // TODO: determine all types that ISO9660 may start with
+                            // if ((ctx->recursion_stack[ctx->recursion_level].type == CL_TYPE_ANY) || ...))
+                            {
+                                // Reassign type of current layer based on what we discovered
+                                cli_recursion_stack_change_type(ctx, fpt->type);
+
+                                cli_dbgmsg("ISO signature found at %u\n", (unsigned int)fpt->offset);
+                                nret = cli_scaniso(ctx, fpt->offset);
+                            }
+                        }
+                        break;
+
+                    case CL_TYPE_UDF:
+                        if (SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_UDF)) {
+                            {
+                                // Reassign type of current layer based on what we discovered
+                                cli_recursion_stack_change_type(ctx, fpt->type);
+
+                                cli_dbgmsg("UDF signature found at %u\n", (unsigned int)fpt->offset);
+                                nret = cli_scanudf(ctx, fpt->offset);
+                            }
                         }
                         break;
 
                     case CL_TYPE_MBR:
                         if (SCAN_PARSE_ARCHIVE) {
-                            int iret = cli_mbr_check2(ctx, 0);
-                            if ((iret == CL_TYPE_GPT) && (DCONF_ARCH & ARCH_CONF_GPT)) {
-                                cli_dbgmsg("Recognized GUID Partition Table file\n");
-                                cli_set_container(ctx, CL_TYPE_GPT, map->len);
-                                cli_dbgmsg("GPT signature found at %u\n", (unsigned int)fpt->offset);
-                                nret = cli_scangpt(ctx, 0);
-                            } else if ((iret == CL_CLEAN) && (DCONF_ARCH & ARCH_CONF_MBR)) {
-                                cli_dbgmsg("MBR signature found at %u\n", (unsigned int)fpt->offset);
-                                nret = cli_scanmbr(ctx, 0);
-                            }
-                        }
-                        break;
+                            // TODO: determine all types that GPT or MBR may start with
+                            // if ((ctx->recursion_stack[ctx->recursion_level].type == CL_TYPE_???) ||  ...))
+                            {
+                                // First check if actually a GPT, not MBR.
+                                int iret = cli_mbr_check2(ctx, 0);
 
-                    case CL_TYPE_PDF:
-                        if (type != CL_TYPE_PDF && SCAN_PARSE_PDF && (DCONF_DOC & DOC_CONF_PDF)) {
-                            size_t csize = map->len - fpt->offset; /* not precise */
-                            cli_set_container(ctx, CL_TYPE_PDF, csize);
-                            cli_dbgmsg("PDF signature found at %u\n", (unsigned int)fpt->offset);
-                            nret = cli_scanpdf(ctx, fpt->offset);
-                        }
-                        break;
+                                if ((iret == CL_TYPE_GPT) && (DCONF_ARCH & ARCH_CONF_GPT)) {
+                                    // Reassign type of current layer based on what we discovered
+                                    cli_recursion_stack_change_type(ctx, CL_TYPE_GPT);
 
-                    case CL_TYPE_MSEXE:
-                        if (SCAN_PARSE_PE && (type == CL_TYPE_MSEXE || type == CL_TYPE_ZIP || type == CL_TYPE_MSOLE2) && ctx->dconf->pe) {
-                            uint64_t curr_len = map->len;
-                            size_t csize      = map->len - fpt->offset; /* not precise */
-                            /* CL_ENGINE_MAX_EMBEDDED_PE */
-                            if (curr_len > ctx->engine->maxembeddedpe) {
-                                cli_dbgmsg("scanraw: MaxEmbeddedPE exceeded\n");
-                                break;
-                            }
-                            cli_set_container(ctx, CL_TYPE_MSEXE, csize);
+                                    cli_dbgmsg("Recognized GUID Partition Table file\n");
+                                    cli_dbgmsg("GPT signature found at %u\n", (unsigned int)fpt->offset);
+                                    nret = cli_scangpt(ctx, 0);
+                                } else if ((iret == CL_CLEAN) && (DCONF_ARCH & ARCH_CONF_MBR)) {
+                                    // Reassign type of current layer based on what we discovered
+                                    cli_recursion_stack_change_type(ctx, CL_TYPE_MBR);
 
-                            cli_exe_info_init(&peinfo, fpt->offset);
-                            // TODO We could probably substitute in a quicker
-                            // method of determining whether a PE file exists
-                            // at this offset.
-                            if (cli_peheader(map, &peinfo, CLI_PEHEADER_OPT_NONE, NULL) != 0) {
-                                /* Despite failing, peinfo memory may have been allocated and must be freed. */
-                                cli_exe_info_destroy(&peinfo);
-                            } else {
-                                cli_dbgmsg("*** Detected embedded PE file at %u ***\n",
-                                           (unsigned int)fpt->offset);
-
-                                /* Immediately free up peinfo allocated memory, prior to any recursion */
-                                cli_exe_info_destroy(&peinfo);
-
-                                nret       = cli_scanembpe(ctx, fpt->offset);
-                                break_loop = 1; /* we can stop here and other
-                                                 * embedded executables will
-                                                 * be found recursively
-                                                 * through the above call
-                                                 */
-                                // TODO This method of embedded PE extraction
-                                // is kinda gross in that:
-                                //   - if you have an executable that contains
-                                //     20 other exes, the bytes associated with
-                                //     the last exe will have been included in
-                                //     hash computations and things 20 times
-                                //     (as overlay data to the previously
-                                //     extracted exes).
-                                //   - if you have a signed embedded exe, it
-                                //     will fail to validate after extraction
-                                //     bc it has overlay data, which is a
-                                //     violation of the Authenticode spec.
-                                //   - this method of extraction is subject to
-                                //     the recursion limit, which is fairly
-                                //     low by default (I think 16)
-                                //
-                                // It'd be awesome if we could compute the PE
-                                // size from the PE header and just extract
-                                // that.
+                                    cli_dbgmsg("MBR signature found at %u\n", (unsigned int)fpt->offset);
+                                    nret = cli_scanmbr(ctx, 0);
+                                }
                             }
                         }
                         break;
 
                     default:
-                        cli_warnmsg("scanraw: Type %u not handled in fpt loop\n", fpt->type);
+                        type_has_been_handled = false;
                 }
-            }
 
-            if (nret == CL_VIRUS || nret == CL_EMEM || break_loop)
+                if ((CL_EMEM == nret) || ctx->abort_scan) {
+                    break;
+                }
+
+                /*
+                 * Next, check for actual embedded files.
+                 */
+                if ((ctx->recursion_stack[ctx->recursion_level].recursion_level_buffer_fmap == 0) &&
+                    (false == type_has_been_handled)) {
+
+                    fmap_t *new_map = NULL;
+
+                    /*
+                     * Only do this though if we're at the top fmap layer of a buffer.
+                     *
+                     * This restriction will prevent detecting the same embedded content
+                     * more than once when recursing with embedded file type recognition
+                     * deeper within the same buffer.
+                     */
+                    cli_dbgmsg("%s signature found at %u\n", cli_ftname(fpt->type), (unsigned int)fpt->offset);
+
+                    type_has_been_handled = true;
+
+                    switch (fpt->type) {
+                        case CL_TYPE_RARSFX:
+                            if (type != CL_TYPE_RAR && have_rar && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_RAR)) {
+
+                                /// TODO: This is extremely expensive because it has to hash the fpt->offset -> len!
+                                /// We need to find a way to not hash every time!!!!
+                                new_map = fmap_duplicate(ctx->fmap, fpt->offset, ctx->fmap->len - fpt->offset, NULL);
+                                if (NULL == new_map) {
+                                    ret = nret = CL_EMEM;
+                                    cli_dbgmsg("scanraw: Failed to duplicate fmap to scan embedded file.\n");
+                                    break;
+                                }
+
+                                /* Perform scan with child fmap */
+                                nret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_RAR, false, LAYER_ATTRIBUTES_NONE);
+                                if (CL_SUCCESS != nret) {
+                                    ret = nret;
+                                    cli_dbgmsg("scanraw: Failed to add map to recursion stack to scan embedded file.\n");
+                                    break;
+                                }
+
+                                nret = cli_scanrar(ctx);
+
+                                (void)cli_recursion_stack_pop(ctx);
+                            }
+                            break;
+
+                        case CL_TYPE_EGGSFX:
+                            if (type != CL_TYPE_EGG && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_EGG)) {
+
+                                new_map = fmap_duplicate(ctx->fmap, fpt->offset, ctx->fmap->len - fpt->offset, NULL);
+                                if (NULL == new_map) {
+                                    ret = nret = CL_EMEM;
+                                    cli_dbgmsg("scanraw: Failed to duplicate fmap to scan embedded file.\n");
+                                    break;
+                                }
+
+                                /* Perform scan with child fmap */
+                                nret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_EGG, false, LAYER_ATTRIBUTES_NONE);
+                                if (CL_SUCCESS != nret) {
+                                    ret = nret;
+                                    cli_dbgmsg("scanraw: Failed to add map to recursion stack to scan embedded file.\n");
+                                    break;
+                                }
+
+                                nret = cli_scanegg(ctx);
+
+                                (void)cli_recursion_stack_pop(ctx);
+                            }
+                            break;
+
+                        case CL_TYPE_ZIPSFX:
+                            if (type != CL_TYPE_ZIP && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_ZIP)) {
+
+                                new_map = fmap_duplicate(ctx->fmap, fpt->offset, ctx->fmap->len - fpt->offset, NULL);
+                                if (NULL == new_map) {
+                                    ret = nret = CL_EMEM;
+                                    cli_dbgmsg("scanraw: Failed to duplicate fmap to scan embedded file.\n");
+                                    break;
+                                }
+
+                                /* Perform scan with child fmap */
+                                nret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_ZIP, false, LAYER_ATTRIBUTES_NONE);
+                                if (CL_SUCCESS != nret) {
+                                    ret = nret;
+                                    cli_dbgmsg("scanraw: Failed to add map to recursion stack to scan embedded file.\n");
+                                    break;
+                                }
+
+                                nret = cli_unzip_single(ctx, 0);
+
+                                (void)cli_recursion_stack_pop(ctx);
+                            }
+                            break;
+
+                        case CL_TYPE_CABSFX:
+                            if (type != CL_TYPE_MSCAB && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_CAB)) {
+
+                                new_map = fmap_duplicate(ctx->fmap, fpt->offset, ctx->fmap->len - fpt->offset, NULL);
+                                if (NULL == new_map) {
+                                    ret = nret = CL_EMEM;
+                                    cli_dbgmsg("scanraw: Failed to duplicate fmap to scan embedded file.\n");
+                                    break;
+                                }
+
+                                /* Perform scan with child fmap */
+                                nret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_MSCAB, false, LAYER_ATTRIBUTES_NONE);
+                                if (CL_SUCCESS != nret) {
+                                    ret = nret;
+                                    cli_dbgmsg("scanraw: Failed to add map to recursion stack to scan embedded file.\n");
+                                    break;
+                                }
+
+                                nret = cli_scanmscab(ctx, 0);
+
+                                (void)cli_recursion_stack_pop(ctx);
+                            }
+                            break;
+
+                        case CL_TYPE_ARJSFX:
+                            if (type != CL_TYPE_ARJ && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_ARJ)) {
+
+                                new_map = fmap_duplicate(ctx->fmap, fpt->offset, ctx->fmap->len - fpt->offset, NULL);
+                                if (NULL == new_map) {
+                                    ret = nret = CL_EMEM;
+                                    cli_dbgmsg("scanraw: Failed to duplicate fmap to scan embedded file.\n");
+                                    break;
+                                }
+
+                                /* Perform scan with child fmap */
+                                nret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_ARJ, false, LAYER_ATTRIBUTES_NONE);
+                                if (CL_SUCCESS != nret) {
+                                    ret = nret;
+                                    cli_dbgmsg("scanraw: Failed to add map to recursion stack to scan embedded file.\n");
+                                    break;
+                                }
+
+                                nret = cli_scanarj(ctx);
+
+                                (void)cli_recursion_stack_pop(ctx);
+                            }
+                            break;
+
+                        case CL_TYPE_7ZSFX:
+                            if (type != CL_TYPE_7Z && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_7Z)) {
+
+                                new_map = fmap_duplicate(ctx->fmap, fpt->offset, ctx->fmap->len - fpt->offset, NULL);
+                                if (NULL == new_map) {
+                                    ret = nret = CL_EMEM;
+                                    cli_dbgmsg("scanraw: Failed to duplicate fmap to scan embedded file.\n");
+                                    break;
+                                }
+
+                                /* Perform scan with child fmap */
+                                nret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_7Z, false, LAYER_ATTRIBUTES_NONE);
+                                if (CL_SUCCESS != nret) {
+                                    ret = nret;
+                                    cli_dbgmsg("scanraw: Failed to add map to recursion stack to scan embedded file.\n");
+                                    break;
+                                }
+
+                                nret = cli_7unz(ctx, 0);
+
+                                (void)cli_recursion_stack_pop(ctx);
+                            }
+                            break;
+
+                        case CL_TYPE_NULSFT:
+                            if (SCAN_PARSE_ARCHIVE && type == CL_TYPE_MSEXE && (DCONF_ARCH & ARCH_CONF_NSIS) && fpt->offset > 4) {
+                                // Note: CL_TYPE_NULSFT is special, because the file actually starts 4 bytes before the start of the signature match
+                                new_map = fmap_duplicate(ctx->fmap, fpt->offset - 4, ctx->fmap->len - (fpt->offset - 4), NULL);
+                                if (NULL == new_map) {
+                                    ret = nret = CL_EMEM;
+                                    cli_dbgmsg("scanraw: Failed to duplicate fmap to scan embedded file.\n");
+                                    break;
+                                }
+
+                                /* Perform scan with child fmap */
+                                nret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_NULSFT, false, LAYER_ATTRIBUTES_NONE);
+                                if (CL_SUCCESS != nret) {
+                                    ret = nret;
+                                    cli_dbgmsg("scanraw: Failed to add map to recursion stack to scan embedded file.\n");
+                                    break;
+                                }
+
+                                nret = cli_scannulsft(ctx, 0);
+
+                                (void)cli_recursion_stack_pop(ctx);
+                            }
+                            break;
+
+                        case CL_TYPE_AUTOIT:
+                            if (SCAN_PARSE_ARCHIVE && type == CL_TYPE_MSEXE && (DCONF_ARCH & ARCH_CONF_AUTOIT)) {
+
+                                new_map = fmap_duplicate(ctx->fmap, fpt->offset, ctx->fmap->len - fpt->offset, NULL);
+                                if (NULL == new_map) {
+                                    ret = nret = CL_EMEM;
+                                    cli_dbgmsg("scanraw: Failed to duplicate fmap to scan embedded file.\n");
+                                    break;
+                                }
+
+                                /* Perform scan with child fmap */
+                                nret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_AUTOIT, false, LAYER_ATTRIBUTES_NONE);
+                                if (CL_SUCCESS != nret) {
+                                    ret = nret;
+                                    cli_dbgmsg("scanraw: Failed to add map to recursion stack to scan embedded file.\n");
+                                    break;
+                                }
+
+                                nret = cli_scanautoit(ctx, 23);
+
+                                (void)cli_recursion_stack_pop(ctx);
+                            }
+                            break;
+
+                        case CL_TYPE_ISHIELD_MSI:
+                            if (SCAN_PARSE_ARCHIVE && type == CL_TYPE_MSEXE && (DCONF_ARCH & ARCH_CONF_ISHIELD)) {
+
+                                new_map = fmap_duplicate(ctx->fmap, fpt->offset, ctx->fmap->len - fpt->offset, NULL);
+                                if (NULL == new_map) {
+                                    ret = nret = CL_EMEM;
+                                    cli_dbgmsg("scanraw: Failed to duplicate fmap to scan embedded file.\n");
+                                    break;
+                                }
+
+                                /* Perform scan with child fmap */
+                                nret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_ISHIELD_MSI, false, LAYER_ATTRIBUTES_NONE);
+                                if (CL_SUCCESS != nret) {
+                                    ret = nret;
+                                    cli_dbgmsg("scanraw: Failed to add map to recursion stack to scan embedded file.\n");
+                                    break;
+                                }
+
+                                nret = cli_scanishield_msi(ctx, 14);
+
+                                (void)cli_recursion_stack_pop(ctx);
+                            }
+                            break;
+
+                        case CL_TYPE_PDF:
+                            if (type != CL_TYPE_PDF && SCAN_PARSE_PDF && (DCONF_DOC & DOC_CONF_PDF)) {
+
+                                new_map = fmap_duplicate(ctx->fmap, fpt->offset, ctx->fmap->len - fpt->offset, NULL);
+                                if (NULL == new_map) {
+                                    ret = nret = CL_EMEM;
+                                    cli_dbgmsg("scanraw: Failed to duplicate fmap to scan embedded file.\n");
+                                    break;
+                                }
+
+                                /* Perform scan with child fmap */
+                                nret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_PDF, false, LAYER_ATTRIBUTES_NONE);
+                                if (CL_SUCCESS != nret) {
+                                    ret = nret;
+                                    cli_dbgmsg("scanraw: Failed to add map to recursion stack to scan embedded file.\n");
+                                    break;
+                                }
+
+                                nret = cli_scanpdf(ctx, 0);
+
+                                (void)cli_recursion_stack_pop(ctx);
+                            }
+                            break;
+
+                        case CL_TYPE_MSEXE:
+                            if (SCAN_PARSE_PE && (type == CL_TYPE_MSEXE || type == CL_TYPE_ZIP || type == CL_TYPE_MSOLE2) && ctx->dconf->pe) {
+
+                                if ((uint64_t)(ctx->fmap->len - fpt->offset) > ctx->engine->maxembeddedpe) {
+                                    cli_dbgmsg("scanraw: MaxEmbeddedPE exceeded\n");
+                                    break;
+                                }
+
+                                new_map = fmap_duplicate(ctx->fmap, fpt->offset, ctx->fmap->len - fpt->offset, NULL);
+                                if (NULL == new_map) {
+                                    ret = nret = CL_EMEM;
+                                    cli_dbgmsg("scanraw: Failed to duplicate fmap to scan embedded file.\n");
+                                    break;
+                                }
+
+                                /* Perform scan with child fmap */
+                                nret = cli_recursion_stack_push(ctx, new_map, CL_TYPE_MSEXE, false, LAYER_ATTRIBUTES_NONE);
+                                if (CL_SUCCESS != nret) {
+                                    ret = nret;
+                                    cli_dbgmsg("scanraw: Failed to add map to recursion stack to scan embedded file.\n");
+                                    break;
+                                }
+                                // IMPORTANT: Must not break or return before cli_recursion_stack_pop!
+
+                                cli_exe_info_init(&peinfo, 0);
+
+                                // TODO We could probably substitute in a quicker
+                                // method of determining whether a PE file exists
+                                // at this offset.
+                                if (cli_peheader(ctx->fmap, &peinfo, CLI_PEHEADER_OPT_NONE, NULL) != 0) {
+                                    cli_dbgmsg("Header check for MSEXE detection failed, probably not actually an embedded PE file.\n");
+
+                                    /* Despite failing, peinfo memory may have been allocated and must be freed. */
+                                    cli_exe_info_destroy(&peinfo);
+
+                                } else {
+                                    cli_dbgmsg("*** Detected embedded PE file at %u ***\n", (unsigned int)fpt->offset);
+
+                                    /* Immediately free up peinfo allocated memory, prior to any recursion */
+                                    cli_exe_info_destroy(&peinfo);
+
+                                    nret       = cli_scanembpe(ctx, 0);
+                                    break_loop = 1; /* we can stop here and other
+                                                     * embedded executables will
+                                                     * be found recursively
+                                                     * through the above call
+                                                     */
+
+                                    // TODO This method of embedded PE extraction
+                                    // is kinda gross in that:
+                                    //   - if you have an executable that contains
+                                    //     20 other exes, the bytes associated with
+                                    //     the last exe will have been included in
+                                    //     hash computations and things 20 times
+                                    //     (as overlay data to the previously
+                                    //     extracted exes).
+                                    //   - if you have a signed embedded exe, it
+                                    //     will fail to validate after extraction
+                                    //     bc it has overlay data, which is a
+                                    //     violation of the Authenticode spec.
+                                    //   - this method of extraction is subject to
+                                    //     the recursion limit, which is fairly
+                                    //     low by default (I think 16)
+                                    //
+                                    // It'd be awesome if we could compute the PE
+                                    // size from the PE header and just extract
+                                    // that.
+                                }
+
+                                (void)cli_recursion_stack_pop(ctx);
+                            }
+                            break;
+
+                        default:
+                            type_has_been_handled = false;
+                            cli_dbgmsg("scanraw: Type %u not handled in fpt loop\n", fpt->type);
+                    }
+
+                    if (NULL != new_map) {
+                        free_duplicate_fmap(new_map);
+                    }
+                } // end check for embedded files
+            }     // end if (fpt->offset > 0)
+
+            if ((nret == CL_EMEM) ||
+                (ctx->abort_scan) ||
+                (break_loop)) {
                 break;
+            }
 
             fpt = fpt->next;
 
@@ -3347,36 +3903,44 @@ static cl_error_t scanraw(cli_ctx *ctx, cli_file_t type, uint8_t typercg, cli_fi
                 parent_property  = NULL;
             }
 #endif
-        }
+        } // end while (fpt) loop
 
-        if (nret != CL_VIRUS)
-            switch (ret) {
+        if (!((nret == CL_EMEM) || (ctx->abort_scan))) {
+            /*
+             * Now run the other file type parsers that may rely on file type
+             * recognition to determine the actual file type.
+             */
+            switch (found_type) {
                 case CL_TYPE_HTML:
-                    /* bb#11196 - autoit script file misclassified as HTML */
-                    if (cli_get_container_intermediate(ctx, -2) == CL_TYPE_AUTOIT) {
+                    if (cli_recursion_stack_get_type(ctx, -2) == CL_TYPE_AUTOIT) {
+                        /* bb#11196 - autoit script file misclassified as HTML */
                         ret = CL_TYPE_TEXT_ASCII;
-                    } else if (SCAN_PARSE_HTML && (type == CL_TYPE_TEXT_ASCII || type == CL_TYPE_GRAPHICS) &&
+                    } else if (SCAN_PARSE_HTML &&
+                               (type == CL_TYPE_TEXT_ASCII ||
+                                type == CL_TYPE_GIF) && /* Scan GIFs for embedded HTML/Javascript */
                                (DCONF_DOC & DOC_CONF_HTML)) {
                         *dettype = CL_TYPE_HTML;
-                        nret     = cli_scanhtml(ctx);
+                        cli_recursion_stack_change_type(ctx, CL_TYPE_HTML);
+                        nret = cli_scanhtml(ctx);
                     }
                     break;
 
                 case CL_TYPE_MAIL:
-                    cli_set_container(ctx, CL_TYPE_MAIL, map->len);
                     if (SCAN_PARSE_MAIL && type == CL_TYPE_TEXT_ASCII && (DCONF_MAIL & MAIL_CONF_MBOX)) {
                         *dettype = CL_TYPE_MAIL;
-                        nret     = cli_scanmail(ctx);
+                        cli_recursion_stack_change_type(ctx, CL_TYPE_MAIL);
+                        nret = cli_scanmail(ctx);
                     }
                     break;
 
                 default:
                     break;
             }
+        }
+
         perf_nested_stop(ctx, PERFT_RAWTYPENO, PERFT_SCAN);
-        ctx->recursion--;
         ret = nret;
-    }
+    } // end if (ret >= CL_TYPENO)
 
 #if HAVE_JSON
     if (NULL != parent_property) {
@@ -3390,22 +3954,29 @@ static cl_error_t scanraw(cli_ctx *ctx, cli_file_t type, uint8_t typercg, cli_fi
         free(fpt);
     }
 
-    if (ret == CL_VIRUS)
-        cli_dbgmsg("%s found\n", cli_get_last_virus(ctx));
-
     return ret;
 }
 
-static void emax_reached(cli_ctx *ctx)
+void emax_reached(cli_ctx *ctx)
 {
-    fmap_t **ctx_fmap = ctx->fmap;
-    if (!ctx_fmap)
+    int32_t stack_index;
+
+    if (NULL == ctx || NULL == ctx->recursion_stack) {
         return;
-    while (*ctx_fmap) {
-        fmap_t *map          = *ctx_fmap;
-        map->dont_cache_flag = 1;
-        ctx_fmap--;
     }
+
+    stack_index = (int32_t)ctx->recursion_level;
+
+    while (stack_index >= 0) {
+        fmap_t *map = ctx->recursion_stack[stack_index].fmap;
+
+        if (NULL != map) {
+            map->dont_cache_flag = true;
+        }
+
+        stack_index -= 1;
+    }
+
     cli_dbgmsg("emax_reached: marked parents as non cacheable\n");
 }
 
@@ -3413,65 +3984,287 @@ static void emax_reached(cli_ctx *ctx)
 #define LINESTR2(x) LINESTR(x)
 #define __AT__ " at line " LINESTR2(__LINE__)
 
-static cl_error_t dispatch_prescan(clcb_pre_scan cb, cli_ctx *ctx, const char *filetype, bitset_t *old_hook_lsig_matches, void *parent_property, unsigned char *hash, size_t hashed_size, int *run_cleanup)
+/**
+ * @brief Provide the following to the calling application for each embedded file:
+ *  - name of parent file
+ *  - size of parent file
+ *  - name of current file
+ *  - size of current file
+ *  - pointer to the current file data
+ *
+ * @param cb
+ * @param ctx
+ * @param filetype
+ * @param old_hook_lsig_matches
+ * @param parent_property
+ * @param run_cleanup
+ * @return cl_error_t
+ */
+static cl_error_t dispatch_file_inspection_callback(clcb_file_inspection cb, cli_ctx *ctx, const char *filetype)
 {
-    cl_error_t res = CL_CLEAN;
+    cl_error_t status = CL_CLEAN;
 
-    UNUSEDPARAM(parent_property);
-    UNUSEDPARAM(hash);
-    UNUSEDPARAM(hashed_size);
+    int fd            = -1;
+    size_t fmap_index = ctx->recursion_level; /* index of current file */
 
-    *run_cleanup = 0;
+    cl_fmap_t *fmap         = NULL;
+    const char *file_name   = NULL;
+    size_t file_size        = 0;
+    const char *file_buffer = NULL;
+    const char **ancestors  = NULL;
+
+    size_t parent_file_size = 0;
+
+    if (NULL == cb) {
+        // Callback is not set.
+        goto done;
+    }
+
+    fmap = ctx->recursion_stack[fmap_index].fmap;
+    fd   = fmap_fd(fmap);
+
+    CLI_CALLOC(ancestors, ctx->recursion_level + 1, sizeof(char *), status = CL_EMEM);
+
+    file_name   = fmap->name;
+    file_buffer = fmap_need_off_once_len(fmap, 0, fmap->len, &file_size);
+
+    while (fmap_index > 0) {
+        cl_fmap_t *previous_fmap;
+
+        fmap_index -= 1;
+        previous_fmap = ctx->recursion_stack[fmap_index].fmap;
+
+        if (ctx->recursion_level > 0 && (fmap_index == ctx->recursion_level - 1)) {
+            parent_file_size = previous_fmap->len;
+        }
+
+        ancestors[fmap_index] = previous_fmap->name;
+    }
+
+    perf_start(ctx, PERFT_INSPECT);
+    status = cb(fd, filetype, ancestors, parent_file_size, file_name, file_size, file_buffer,
+                ctx->recursion_level, ctx->recursion_stack[ctx->recursion_level].attributes, ctx->cb_ctx);
+    perf_stop(ctx, PERFT_INSPECT);
+
+    switch (status) {
+        case CL_BREAK:
+            cli_dbgmsg("dispatch_file_inspection_callback: scan cancelled by callback\n");
+            status = CL_BREAK;
+            break;
+        case CL_VIRUS:
+            cli_dbgmsg("dispatch_file_inspection_callback: file blocked by callback\n");
+            cli_append_virus(ctx, "Detected.By.Callback.Inspection");
+            status = CL_VIRUS;
+            break;
+        case CL_CLEAN:
+            break;
+        default:
+            status = CL_CLEAN;
+            cli_warnmsg("dispatch_file_inspection_callback: ignoring bad return code from callback\n");
+    }
+
+done:
+
+    FREE(ancestors);
+    return status;
+}
+
+static cl_error_t dispatch_prescan_callback(clcb_pre_scan cb, cli_ctx *ctx, const char *filetype)
+{
+    cl_error_t status = CL_CLEAN;
 
     if (cb) {
         perf_start(ctx, PERFT_PRECB);
-        switch (cb(fmap_fd(*ctx->fmap), filetype, ctx->cb_ctx)) {
+        status = cb(fmap_fd(ctx->fmap), filetype, ctx->cb_ctx);
+        perf_stop(ctx, PERFT_PRECB);
+
+        switch (status) {
             case CL_BREAK:
-                cli_dbgmsg("cli_magic_scan_desc: file whitelisted by callback\n");
-                perf_stop(ctx, PERFT_PRECB);
-                ctx->hook_lsig_matches = old_hook_lsig_matches;
-                /* returns CL_CLEAN */
-                *run_cleanup = 1;
+                cli_dbgmsg("dispatch_prescan_callback: file allowed by callback\n");
+                status = CL_VERIFIED;
                 break;
             case CL_VIRUS:
-                cli_dbgmsg("cli_magic_scan_desc: file blacklisted by callback\n");
-                cli_append_virus(ctx, "Detected.By.Callback");
-                perf_stop(ctx, PERFT_PRECB);
-                ctx->hook_lsig_matches = old_hook_lsig_matches;
-                *run_cleanup           = 1;
-                res                    = CL_VIRUS;
+                cli_dbgmsg("dispatch_prescan_callback: file blocked by callback\n");
+                status = cli_append_virus(ctx, "Detected.By.Callback");
                 break;
             case CL_CLEAN:
                 break;
             default:
-                cli_warnmsg("cli_magic_scan_desc: ignoring bad return code from callback\n");
+                status = CL_CLEAN;
+                cli_warnmsg("dispatch_prescan_callback: ignoring bad return code from callback\n");
         }
-
-        perf_stop(ctx, PERFT_PRECB);
     }
 
-    return res;
+    return status;
+}
+
+static cl_error_t calculate_fuzzy_image_hash(cli_ctx *ctx, cli_file_t type)
+{
+    cl_error_t status       = CL_EPARSE;
+    const uint8_t *offset   = NULL;
+    image_fuzzy_hash_t hash = {0};
+    json_object *header     = NULL;
+
+    FFIError *fuzzy_hash_calc_error = NULL;
+
+    offset = fmap_need_off(ctx->fmap, 0, ctx->fmap->real_len);
+
+    if (SCAN_COLLECT_METADATA && (NULL != ctx->wrkproperty)) {
+        if (NULL == (header = cli_jsonobj(ctx->wrkproperty, "ImageFuzzyHash"))) {
+            cli_errmsg("Failed to allocate ImageFuzzyHash JSON object\n");
+            status = CL_EMEM;
+            goto done;
+        }
+    }
+
+    if (!fuzzy_hash_calculate_image(offset, ctx->fmap->real_len, hash.hash, 8, &fuzzy_hash_calc_error)) {
+        cli_dbgmsg("Failed to calculate image fuzzy hash for %s: %s\n",
+                   cli_ftname(type),
+                   ffierror_fmt(fuzzy_hash_calc_error));
+
+        if (SCAN_COLLECT_METADATA && (NULL != header)) {
+            (void)cli_jsonstr(header, "Error", ffierror_fmt(fuzzy_hash_calc_error));
+        }
+
+        goto done;
+    }
+
+    if (SCAN_COLLECT_METADATA && (NULL != header)) {
+        char hashstr[17];
+        snprintf(hashstr, 17, "%02x%02x%02x%02x%02x%02x%02x%02x",
+                 hash.hash[0], hash.hash[1], hash.hash[2], hash.hash[3],
+                 hash.hash[4], hash.hash[5], hash.hash[6], hash.hash[7]);
+        (void)cli_jsonstr(header, "Hash", hashstr);
+    }
+
+    ctx->recursion_stack[ctx->recursion_level].image_fuzzy_hash            = hash;
+    ctx->recursion_stack[ctx->recursion_level].calculated_image_fuzzy_hash = true;
+
+    status = CL_SUCCESS;
+
+done:
+    if (NULL != fuzzy_hash_calc_error) {
+        ffierror_free(fuzzy_hash_calc_error);
+    }
+    return status;
+}
+
+/**
+ * @brief A unified list of reasons why a scan result inside the magic_scan function
+ *        should goto done instead of continuing to parse/scan this layer.
+ *
+ * These are not reasons why the scan should abort entirely. For that, just check ctx->abort_scan.
+ *
+ * @param ctx        The scan context.
+ * @param result_in  The result to compare.
+ * @param result_out The result that magic_scan should return.
+ * @return true      We found a reason to goto done.
+ * @return false     The scan must go on.
+ */
+static inline bool result_should_goto_done(cli_ctx *ctx, cl_error_t result_in, cl_error_t *result_out)
+{
+    bool halt_scan = false;
+
+    if (NULL == ctx || NULL == result_out) {
+        cli_dbgmsg("Invalid arguments for file scan result check.\n");
+        halt_scan = true;
+        goto done;
+    }
+
+    if (NULL != ctx && ctx->abort_scan) {
+        // ensure abort_scan is respected
+        halt_scan = true;
+    }
+
+    switch (result_in) {
+        /*
+         * Reasons to halt the scan and report the error up to the caller/user.
+         */
+
+        // A virus result means we should halt the scan.
+        // We do not return CL_VIRUS in allmatch-mode until the very end.
+        case CL_VIRUS:
+
+        // Each of these error codes considered terminal and will halt the scan.
+        case CL_EUNLINK:
+        case CL_ESTAT:
+        case CL_ESEEK:
+        case CL_EWRITE:
+        case CL_EDUP:
+        case CL_ETMPFILE:
+        case CL_ETMPDIR:
+        case CL_EMEM:
+            cli_dbgmsg("Descriptor[%d]: halting after file scan because: %s\n", fmap_fd(ctx->fmap), cl_strerror(result_in));
+            halt_scan   = true;
+            *result_out = result_in;
+            break;
+
+        /*
+         * Reasons to halt the scan but report a successful scan.
+         */
+
+        // Exceeding the time limit should definitly halt the scan.
+        // But unless the user enabled alert-exceeds-max, we don't want to complain about it.
+        case CL_ETIMEOUT:
+
+        // If the file was determined to be trusted, then we can stop scanning this layer. (Ex: EXE with a valid Authenticode sig.)
+        // Convert CL_VERIFIED to CL_SUCCESS because we don't want to propagate the CL_VERIFIED return code up to the caller.
+        // If we didn't, a trusted file could cause a larger archive containing non-trustworthy files to be trusted.
+        case CL_VERIFIED:
+            cli_dbgmsg("Descriptor[%d]: halting after file scan because: %s\n", fmap_fd(ctx->fmap), cl_strerror(result_in));
+            halt_scan   = true;
+            *result_out = CL_SUCCESS;
+            break;
+
+        /*
+         * All other results must not halt the scan.
+         */
+
+        // Nothing to do.
+        case CL_SUCCESS:
+
+        // Unless ctx->abort_scan was set, all these "MAX" conditions should finish scanning as much as is allowed.
+        // That is, the can may still be blocked from recursing into the next layer, or scanning new files or large files.
+        case CL_EMAXREC:
+        case CL_EMAXSIZE:
+        case CL_EMAXFILES:
+
+        // The following are explicitly listed here so you think twice before putting them in the scan-halt list, above.
+        // Malformed/truncated files could report as any of these three, and that's fine.
+        // See commit 087e7fc3fa923e5d6a6fd2efe8df852a36256b5b for additional details.
+        case CL_EFORMAT:
+        case CL_EPARSE:
+        case CL_EREAD:
+        case CL_EUNPACK:
+
+        default:
+            cli_dbgmsg("Descriptor[%d]: Continuing after file scan resulted with: %s\n",
+                       fmap_fd(ctx->fmap), cl_strerror(result_in));
+            *result_out = CL_SUCCESS;
+    }
+
+done:
+    return halt_scan;
 }
 
 cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
 {
     cl_error_t ret = CL_CLEAN;
-    cl_error_t cb_retcode;
-    cli_file_t dettype = 0;
-    uint8_t typercg    = 1;
-    size_t hashed_size;
-    unsigned char *hash = NULL;
-    bitset_t *old_hook_lsig_matches;
+    cl_error_t cache_check_result;
+    cl_error_t verdict_at_this_level;
+    cli_file_t dettype              = 0;
+    uint8_t typercg                 = 1;
+    size_t hashed_size              = 0;
+    unsigned char *hash             = NULL;
+    bitset_t *old_hook_lsig_matches = NULL;
     const char *filetype;
-    int cache_clean = 0, res;
-    int run_cleanup = 0;
+
 #if HAVE_JSON
     struct json_object *parent_property = NULL;
 #else
     void *parent_property = NULL;
 #endif
 
-    char *fmap_basename = NULL;
     char *old_temp_path = NULL;
     char *new_temp_path = NULL;
 
@@ -3487,21 +4280,13 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
         goto early_ret;
     }
 
-    if (ctx->engine->maxreclevel && ctx->recursion > ctx->engine->maxreclevel) {
-        cli_dbgmsg("cli_magic_scan: Archive recursion limit exceeded (%u, max: %u)\n", ctx->recursion, ctx->engine->maxreclevel);
-        emax_reached(ctx);
-        cli_check_blockmax(ctx, CL_EMAXREC);
+    if (ctx->fmap->len <= 5) {
+        cli_dbgmsg("cli_magic_scan: File is too too small (%zu bytes), ignoring.\n", ctx->fmap->len);
         ret = CL_CLEAN;
         goto early_ret;
     }
 
-    if ((*ctx->fmap)->len <= 5) {
-        cli_dbgmsg("cli_magic_scandesc: File is too too small (%zu bytes), ignoring.\n", (*ctx->fmap)->len);
-        ret = CL_CLEAN;
-        goto early_ret;
-    }
-
-    if (cli_updatelimits(ctx, (*ctx->fmap)->len) != CL_CLEAN) {
+    if (cli_updatelimits(ctx, ctx->fmap->len) != CL_CLEAN) {
         emax_reached(ctx);
         ret = CL_CLEAN;
         cli_dbgmsg("cli_magic_scan: returning %d %s (no post, no cache)\n", ret, __AT__);
@@ -3509,15 +4294,17 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
     }
 
     if (ctx->engine->keeptmp) {
+        char *fmap_basename = NULL;
         /*
          * Keep-temp enabled, so create a sub-directory to provide extraction directory recursion.
          */
-        if ((NULL != (*ctx->fmap)->name) &&
-            (CL_SUCCESS == cli_basename((*ctx->fmap)->name, strlen((*ctx->fmap)->name), &fmap_basename))) {
+        if ((NULL != ctx->fmap->name) &&
+            (CL_SUCCESS == cli_basename(ctx->fmap->name, strlen(ctx->fmap->name), &fmap_basename))) {
             /*
              * The fmap has a name, lets include it in the new sub-directory.
              */
             new_temp_path = cli_gentemp_with_prefix(ctx->sub_tmpdir, fmap_basename);
+            free(fmap_basename);
             if (NULL == new_temp_path) {
                 cli_errmsg("cli_magic_scan: Failed to generate temp directory name.\n");
                 ret = CL_EMEM;
@@ -3545,17 +4332,16 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
         }
     }
 
-    hash        = (*ctx->fmap)->maphash;
-    hashed_size = (*ctx->fmap)->len;
-
-    old_hook_lsig_matches = ctx->hook_lsig_matches;
     if (type == CL_TYPE_PART_ANY) {
         typercg = 0;
     }
 
+    /*
+     * Perform file typing from the start of the file.
+     */
     perf_start(ctx, PERFT_FT);
     if ((type == CL_TYPE_ANY) || type == CL_TYPE_PART_ANY) {
-        type = cli_determine_fmap_type(*ctx->fmap, ctx->engine, type);
+        type = cli_determine_fmap_type(ctx->fmap, ctx->engine, type);
     }
     perf_stop(ctx, PERFT_FT);
     if (type == CL_TYPE_ERROR) {
@@ -3566,8 +4352,14 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
     }
     filetype = cli_ftname(type);
 
+    /* set current layer to the type we found */
+    cli_recursion_stack_change_type(ctx, type);
+
 #if HAVE_JSON
     if (SCAN_COLLECT_METADATA) {
+        /*
+         * Create JSON object to record metadata during the scan.
+         */
         if (NULL == ctx->properties) {
             ctx->properties = json_object_new_object();
             if (NULL == ctx->properties) {
@@ -3613,8 +4405,8 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
             json_object_array_add(arrobj, ctx->wrkproperty);
         }
 
-        if ((*ctx->fmap)->name) {
-            ret = cli_jsonstr(ctx->wrkproperty, "FileName", (*ctx->fmap)->name);
+        if (ctx->fmap->name) {
+            ret = cli_jsonstr(ctx->wrkproperty, "FileName", ctx->fmap->name);
             if (ret != CL_SUCCESS) {
                 cli_dbgmsg("cli_magic_scan: returning %d %s (no post, no cache)\n", ret, __AT__);
                 goto early_ret;
@@ -3632,7 +4424,7 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
             cli_dbgmsg("cli_magic_scan: returning %d %s (no post, no cache)\n", ret, __AT__);
             goto early_ret;
         }
-        ret = cli_jsonint(ctx->wrkproperty, "FileSize", (*ctx->fmap)->len);
+        ret = cli_jsonint(ctx->wrkproperty, "FileSize", ctx->fmap->len);
         if (ret != CL_SUCCESS) {
             cli_dbgmsg("cli_magic_scan: returning %d %s (no post, no cache)\n", ret, __AT__);
             goto early_ret;
@@ -3640,33 +4432,55 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
     }
 #endif
 
-    ret = dispatch_prescan(ctx->engine->cb_pre_cache, ctx, filetype, old_hook_lsig_matches, parent_property, hash, hashed_size, &run_cleanup);
-    if (run_cleanup) {
-        if (ret == CL_VIRUS) {
-            ret = cli_checkfp(hash, hashed_size, ctx);
-            goto done;
-        } else {
-            ret = CL_CLEAN;
-            goto done;
-        }
+    /*
+     * Run the pre_scan callback.
+     */
+    ret = dispatch_prescan_callback(ctx->engine->cb_pre_cache, ctx, filetype);
+    if (CL_VERIFIED == ret || CL_VIRUS == ret) {
+        goto done;
     }
 
+    /*
+     * Get the maphash
+     */
+    if (CL_SUCCESS != fmap_get_hash(ctx->fmap, &hash, CLI_HASH_MD5)) {
+        cli_dbgmsg("cli_magic_scan: Failed to get a hash for the current fmap.\n");
+
+        // It may be that the file was truncated between the time we started the scan and the time we got the hash.
+        // Not a reason to print an error message.
+        ret = CL_SUCCESS;
+        goto done;
+    }
+    hashed_size = ctx->fmap->len;
+
+    ret = dispatch_file_inspection_callback(ctx->engine->cb_file_inspection, ctx, filetype);
+    if (CL_CLEAN != ret) {
+        if (ret == CL_VIRUS) {
+            ret = cli_check_fp(ctx, NULL);
+        } else {
+            ret = CL_CLEAN;
+        }
+        goto done;
+    }
+
+    /*
+     * Check if we've already scanned this file before.
+     */
     perf_start(ctx, PERFT_CACHE);
-    if (!(SCAN_COLLECT_METADATA))
-        res = cache_check(hash, ctx);
-    else
-        res = CL_VIRUS;
+    cache_check_result = clean_cache_check(hash, hashed_size, ctx);
+    perf_stop(ctx, PERFT_CACHE);
 
 #if HAVE_JSON
-    if (SCAN_COLLECT_METADATA /* ctx.options->general & CL_SCAN_GENERAL_COLLECT_METADATA && ctx->wrkproperty != NULL */) {
-        char hashstr[33];
-        snprintf(hashstr, 33, "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+    if (SCAN_COLLECT_METADATA) {
+        char hashstr[CLI_HASHLEN_MD5 * 2 + 1];
+        snprintf(hashstr, CLI_HASHLEN_MD5 * 2 + 1, "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
                  hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
                  hash[8], hash[9], hash[10], hash[11], hash[12], hash[13], hash[14], hash[15]);
 
         ret = cli_jsonstr(ctx->wrkproperty, "FileMD5", hashstr);
-        if (ctx->engine->engine_options & ENGINE_OPTIONS_DISABLE_CACHE)
-            memset(hash, 0, 16);
+        if (ctx->engine->engine_options & ENGINE_OPTIONS_DISABLE_CACHE) {
+            memset(hash, 0, CLI_HASHLEN_MD5);
+        }
         if (ret != CL_SUCCESS) {
             cli_dbgmsg("cli_magic_scan: returning %d %s (no post, no cache)\n", ret, __AT__);
             goto early_ret;
@@ -3674,48 +4488,31 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
     }
 #endif
 
-    if (res != CL_VIRUS) {
-        perf_stop(ctx, PERFT_CACHE);
+    if (cache_check_result != CL_VIRUS) {
         cli_dbgmsg("cli_magic_scan: returning %d %s (no post, no cache)\n", ret, __AT__);
+        ret = CL_SUCCESS;
         goto early_ret;
     }
 
-    perf_stop(ctx, PERFT_CACHE);
+    old_hook_lsig_matches  = ctx->hook_lsig_matches;
     ctx->hook_lsig_matches = NULL;
 
-    if (!((ctx->options->general & ~CL_SCAN_GENERAL_ALLMATCHES) || (ctx->options->parse) || (ctx->options->heuristic) || (ctx->options->mail) || (ctx->options->dev)) || (ctx->recursion == ctx->engine->maxreclevel)) { /* raw mode (stdin, etc.) or last level of recursion */
-        if (ctx->recursion == ctx->engine->maxreclevel) {
-            cli_check_blockmax(ctx, CL_EMAXREC);
-            cli_dbgmsg("cli_magic_scan: Hit recursion limit, only scanning raw file\n");
-        } else
-            cli_dbgmsg("cli_magic_scan: Raw mode: No support for special files\n");
-
-        ret = dispatch_prescan(ctx->engine->cb_pre_scan, ctx, filetype, old_hook_lsig_matches, parent_property, hash, hashed_size, &run_cleanup);
-        if (run_cleanup) {
-            if (ret == CL_VIRUS) {
-                ret = cli_checkfp(hash, hashed_size, ctx);
-            }
-            goto done;
-        }
-
-        if ((ret = cli_scan_fmap(ctx, CL_TYPE_ANY, 0, NULL, AC_SCAN_VIR, NULL, hash)) == CL_VIRUS)
-            cli_dbgmsg("cli_magic_scan: %s found in descriptor %d\n", cli_get_last_virus(ctx), fmap_fd(*ctx->fmap));
-        else if (ret == CL_CLEAN) {
-            if (ctx->recursion != ctx->engine->maxreclevel)
-                cache_clean = 1; /* Only cache if limits are not reached */
-            else
-                emax_reached(ctx);
-        }
-
-        ctx->hook_lsig_matches = old_hook_lsig_matches;
+    /*
+     * Run the pre_scan callback.
+     */
+    ret = dispatch_prescan_callback(ctx->engine->cb_pre_scan, ctx, filetype);
+    if (CL_VERIFIED == ret || CL_VIRUS == ret) {
         goto done;
     }
 
-    ret = dispatch_prescan(ctx->engine->cb_pre_scan, ctx, filetype, old_hook_lsig_matches, parent_property, hash, hashed_size, &run_cleanup);
-    if (run_cleanup) {
-        if (ret == CL_VIRUS) {
-            ret = cli_checkfp(hash, hashed_size, ctx);
-        }
+    // If none of the scan options are enabled, then we can skip parsing and just do a raw pattern match.
+    // For this check, we don't care if the CL_SCAN_GENERAL_ALLMATCHES option is enabled, hence the `~`.
+    if (!((ctx->options->general & ~CL_SCAN_GENERAL_ALLMATCHES) || (ctx->options->parse) || (ctx->options->heuristic) || (ctx->options->mail) || (ctx->options->dev))) {
+        /*
+         * Scanning in raw mode (stdin, etc.)
+         */
+        ret = cli_scan_fmap(ctx, CL_TYPE_ANY, false, NULL, AC_SCAN_VIR, NULL, hash);
+        // It doesn't matter what was returned, always go to the end after this. Raw mode! No parsing files!
         goto done;
     }
 
@@ -3724,27 +4521,32 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
         ctx->sha_collect = 1;
 #endif
 
+    // We already saved the hook_lsig_matches (above)
+    // The ctx one is NULL at present.
     ctx->hook_lsig_matches = cli_bitset_init();
-    if (!ctx->hook_lsig_matches) {
-        ctx->hook_lsig_matches = old_hook_lsig_matches;
-        ret                    = CL_EMEM;
+    if (NULL == ctx->hook_lsig_matches) {
+        ret = CL_EMEM;
         goto done;
     }
 
     if (type != CL_TYPE_IGNORED && ctx->engine->sdb) {
+        /*
+         * If self protection mechanism enabled, do the scanraw() scan first
+         * before extracting with a file type parser.
+         */
         ret = scanraw(ctx, type, 0, &dettype, (ctx->engine->engine_options & ENGINE_OPTIONS_DISABLE_CACHE) ? NULL : hash);
-        if (ret == CL_EMEM || ret == CL_VIRUS) {
-            ret = cli_checkfp(hash, hashed_size, ctx);
-            cli_bitset_free(ctx->hook_lsig_matches);
-            ctx->hook_lsig_matches = old_hook_lsig_matches;
+
+        // Evaluate the result from the scan to see if it end the scan of this layer early,
+        // and to decid if we should propagate an error or not.
+        if (result_should_goto_done(ctx, ret, &ret)) {
             goto done;
         }
     }
 
-    ctx->recursion++;
+    /*
+     * Run the file type parsers that we normally use before the raw scan.
+     */
     perf_nested_start(ctx, PERFT_CONTAINER, PERFT_SCAN);
-    /* set current level as container AFTER recursing */
-    cli_set_container(ctx, type, (*ctx->fmap)->len);
     switch (type) {
         case CL_TYPE_IGNORED:
             break;
@@ -3780,71 +4582,13 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
             break;
 
         case CL_TYPE_RAR:
-            if (have_rar && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_RAR)) {
-                const char *filepath = NULL;
-                int fd               = -1;
-
-                char *tmpname = NULL;
-                int tmpfd     = -1;
-
-#ifdef _WIN32
-                if ((SCAN_UNPRIVILEGED) || (NULL == ctx->sub_filepath) || (0 != _access_s(ctx->sub_filepath, R_OK))) {
-#else
-                if ((SCAN_UNPRIVILEGED) || (NULL == ctx->sub_filepath) || (0 != access(ctx->sub_filepath, R_OK))) {
-#endif
-                    /* If map is not file-backed have to dump to file for scanrar. */
-                    ret = fmap_dump_to_file(*ctx->fmap, ctx->sub_filepath, ctx->sub_tmpdir, &tmpname, &tmpfd, 0, SIZE_MAX);
-                    if (ret != CL_SUCCESS) {
-                        cli_dbgmsg("cli_magic_scan: failed to generate temporary file.\n");
-                        break;
-                    }
-                    filepath = tmpname;
-                    fd       = tmpfd;
-                } else {
-                    /* Use the original file and file descriptor. */
-                    filepath = ctx->sub_filepath;
-                    fd       = fmap_fd(*ctx->fmap);
-                }
-
-                /* scan file */
-                ret = cli_scanrar(filepath, fd, ctx);
-
-                if ((NULL == tmpname) && (CL_EOPEN == ret)) {
-                    /*
-                     * Failed to open the file using the original filename.
-                     * Try writing the file descriptor to a temp file and try again.
-                     */
-                    ret = fmap_dump_to_file(*ctx->fmap, ctx->sub_filepath, ctx->sub_tmpdir, &tmpname, &tmpfd, 0, SIZE_MAX);
-                    if (ret != CL_SUCCESS) {
-                        cli_dbgmsg("cli_magic_scan: failed to generate temporary file.\n");
-                        break;
-                    }
-                    filepath = tmpname;
-                    fd       = tmpfd;
-
-                    /* try to scan again */
-                    ret = cli_scanrar(filepath, fd, ctx);
-                }
-
-                if (tmpfd != -1) {
-                    /* If dumped tempfile, need to cleanup */
-                    close(tmpfd);
-                    if (!ctx->engine->keeptmp) {
-                        if (cli_unlink(tmpname)) {
-                            ret = CL_EUNLINK;
-                        }
-                    }
-                }
-
-                if (tmpname != NULL) {
-                    free(tmpname);
-                }
-            }
+            if (have_rar && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_RAR))
+                ret = cli_scanrar(ctx);
             break;
 
         case CL_TYPE_EGG:
             if (SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_EGG))
-                ret = cli_scanegg(ctx, 0);
+                ret = cli_scanegg(ctx);
             break;
 
         case CL_TYPE_OOXML_WORD:
@@ -3871,6 +4615,7 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
                 }
             }
 #endif
+            /* fall-through */
         case CL_TYPE_ZIP:
             if (SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_ZIP))
                 ret = cli_unzip(ctx);
@@ -3903,7 +4648,7 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
 
         case CL_TYPE_ARJ:
             if (SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_ARJ))
-                ret = cli_scanarj(ctx, 0);
+                ret = cli_scanarj(ctx);
             break;
 
         case CL_TYPE_NULSFT:
@@ -3930,6 +4675,7 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
             if (SCAN_PARSE_HTML && (DCONF_DOC & DOC_CONF_HTML))
                 ret = cli_scanhtml(ctx);
             break;
+
         case CL_TYPE_HTML_UTF16:
             if (SCAN_PARSE_HTML && (DCONF_DOC & DOC_CONF_HTML))
                 ret = cli_scanhtml_utf16(ctx);
@@ -4030,38 +4776,83 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
                 ret = cli_scanriff(ctx);
             break;
 
-        case CL_TYPE_GRAPHICS:
-            if (SCAN_HEURISTICS && (DCONF_OTHER & OTHER_CONF_JPEG))
-                ret = cli_scanjpeg(ctx);
+        case CL_TYPE_GRAPHICS: {
+            /*
+             * This case is for unhandled graphics types such as BMP, JPEG 2000, etc.
+             *
+             * Note: JPEG 2000 is a very different format from JPEG, JPEG/JFIF, JPEG/Exif, JPEG/SPIFF (1994, 1997)
+             * JPEG 2000 is not handled by cli_scanjpeg or cli_parsejpeg.
+             */
 
-            if (ctx->img_validate && SCAN_HEURISTICS && ret != CL_VIRUS)
-                ret = cli_parsejpeg(ctx);
+            // It's okay if it fails to calculate the fuzzy hash.
+            (void)calculate_fuzzy_image_hash(ctx, type);
 
-            if (ctx->img_validate && SCAN_HEURISTICS && ret != CL_VIRUS && ret != CL_EPARSE)
-                ret = cli_parsepng(ctx);
-		
-            if (ctx->img_validate && SCAN_HEURISTICS && ret != CL_VIRUS && ret != CL_EPARSE)
+            break;
+        }
+
+        case CL_TYPE_GIF: {
+            if (SCAN_HEURISTICS && SCAN_HEURISTIC_BROKEN_MEDIA && (DCONF_OTHER & OTHER_CONF_GIF)) {
                 ret = cli_parsegif(ctx);
+            }
 
-            if (ctx->img_validate && SCAN_HEURISTICS && ret != CL_VIRUS && ret != CL_EPARSE)
+            if (CL_SUCCESS != ret) {
+                // do not calculate the fuzzy image hash if parsing failed, or a heuristic alert occured.
+                break;
+            }
+
+            // It's okay if it fails to calculate the fuzzy hash.
+            (void)calculate_fuzzy_image_hash(ctx, type);
+
+            break;
+        }
+
+        case CL_TYPE_PNG: {
+            if (SCAN_HEURISTICS && (DCONF_OTHER & OTHER_CONF_PNG)) {
+                ret = cli_parsepng(ctx); /* PNG parser detects a couple CVE's as well as Broken.Media */
+            }
+
+            if (CL_SUCCESS != ret) {
+                // do not calculate the fuzzy image hash if parsing failed, or a heuristic alert occured.
+                break;
+            }
+
+            // It's okay if it fails to calculate the fuzzy hash.
+            (void)calculate_fuzzy_image_hash(ctx, type);
+
+            break;
+        }
+
+        case CL_TYPE_JPEG: {
+            if (SCAN_HEURISTICS && (DCONF_OTHER & OTHER_CONF_JPEG)) {
+                ret = cli_parsejpeg(ctx); /* JPG parser detects MS04-028 exploits as well as Broken.Media */
+            }
+
+            if (CL_SUCCESS != ret) {
+                // do not calculate the fuzzy image hash if parsing failed, or a heuristic alert occured.
+                break;
+            }
+
+            // It's okay if it fails to calculate the fuzzy hash.
+            (void)calculate_fuzzy_image_hash(ctx, type);
+
+            break;
+        }
+
+        case CL_TYPE_TIFF: {
+            if (SCAN_HEURISTICS && SCAN_HEURISTIC_BROKEN_MEDIA && (DCONF_OTHER & OTHER_CONF_TIFF) && ret != CL_VIRUS) {
                 ret = cli_parsetiff(ctx);
+            }
+
+            if (CL_SUCCESS != ret) {
+                // do not calculate the fuzzy image hash if parsing failed, or a heuristic alert occured.
+                break;
+            }
+
+            // It's okay if it fails to calculate the fuzzy hash.
+            (void)calculate_fuzzy_image_hash(ctx, type);
 
             break;
-
-        case CL_TYPE_GIF:
-            if (SCAN_HEURISTICS && (DCONF_OTHER & OTHER_CONF_GIF))
-                ret = cli_parsegif(ctx);
-            break;
-
-        case CL_TYPE_PNG:
-            if (SCAN_HEURISTICS && (DCONF_OTHER & OTHER_CONF_PNG))
-                ret = cli_parsepng(ctx);
-            break;
-
-        case CL_TYPE_PDF: /* FIXMELIMITS: pdf should be an archive! */
-            if (SCAN_PARSE_PDF && (DCONF_DOC & DOC_CONF_PDF))
-                ret = cli_scanpdf(ctx, 0);
-            break;
+        }
 
         case CL_TYPE_CRYPTFF:
             if (DCONF_OTHER & OTHER_CONF_CRYPTFF)
@@ -4117,88 +4908,41 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
             break;
     }
     perf_nested_stop(ctx, PERFT_CONTAINER, PERFT_SCAN);
-    ctx->recursion--;
 
-    if (ret == CL_VIRUS && !SCAN_ALLMATCHES) {
-        cli_bitset_free(ctx->hook_lsig_matches);
-        ctx->hook_lsig_matches = old_hook_lsig_matches;
+    // Evaluate the result from the parsers to see if it end the scan of this layer early,
+    // and to decid if we should propagate an error or not.
+    if (result_should_goto_done(ctx, ret, &ret)) {
         goto done;
     }
 
+    /*
+     * Perform the raw scan, which may include file type recognition signatures.
+     */
+
+    /* Disable type recognition for the raw scan for zip files larger than maxziptypercg */
     if (type == CL_TYPE_ZIP && SCAN_PARSE_ARCHIVE && (DCONF_ARCH & ARCH_CONF_ZIP)) {
         /* CL_ENGINE_MAX_ZIPTYPERCG */
-        uint64_t curr_len = (*ctx->fmap)->len;
+        uint64_t curr_len = ctx->fmap->len;
         if (curr_len > ctx->engine->maxziptypercg) {
-            cli_dbgmsg("cli_magic_scan_desc: Not checking for embedded PEs (zip file > MaxZipTypeRcg)\n");
+            cli_dbgmsg("cli_magic_scan: Not checking for embedded PEs (zip file > MaxZipTypeRcg)\n");
             typercg = 0;
         }
     }
 
     /* CL_TYPE_HTML: raw HTML files are not scanned, unless safety measure activated via DCONF */
     if (type != CL_TYPE_IGNORED && (type != CL_TYPE_HTML || !(SCAN_PARSE_HTML) || !(DCONF_DOC & DOC_CONF_HTML_SKIPRAW)) && !ctx->engine->sdb) {
-        res = scanraw(ctx, type, typercg, &dettype, (ctx->engine->engine_options & ENGINE_OPTIONS_DISABLE_CACHE) ? NULL : hash);
-        if (res != CL_CLEAN) {
-            switch (res) {
-                /* List of scan halts, runtime errors only! */
-                case CL_EUNLINK:
-                case CL_ESTAT:
-                case CL_ESEEK:
-                case CL_EWRITE:
-                case CL_EDUP:
-                case CL_ETMPFILE:
-                case CL_ETMPDIR:
-                case CL_EMEM:
-                    cli_dbgmsg("Descriptor[%d]: scanraw error %s\n", fmap_fd(*ctx->fmap), cl_strerror(res));
-                    cli_bitset_free(ctx->hook_lsig_matches);
-                    ctx->hook_lsig_matches = old_hook_lsig_matches;
-                    ret                    = res;
-                    goto done;
-                /* CL_VIRUS = malware found, check FP and report.
-                 * Likewise, if the file was determined to be trusted, then we
-                 * can also finish with the scan. (Ex: EXE with a valid
-                 * Authenticode sig.) */
-                case CL_VERIFIED:
-                    // For now just conver CL_VERIFIED to CL_CLEAN, since
-                    // CL_VERIFIED isn't used elsewhere
-                    res = CL_CLEAN;
-                    // Fall through
-                case CL_VIRUS:
-                    ret = res;
-                    if (SCAN_ALLMATCHES)
-                        break;
-                    cli_bitset_free(ctx->hook_lsig_matches);
-                    ctx->hook_lsig_matches = old_hook_lsig_matches;
-                    goto done;
-                /* The CL_ETIMEOUT "MAX" condition should set exceeds max flag and exit out quietly. */
-                case CL_ETIMEOUT:
-                    cli_check_blockmax(ctx, ret);
-                    cli_bitset_free(ctx->hook_lsig_matches);
-                    ctx->hook_lsig_matches = old_hook_lsig_matches;
-                    cli_dbgmsg("Descriptor[%d]: Stopping after scanraw reached %s\n",
-                               fmap_fd(*ctx->fmap), cl_strerror(res));
-                    ret = CL_CLEAN;
-                    goto done;
-                /* All other "MAX" conditions should still fully scan the current file */
-                case CL_EMAXREC:
-                case CL_EMAXSIZE:
-                case CL_EMAXFILES:
-                    ret = res;
-                    cli_dbgmsg("Descriptor[%d]: Continuing after scanraw reached %s\n",
-                               fmap_fd(*ctx->fmap), cl_strerror(res));
-                    break;
-                /* Other errors must not block further scans below
-                 * This specifically includes CL_EFORMAT & CL_EREAD & CL_EUNPACK
-                 * Malformed/truncated files could report as any of these three.
-                 */
-                default:
-                    ret = res;
-                    cli_dbgmsg("Descriptor[%d]: Continuing after scanraw error %s\n",
-                               fmap_fd(*ctx->fmap), cl_strerror(res));
-            }
+        ret = scanraw(ctx, type, typercg, &dettype, (ctx->engine->engine_options & ENGINE_OPTIONS_DISABLE_CACHE) ? NULL : hash);
+
+        // Evaluate the result from the scan to see if it end the scan of this layer early,
+        // and to decid if we should propagate an error or not.
+        if (result_should_goto_done(ctx, ret, &ret)) {
+            goto done;
         }
     }
 
-    ctx->recursion++;
+    /*
+     * Now run the rest of the file type parsers.
+     */
     switch (type) {
         /* bytecode hooks triggered by a lsig must be a hook
          * called from one of the functions here */
@@ -4207,121 +4951,135 @@ cl_error_t cli_magic_scan(cli_ctx *ctx, cli_file_t type)
         case CL_TYPE_TEXT_UTF16LE:
         case CL_TYPE_TEXT_UTF8:
             perf_nested_start(ctx, PERFT_SCRIPT, PERFT_SCAN);
-            if (SCAN_PARSE_HTML && (DCONF_DOC & DOC_CONF_HTML))
-                ret = cli_scanhtml(ctx);
-            if ((DCONF_DOC & DOC_CONF_SCRIPT) && dettype != CL_TYPE_HTML && (ret != CL_VIRUS || SCAN_ALLMATCHES) && SCAN_PARSE_HTML)
+            if ((dettype != CL_TYPE_HTML) &&
+                SCAN_PARSE_HTML && (DCONF_DOC & DOC_CONF_SCRIPT) && (ret != CL_VIRUS)) {
                 ret = cli_scanscript(ctx);
-            if (SCAN_PARSE_MAIL && (DCONF_MAIL & MAIL_CONF_MBOX) && ret != CL_VIRUS && (cli_get_container(ctx, -1) == CL_TYPE_MAIL || dettype == CL_TYPE_MAIL)) {
-                ret = cli_scan_fmap(ctx, CL_TYPE_MAIL, 0, NULL, AC_SCAN_VIR, NULL, NULL);
+            }
+            if (((dettype == CL_TYPE_MAIL) || (cli_recursion_stack_get_type(ctx, -1) == CL_TYPE_MAIL)) &&
+                SCAN_PARSE_MAIL && (DCONF_MAIL & MAIL_CONF_MBOX) && (ret != CL_VIRUS)) {
+                ret = cli_scan_fmap(ctx, CL_TYPE_MAIL, false, NULL, AC_SCAN_VIR, NULL, NULL);
             }
             perf_nested_stop(ctx, PERFT_SCRIPT, PERFT_SCAN);
             break;
+
         /* Due to performance reasons all executables were first scanned
          * in raw mode. Now we will try to unpack them
          */
         case CL_TYPE_MSEXE:
             perf_nested_start(ctx, PERFT_PE, PERFT_SCAN);
             if (SCAN_PARSE_PE && ctx->dconf->pe) {
+                // Setting ctx->corrupted_input will prevent the PE parser from reporting "broken executable" for unpacked/reconstructed files that may not be 100% to spec.
+                // In here we're just carrying the corrupted_input flag from parent to child, in case the parent's flag was set.
                 unsigned int corrupted_input = ctx->corrupted_input;
                 ret                          = cli_scanpe(ctx);
                 ctx->corrupted_input         = corrupted_input;
             }
             perf_nested_stop(ctx, PERFT_PE, PERFT_SCAN);
             break;
+
         case CL_TYPE_ELF:
             perf_nested_start(ctx, PERFT_ELF, PERFT_SCAN);
             ret = cli_unpackelf(ctx);
             perf_nested_stop(ctx, PERFT_ELF, PERFT_SCAN);
             break;
+
         case CL_TYPE_MACHO:
         case CL_TYPE_MACHO_UNIBIN:
             perf_nested_start(ctx, PERFT_MACHO, PERFT_SCAN);
             ret = cli_unpackmacho(ctx);
             perf_nested_stop(ctx, PERFT_MACHO, PERFT_SCAN);
             break;
+
         case CL_TYPE_BINARY_DATA:
-            ret = cli_scan_fmap(ctx, CL_TYPE_OTHER, 0, NULL, AC_SCAN_VIR, NULL, NULL);
+            ret = cli_scan_fmap(ctx, CL_TYPE_OTHER, false, NULL, AC_SCAN_VIR, NULL, NULL);
             break;
+
+        case CL_TYPE_PDF: /* FIXMELIMITS: pdf should be an archive! */
+            if (SCAN_PARSE_PDF && (DCONF_DOC & DOC_CONF_PDF))
+                ret = cli_scanpdf(ctx, 0);
+            break;
+
         default:
             break;
-    }
-
-    ctx->recursion--;
-    cli_bitset_free(ctx->hook_lsig_matches);
-    ctx->hook_lsig_matches = old_hook_lsig_matches;
-
-    switch (ret) {
-        /* Limits exceeded */
-        case CL_ETIMEOUT:
-        case CL_EMAXREC:
-        case CL_EMAXSIZE:
-        case CL_EMAXFILES:
-            cli_check_blockmax(ctx, ret);
-        /* Malformed file cases */
-        case CL_EFORMAT:
-        case CL_EREAD:
-        case CL_EUNPACK:
-            cli_dbgmsg("Descriptor[%d]: %s\n", fmap_fd(*ctx->fmap), cl_strerror(ret));
-            ret = CL_CLEAN;
-            goto done;
-        case CL_CLEAN:
-            cache_clean = 1;
-            ret         = CL_CLEAN;
-            goto done;
-        default:
-            goto done;
     }
 
 done:
+    // Filter the result from the parsers so we don't propagate non-fatal errors.
+    // And to convert CL_VERIFIED -> CL_CLEAN
+    (void)result_should_goto_done(ctx, ret, &ret);
+
+    if (old_hook_lsig_matches) {
+        /* We need to restore the old hook_lsig_matches */
+        cli_bitset_free(ctx->hook_lsig_matches); // safe to call, even if NULL
+        ctx->hook_lsig_matches = old_hook_lsig_matches;
+    }
 
 #if HAVE_JSON
     ctx->wrkproperty = (struct json_object *)(parent_property);
 #endif
 
-    if (ret == CL_CLEAN && ctx->found_possibly_unwanted) {
-        cb_retcode = CL_VIRUS;
+    /*
+     * Determine if there was an alert for this layer (or its children).
+     */
+    if ((evidence_num_alerts(ctx->evidence) > 0)) {
+        // TODO: Bug here.
+        //       If there was a PUA match in a previous file in a zip, all subsequent files will
+        //       think they have a match.
+        //       In allmatch mode, this affects strong sigs too, not just PUA sigs.
+        //       The only way to solve this is to keep track of the # of alerts for each layer,
+        //       including only children layers and propagating the evidence up to the parent layer
+        //       only at the end, after the cache_add.
+        verdict_at_this_level = CL_VIRUS;
     } else {
-        if (ret == CL_CLEAN && ctx->num_viruses != 0)
-            cb_retcode = CL_VIRUS;
-        else
-            cb_retcode = ret;
+        verdict_at_this_level = ret;
     }
 
-    cli_dbgmsg("cli_magic_scan_desc: returning %d %s\n", ret, __AT__);
+    /*
+     * Run the post-scan callback (if one exists) and provide the verdict for this layer.
+     */
+    cli_dbgmsg("cli_magic_scan: returning %d %s\n", ret, __AT__);
     if (ctx->engine->cb_post_scan) {
+        cl_error_t callback_ret;
         const char *virusname = NULL;
-        perf_start(ctx, PERFT_POSTCB);
-        if (cb_retcode == CL_VIRUS)
+
+        // Get the last signature that matched (if any).
+        if (verdict_at_this_level == CL_VIRUS) {
             virusname = cli_get_last_virus(ctx);
-        switch (ctx->engine->cb_post_scan(fmap_fd(*ctx->fmap), cb_retcode, virusname, ctx->cb_ctx)) {
+        }
+
+        perf_start(ctx, PERFT_POSTCB);
+        callback_ret = ctx->engine->cb_post_scan(fmap_fd(ctx->fmap), verdict_at_this_level, virusname, ctx->cb_ctx);
+        perf_stop(ctx, PERFT_POSTCB);
+
+        switch (callback_ret) {
             case CL_BREAK:
-                cli_dbgmsg("cli_magic_scan_desc: file whitelisted by post_scan callback\n");
-                perf_stop(ctx, PERFT_POSTCB);
+                cli_dbgmsg("cli_magic_scan: file allowed by post_scan callback\n");
                 ret = CL_CLEAN;
                 break;
             case CL_VIRUS:
-                cli_dbgmsg("cli_magic_scan_desc: file blacklisted by post_scan callback\n");
-                cli_append_virus(ctx, "Detected.By.Callback");
-                perf_stop(ctx, PERFT_POSTCB);
-                if (ret != CL_VIRUS) {
-                    ret = cli_checkfp(hash, hashed_size, ctx);
+                cli_dbgmsg("cli_magic_scan: file blocked by post_scan callback\n");
+                callback_ret = cli_append_virus(ctx, "Detected.By.Callback");
+                if (callback_ret == CL_VIRUS) {
+                    ret = CL_VIRUS;
                 }
                 break;
             case CL_CLEAN:
                 break;
             default:
-                cli_warnmsg("cli_magic_scan_desc: ignoring bad return code from post_scan callback\n");
+                ret = CL_CLEAN;
+                cli_warnmsg("cli_magic_scan: ignoring bad return code from post_scan callback\n");
         }
-        perf_stop(ctx, PERFT_POSTCB);
     }
-    if (cb_retcode == CL_CLEAN && cache_clean) {
+
+    /*
+     * If the verdict for this layer is "clean", we can cache it.
+     */
+    if (verdict_at_this_level == CL_CLEAN) {
+        // clean_cache_add() will check the fmap->dont_cache_flag,
+        // so this may not actually cache if we exceeded limits earlier.
         perf_start(ctx, PERFT_CACHE);
-        if (!(SCAN_COLLECT_METADATA))
-            cache_add(hash, hashed_size, ctx);
+        clean_cache_add(hash, hashed_size, ctx);
         perf_stop(ctx, PERFT_CACHE);
-    }
-    if (ret == CL_VIRUS && SCAN_ALLMATCHES) {
-        ret = CL_CLEAN;
     }
 
 early_ret:
@@ -4343,10 +5101,12 @@ early_ret:
     return ret;
 }
 
-cl_error_t cli_magic_scan_desc_type(int desc, const char *filepath, cli_ctx *ctx, cli_file_t type, const char *name)
+cl_error_t cli_magic_scan_desc_type(int desc, const char *filepath, cli_ctx *ctx, cli_file_t type,
+                                    const char *name, uint32_t attributes)
 {
     STATBUF sb;
     cl_error_t status = CL_CLEAN;
+    fmap_t *new_map   = NULL;
 
     if (!ctx) {
         return CL_EARG;
@@ -4359,9 +5119,11 @@ cl_error_t cli_magic_scan_desc_type(int desc, const char *filepath, cli_ctx *ctx
     if (ctx->sha_collect > 0)
         ctx->sha_collect = 0;
 #endif
-    cli_dbgmsg("in cli_magic_scan_desc_type (reclevel: %u/%u)\n", ctx->recursion, ctx->engine->maxreclevel);
+
+    cli_dbgmsg("in cli_magic_scan_desc_type (recursion_level: %u/%u)\n", ctx->recursion_level, ctx->engine->max_recursion_level);
+
     if (FSTAT(desc, &sb) == -1) {
-        cli_errmsg("cli_magic_scan: Can't fstat descriptor %d\n", desc);
+        cli_errmsg("cli_magic_scan_desc_type: Can't fstat descriptor %d\n", desc);
 
         status = CL_ESTAT;
         cli_dbgmsg("cli_magic_scan_desc_type: returning %d %s (no post, no cache)\n", status, __AT__);
@@ -4375,33 +5137,39 @@ cl_error_t cli_magic_scan_desc_type(int desc, const char *filepath, cli_ctx *ctx
         goto done;
     }
 
-    ctx->fmap++;
     perf_start(ctx, PERFT_MAP);
-    if (!(*ctx->fmap = fmap(desc, 0, sb.st_size, name))) {
+    new_map = fmap(desc, 0, sb.st_size, name);
+    perf_stop(ctx, PERFT_MAP);
+    if (NULL == new_map) {
         cli_errmsg("CRITICAL: fmap() failed\n");
-        ctx->fmap--;
-        perf_stop(ctx, PERFT_MAP);
-
         status = CL_EMEM;
         cli_dbgmsg("cli_magic_scan_desc_type: returning %d %s (no post, no cache)\n", status, __AT__);
         goto done;
     }
-    perf_stop(ctx, PERFT_MAP);
+
+    status = cli_recursion_stack_push(ctx, new_map, type, true, attributes); /* Perform scan with child fmap */
+    if (CL_SUCCESS != status) {
+        cli_dbgmsg("Failed to scan fmap.\n");
+        goto done;
+    }
 
     status = cli_magic_scan(ctx, type);
 
-    funmap(*ctx->fmap);
-    ctx->fmap--;
+    (void)cli_recursion_stack_pop(ctx); /* Restore the parent fmap */
 
 done:
+    if (NULL != new_map) {
+        funmap(new_map);
+    }
+
     ctx->sub_filepath = parent_filepath;
 
     return status;
 }
 
-cl_error_t cli_magic_scan_desc(int desc, const char *filepath, cli_ctx *ctx, const char *name)
+cl_error_t cli_magic_scan_desc(int desc, const char *filepath, cli_ctx *ctx, const char *name, uint32_t attributes)
 {
-    return cli_magic_scan_desc_type(desc, filepath, ctx, CL_TYPE_ANY, name);
+    return cli_magic_scan_desc_type(desc, filepath, ctx, CL_TYPE_ANY, name, attributes);
 }
 
 cl_error_t cl_scandesc(int desc, const char *filename, const char **virname, unsigned long int *scanned, const struct cl_engine *engine, struct cl_scan_options *scanoptions)
@@ -4422,83 +5190,96 @@ cl_error_t cl_scandesc(int desc, const char *filename, const char **virname, uns
  * @param name      (optional) Original name of the file (to set fmap name metadata)
  * @return int      CL_SUCCESS, or an error code.
  */
-static cl_error_t magic_scan_nested_fmap_type(cl_fmap_t *map, off_t offset, size_t length, cli_ctx *ctx, cli_file_t type, const char *name)
+static cl_error_t magic_scan_nested_fmap_type(cl_fmap_t *map, size_t offset, size_t length, cli_ctx *ctx,
+                                              cli_file_t type, const char *name, uint32_t attributes)
 {
-    cl_error_t ret = CL_CLEAN;
+    cl_error_t status = CL_CLEAN;
+    fmap_t *new_map   = NULL;
 
-    cli_dbgmsg("magic_scan_nested_fmap_type: [%zu, +%zu), [" STDi64 ", +%zu)\n",
-               map->nested_offset, map->len,
-               (int64_t)offset, length);
-    if (offset < 0 || (size_t)offset >= map->len) {
-        cli_dbgmsg("Invalid offset: %ld\n", (long)offset);
-        return CL_CLEAN;
+    cli_dbgmsg("magic_scan_nested_fmap_type: [0, +%zu), [%zu, +%zu)\n",
+               map->len, offset, length);
+
+    if (offset >= map->len) {
+        cli_dbgmsg("magic_scan_nested_fmap_type: Invalid offset: %zu\n", offset);
+        goto done;
     }
 
     if (!length)
         length = map->len - offset;
+
     if (length > map->len - offset) {
-        cli_dbgmsg("Data truncated: %zu -> %zu\n",
-                   length, map->len - (size_t)offset);
-        length = map->len - (size_t)offset;
+        cli_dbgmsg("magic_scan_nested_fmap_type: Data truncated: %zu -> %zu\n",
+                   length, map->len - offset);
+        length = map->len - offset;
     }
 
     if (length <= 5) {
-        cli_dbgmsg("Small data (%zu bytes)\n", length);
-        return CL_CLEAN;
-    }
-    ctx->fmap++;
-    *ctx->fmap = fmap_duplicate(map, offset, length, name);
-    if (NULL == *ctx->fmap) {
-        cli_dbgmsg("Failed to duplicate fmap for scan of fmap subsection\n");
-        ctx->fmap--;
-        return CL_CLEAN;
+        cli_dbgmsg("magic_scan_nested_fmap_type: Small data (%zu bytes)\n", length);
+        goto done;
     }
 
-    ret = cli_magic_scan(ctx, type);
+    new_map = fmap_duplicate(map, offset, length, name);
+    if (NULL == new_map) {
+        cli_dbgmsg("magic_scan_nested_fmap_type: Failed to duplicate fmap for scan of fmap subsection\n");
+        goto done;
+    }
 
-    free_duplicate_fmap(*ctx->fmap); /* This fmap is just a duplicate. */
-    *ctx->fmap = NULL;
-    ctx->fmap--;
+    status = cli_recursion_stack_push(ctx, new_map, type, false, attributes); /* Perform scan with child fmap */
+    if (CL_SUCCESS != status) {
+        cli_dbgmsg("magic_scan_nested_fmap_type: Failed to add map to recursion stack for magic scan.\n");
+        goto done;
+    }
 
-    return ret;
+    status = cli_magic_scan(ctx, type);
+
+    (void)cli_recursion_stack_pop(ctx); /* Restore the parent fmap */
+
+done:
+    if (NULL != new_map) {
+        free_duplicate_fmap(new_map); /* This fmap is just a duplicate. */
+    }
+
+    return status;
 }
 
 /* For map scans that may be forced to disk */
-cl_error_t cli_magic_scan_nested_fmap_type(cl_fmap_t *map, off_t offset, size_t length, cli_ctx *ctx, cli_file_t type, const char *name)
+cl_error_t cli_magic_scan_nested_fmap_type(cl_fmap_t *map, size_t offset, size_t length, cli_ctx *ctx,
+                                           cli_file_t type, const char *name, uint32_t attributes)
 {
-    off_t old_off  = map->nested_offset;
-    size_t old_len = map->len;
     cl_error_t ret = CL_CLEAN;
 
-    cli_dbgmsg("cli_magic_scan_nested_fmap_type: [%ld, +%lu)\n",
-               (long)offset, (unsigned long)length);
-    if (offset < 0 || (size_t)offset >= old_len) {
-        cli_dbgmsg("Invalid offset: %ld\n", (long)offset);
+    cli_dbgmsg("cli_magic_scan_nested_fmap_type: [%zu, +%zu)\n", offset, length);
+    if (offset >= map->len) {
+        cli_dbgmsg("Invalid offset: %zu\n", offset);
         return CL_CLEAN;
     }
 
     if (ctx->engine->engine_options & ENGINE_OPTIONS_FORCE_TO_DISK) {
-        /* if this is forced to disk, then need to write the nested map and scan it */
+        /*
+         * Force to disk!
+         *
+         * Write the offset + length section of the fmap to disk, and scan it.
+         */
         const uint8_t *mapdata = NULL;
         char *tempfile         = NULL;
         int fd                 = -1;
         size_t nread           = 0;
 
         /* Then check length */
-        if (!length)
-            length = old_len - offset;
-        if (length > old_len - offset) {
-            cli_dbgmsg("cli_magic_scan_nested_fmap_type: Data truncated: %lu -> %lu\n",
-                       (unsigned long)length, (unsigned long)(old_len - offset));
-            length = old_len - offset;
+        if (!length) {
+            /* Caller didn't specify len, use rest of the map */
+            length = map->len - offset;
+        }
+        if (length > map->len - offset) {
+            cli_dbgmsg("cli_magic_scan_nested_fmap_type: Data truncated: %zu -> %zu\n", length, map->len - offset);
+            length = map->len - offset;
         }
         if (length <= 5) {
             cli_dbgmsg("cli_magic_scan_nested_fmap_type: Small data (%u bytes)\n", (unsigned int)length);
             return CL_CLEAN;
         }
-        if (!CLI_ISCONTAINED(old_off, old_len, old_off + offset, length)) {
-            cli_dbgmsg("cli_magic_scan_nested_fmap_type: map error occurred [%ld, %zu]\n",
-                       (long)old_off, old_len);
+        if (!CLI_ISCONTAINED_0_TO(map->len, offset, length)) {
+            cli_dbgmsg("cli_magic_scan_nested_fmap_type: map error occurred [%zu, %zu] not within [0, %zu]\n", offset, length, map->len);
             return CL_CLEAN;
         }
 
@@ -4521,7 +5302,7 @@ cl_error_t cli_magic_scan_nested_fmap_type(cl_fmap_t *map, off_t offset, size_t 
         }
 
         /* scan the temp file */
-        ret = cli_magic_scan_desc_type(fd, tempfile, ctx, type, name);
+        ret = cli_magic_scan_desc_type(fd, tempfile, ctx, type, name, attributes);
 
         /* remove the temp file, if needed */
         if (fd >= 0) {
@@ -4535,13 +5316,17 @@ cl_error_t cli_magic_scan_nested_fmap_type(cl_fmap_t *map, off_t offset, size_t 
         }
         free(tempfile);
     } else {
-        /* Not forced to disk, use nested map */
-        ret = magic_scan_nested_fmap_type(map, offset, length, ctx, type, name);
+        /*
+         * Not forced to disk.
+         *
+         * Just use nested map by scanning given fmap at offset + length.
+         */
+        ret = magic_scan_nested_fmap_type(map, offset, length, ctx, type, name, attributes);
     }
     return ret;
 }
 
-cl_error_t cli_magic_scan_buff(const void *buffer, size_t length, cli_ctx *ctx, const char *name)
+cl_error_t cli_magic_scan_buff(const void *buffer, size_t length, cli_ctx *ctx, const char *name, uint32_t attributes)
 {
     cl_error_t ret;
     fmap_t *map = NULL;
@@ -4551,7 +5336,7 @@ cl_error_t cli_magic_scan_buff(const void *buffer, size_t length, cli_ctx *ctx, 
         return CL_EMAP;
     }
 
-    ret = cli_magic_scan_nested_fmap_type(map, 0, length, ctx, CL_TYPE_ANY, name);
+    ret = cli_magic_scan_nested_fmap_type(map, 0, length, ctx, CL_TYPE_ANY, name, attributes);
 
     funmap(map);
 
@@ -4567,13 +5352,18 @@ cl_error_t cli_magic_scan_buff(const void *buffer, size_t length, cli_ctx *ctx, 
  * @param[out] scanned      The number of bytes scanned.
  * @param engine            The scanning engine.
  * @param scanoptions       Scanning options.
- * @param[inout] context    An opaque context structure allowing the caller to record details about the sample being scanned.
+ * @param[in,out] context   An opaque context structure allowing the caller to record details about the sample being scanned.
  * @return int              CL_CLEAN, CL_VIRUS, or an error code if an error occured during the scan.
  */
 static cl_error_t scan_common(cl_fmap_t *map, const char *filepath, const char **virname, unsigned long int *scanned, const struct cl_engine *engine, struct cl_scan_options *scanoptions, void *context)
 {
-    cli_ctx ctx;
-    cl_error_t rc;
+    cl_error_t status = CL_SUCCESS;
+    cl_error_t ret;
+    cl_error_t verdict = CL_CLEAN;
+
+    cli_ctx ctx = {0};
+
+    bool logg_initalized = false;
 
     char *target_basename = NULL;
     char *new_temp_prefix = NULL;
@@ -4583,43 +5373,43 @@ static cl_error_t scan_common(cl_fmap_t *map, const char *filepath, const char *
     time_t current_time;
     struct tm tm_struct;
 
-    if (NULL == map) {
+    if (NULL == map || NULL == scanoptions) {
         return CL_ENULLARG;
     }
 
-    /* We have a limit of around 2.17GB (INT_MAX - 2). Enforce it here. */
-    if ((size_t)(map->real_len) > (size_t)(INT_MAX - 2))
-        return CL_CLEAN;
+    size_t num_potentially_unwanted_indicators = 0;
 
-    memset(&ctx, '\0', sizeof(cli_ctx));
+    *virname = NULL;
+
     ctx.engine  = engine;
-    ctx.virname = virname;
     ctx.scanned = scanned;
-    ctx.options = malloc(sizeof(struct cl_scan_options));
+    MALLOC(ctx.options, sizeof(struct cl_scan_options), status = CL_EMEM);
+
     memcpy(ctx.options, scanoptions, sizeof(struct cl_scan_options));
-    ctx.found_possibly_unwanted = 0;
-    ctx.containers              = cli_calloc(sizeof(cli_ctx_container), ctx.engine->maxreclevel + 2);
-    if (!ctx.containers)
-        return CL_EMEM;
-    cli_set_container(&ctx, CL_TYPE_ANY, 0);
+
+    ctx.evidence = evidence_new();
+
     ctx.dconf  = (struct cli_dconf *)engine->dconf;
     ctx.cb_ctx = context;
-    ctx.fmap   = cli_calloc(sizeof(fmap_t *), ctx.engine->maxreclevel + 3);
-    if (!ctx.fmap)
-        return CL_EMEM;
+
     if (!(ctx.hook_lsig_matches = cli_bitset_init())) {
-        free(ctx.fmap);
-        return CL_EMEM;
+        status = CL_EMEM;
+        goto done;
     }
 
-    /*
-     * The first fmap in ctx.fmap must be NULL so we can fmap-- while not NULL.
-     * But we need an fmap to be set so we can append viruses or report the
-     * fmap's file descriptor in the virus found callback (like for deferred
-     * low-seveerity alerts).
-     */
-    ctx.fmap++;
-    *ctx.fmap = map;
+    ctx.recursion_stack_size = ctx.engine->max_recursion_level;
+    ctx.recursion_stack      = cli_calloc(sizeof(recursion_level_t), ctx.recursion_stack_size);
+    if (!ctx.recursion_stack) {
+        status = CL_EMEM;
+        goto done;
+    }
+
+    // ctx was memset, so recursion_level starts at 0.
+    ctx.recursion_stack[ctx.recursion_level].fmap = map;
+    ctx.recursion_stack[ctx.recursion_level].type = CL_TYPE_ANY; // ANY for the top level, because we don't yet know the type.
+    ctx.recursion_stack[ctx.recursion_level].size = map->len;
+
+    ctx.fmap = ctx.recursion_stack[ctx.recursion_level].fmap;
 
     perf_init(&ctx);
 
@@ -4658,7 +5448,8 @@ static cl_error_t scan_common(cl_fmap_t *map, const char *filepath, const char *
     if (!localtime_r(&current_time, &tm_struct)) {
 #endif
         cli_errmsg("scan_common: Failed to get local time.\n");
-        return CL_ESTAT;
+        status = CL_ESTAT;
+        goto done;
     }
 
     if ((ctx.engine->keeptmp) &&
@@ -4669,9 +5460,10 @@ static cl_error_t scan_common(cl_fmap_t *map, const char *filepath, const char *
         new_temp_prefix     = cli_calloc(1, new_temp_prefix_len + 1);
         if (!new_temp_prefix) {
             cli_errmsg("scan_common: Failed to allocate memory for temp directory name.\n");
-            return CL_EMEM;
+            status = CL_EMEM;
+            goto done;
         }
-        strftime(new_temp_prefix, new_temp_prefix_len, "%Y%m%d_%H%M%S-", &tm_struct);
+        strftime(new_temp_prefix, new_temp_prefix_len + 1, "%Y%m%d_%H%M%S-", &tm_struct);
         strcpy(new_temp_prefix + strlen("YYYYMMDD_HHMMSS-"), target_basename);
     } else {
         /* Just use date */
@@ -4679,9 +5471,10 @@ static cl_error_t scan_common(cl_fmap_t *map, const char *filepath, const char *
         new_temp_prefix     = cli_calloc(1, new_temp_prefix_len + 1);
         if (!new_temp_prefix) {
             cli_errmsg("scan_common: Failed to allocate memory for temp directory name.\n");
-            return CL_EMEM;
+            status = CL_EMEM;
+            goto done;
         }
-        strftime(new_temp_prefix, new_temp_prefix_len, "%Y%m%d_%H%M%S-scantemp", &tm_struct);
+        strftime(new_temp_prefix, new_temp_prefix_len + 1, "%Y%m%d_%H%M%S-scantemp", &tm_struct);
     }
 
     /* Place the new temp sub-directory within the configured temp directory */
@@ -4689,23 +5482,22 @@ static cl_error_t scan_common(cl_fmap_t *map, const char *filepath, const char *
     free(new_temp_prefix);
     if (NULL == new_temp_path) {
         cli_errmsg("scan_common: Failed to generate temp directory name.\n");
-        return CL_EMEM;
+        status = CL_EMEM;
+        goto done;
     }
 
     ctx.sub_tmpdir = new_temp_path;
 
     if (mkdir(ctx.sub_tmpdir, 0700)) {
         cli_errmsg("Can't create temporary directory for scan: %s.\n", ctx.sub_tmpdir);
-        return CL_EACCES;
+        status = CL_EACCES;
+        goto done;
     }
 
     cli_logg_setup(&ctx);
+    logg_initalized = true;
 
-    rc = cli_magic_scan_nested_fmap_type(map, 0, map->len, &ctx, CL_TYPE_ANY, target_basename);
-
-    if (rc == CL_CLEAN && ctx.found_possibly_unwanted) {
-        cli_virus_found_cb(&ctx);
-    }
+    status = cli_magic_scan(&ctx, CL_TYPE_ANY);
 
 #if HAVE_JSON
     if (ctx.options->general & CL_SCAN_GENERAL_COLLECT_METADATA && (ctx.properties != NULL)) {
@@ -4732,73 +5524,144 @@ static cl_error_t scan_common(cl_fmap_t *map, const char *filepath, const char *
 #endif
         if (NULL == jstring) {
             cli_errmsg("scan_common: no memory for json serialization.\n");
-            rc = CL_EMEM;
-        } else {
-            int ret                   = CL_SUCCESS;
+            status = CL_EMEM;
+            goto done;
+        }
+
+        cli_dbgmsg("%s\n", jstring);
+
+        if (status != CL_VIRUS) {
+            /*
+             * Run bytecode preclass hook.
+             */
             struct cli_matcher *iroot = ctx.engine->root[13];
-            cli_dbgmsg("%s\n", jstring);
 
-            if ((rc != CL_VIRUS) || (ctx.options->general & CL_SCAN_GENERAL_ALLMATCHES)) {
-                /* run bytecode preclass hook; generate fmap if needed for running hook */
-                struct cli_bc_ctx *bc_ctx = cli_bytecode_context_alloc();
-                if (!bc_ctx) {
-                    cli_errmsg("scan_common: can't allocate memory for bc_ctx\n");
-                    rc = CL_EMEM;
-                } else {
-                    cli_bytecode_context_setctx(bc_ctx, &ctx);
-                    rc = cli_bytecode_runhook(&ctx, ctx.engine, bc_ctx, BC_PRECLASS, map);
-                    cli_bytecode_context_destroy(bc_ctx);
-                }
+            struct cli_bc_ctx *bc_ctx = cli_bytecode_context_alloc();
+            if (!bc_ctx) {
+                cli_errmsg("scan_common: can't allocate memory for bc_ctx\n");
+                status = CL_EMEM;
+            } else {
+                cli_bytecode_context_setctx(bc_ctx, &ctx);
+                status = cli_bytecode_runhook(&ctx, ctx.engine, bc_ctx, BC_PRECLASS, map);
+                cli_bytecode_context_destroy(bc_ctx);
+            }
 
-                /* backwards compatibility: scan the json string unless a virus was detected */
-                if (rc != CL_VIRUS && (iroot->ac_lsigs || iroot->ac_patterns
+            /* backwards compatibility: scan the json string unless a virus was detected */
+            if (status != CL_VIRUS && (iroot->ac_lsigs || iroot->ac_patterns
 #ifdef HAVE_PCRE
                                        || iroot->pcre_metas
 #endif // HAVE_PCRE
                                        )) {
-                    cli_dbgmsg("scan_common: running deprecated preclass bytecodes for target type 13\n");
-                    ctx.options->general &= ~CL_SCAN_GENERAL_COLLECT_METADATA;
-                    rc = cli_magic_scan_buff(jstring, strlen(jstring), &ctx, NULL);
-                }
-            }
-
-            /* Invoke file props callback */
-            if (ctx.engine->cb_file_props != NULL) {
-                ret = ctx.engine->cb_file_props(jstring, rc, ctx.cb_ctx);
-                if (ret != CL_SUCCESS)
-                    rc = ret;
-            }
-
-            /* keeptmp file processing for file properties json string */
-            if (ctx.engine->keeptmp) {
-                int fd        = -1;
-                char *tmpname = NULL;
-
-                if ((ret = cli_newfilepathfd(ctx.sub_tmpdir, "metadata.json", &tmpname, &fd)) != CL_SUCCESS) {
-                    cli_dbgmsg("scan_common: Can't create json properties file, ret = %i.\n", ret);
-                } else {
-                    if (cli_writen(fd, jstring, strlen(jstring)) == (size_t)-1)
-                        cli_dbgmsg("scan_common: cli_writen error writing json properties file.\n");
-                    else
-                        cli_dbgmsg("json written to: %s\n", tmpname);
-                }
-                if (fd != -1)
-                    close(fd);
-                if (NULL != tmpname)
-                    free(tmpname);
+                cli_dbgmsg("scan_common: running deprecated preclass bytecodes for target type 13\n");
+                ctx.options->general &= ~CL_SCAN_GENERAL_COLLECT_METADATA;
+                status = cli_magic_scan_buff(jstring, strlen(jstring), &ctx, NULL, LAYER_ATTRIBUTES_NONE);
             }
         }
-        cli_json_delobj(ctx.properties); /* frees all json memory */
+
+        /*
+         * Invoke file props callback.
+         */
+        if (ctx.engine->cb_file_props != NULL) {
+            ret = ctx.engine->cb_file_props(jstring, status, ctx.cb_ctx);
+            if (ret != CL_SUCCESS) {
+                status = ret;
+            }
+        }
+
+        /*
+         * Write the file properties metadata JSON to metadata.json if keeptmp is enabled.
+         */
+        if (ctx.engine->keeptmp) {
+            int fd        = -1;
+            char *tmpname = NULL;
+
+            if ((ret = cli_newfilepathfd(ctx.sub_tmpdir, "metadata.json", &tmpname, &fd)) != CL_SUCCESS) {
+                cli_dbgmsg("scan_common: Can't create json properties file, ret = %i.\n", ret);
+            } else {
+                if ((size_t)-1 == cli_writen(fd, jstring, strlen(jstring))) {
+                    cli_dbgmsg("scan_common: cli_writen error writing json properties file.\n");
+                } else {
+                    cli_dbgmsg("json written to: %s\n", tmpname);
+                }
+            }
+            if (fd != -1) {
+                close(fd);
+            }
+            if (NULL != tmpname) {
+                free(tmpname);
+            }
+        }
     }
 #endif // HAVE_JSON
 
-    if (rc == CL_CLEAN) {
-        if ((ctx.found_possibly_unwanted) ||
-            ((ctx.num_viruses != 0) &&
-             ((ctx.options->general & CL_SCAN_GENERAL_ALLMATCHES) ||
-              (ctx.options->heuristic & CL_SCAN_HEURISTIC_EXCEEDS_MAX)))) {
-            rc = CL_VIRUS;
+    // If any alerts occurred, set the output pointer to the "latest" alert signature name.
+    if (0 < evidence_num_alerts(ctx.evidence)) {
+        *virname = cli_get_last_virus_str(&ctx);
+        verdict  = CL_VIRUS;
+    }
+
+    /*
+     * Report PUA alerts here.
+     */
+    num_potentially_unwanted_indicators = evidence_num_indicators_type(
+        ctx.evidence,
+        IndicatorType_PotentiallyUnwanted);
+    if (0 != num_potentially_unwanted_indicators) {
+        // We have "potentially unwanted" indicators that would not have been reported yet.
+        // We may wish to report them now, ... depending ....
+
+        if (ctx.options->general & CL_SCAN_GENERAL_ALLMATCHES) {
+            // We're in allmatch mode, so report all "potentially unwanted" matches now.
+
+            size_t i;
+
+            for (i = 0; i < num_potentially_unwanted_indicators; i++) {
+                const char *pua_alert = evidence_get_indicator(
+                    ctx.evidence,
+                    IndicatorType_PotentiallyUnwanted,
+                    i);
+
+                if (NULL != pua_alert) {
+                    // We don't know exactly which layer the alert happened at.
+                    // There's a decent chance it wasn't at this layer, and in that case we wouldn't
+                    // even have access to that file anymore (it's gone!). So we'll pass back -1 for the
+                    // file descriptor rather than using `cli_virus_found_cb() which would pass back
+                    // The top level file descriptor.
+                    if (ctx.engine->cb_virus_found) {
+                        ctx.engine->cb_virus_found(
+                            -1,
+                            pua_alert,
+                            ctx.cb_ctx);
+                    }
+                }
+            }
+
+        } else {
+            // Not allmatch mode. Only want to report one thing...
+            if (0 == evidence_num_indicators_type(ctx.evidence, IndicatorType_Strong)) {
+                // And it looks like we haven't reported anything else, so report the last "potentially unwanted" one.
+                cli_virus_found_cb(&ctx, cli_get_last_virus(&ctx));
+            }
         }
+    }
+
+    if (verdict != CL_CLEAN) {
+        // Reporting "VIRUS" is more important than reporting and error,
+        // because... unfortunately we can only do one with the current API.
+        status = verdict;
+    }
+
+done:
+    // Filter the result from the post-scan hooks and stuff, so we don't propagate non-fatal errors.
+    // And to convert CL_VERIFIED -> CL_CLEAN
+    (void)result_should_goto_done(&ctx, status, &status);
+
+    if (logg_initalized) {
+        cli_logg_unsetup();
+    }
+
+    if (NULL != ctx.properties) {
+        cli_json_delobj(ctx.properties);
     }
 
     if (NULL != ctx.sub_tmpdir) {
@@ -4808,18 +5671,35 @@ static cl_error_t scan_common(cl_fmap_t *map, const char *filepath, const char *
         free(ctx.sub_tmpdir);
     }
 
+    if (NULL != target_basename) {
+        free(target_basename);
+    }
+
     if (NULL != ctx.target_filepath) {
         free(ctx.target_filepath);
     }
-    free(ctx.containers);
-    cli_bitset_free(ctx.hook_lsig_matches);
-    ctx.fmap--; /* Restore original fmap pointer */
-    free(ctx.fmap);
-    free(ctx.options);
-    cli_logg_unsetup();
-    perf_done(&ctx);
 
-    return rc;
+    if (NULL != ctx.perf) {
+        perf_done(&ctx);
+    }
+
+    if (NULL != ctx.hook_lsig_matches) {
+        cli_bitset_free(ctx.hook_lsig_matches);
+    }
+
+    if (NULL != ctx.recursion_stack) {
+        free(ctx.recursion_stack);
+    }
+
+    if (NULL != ctx.options) {
+        free(ctx.options);
+    }
+
+    if (NULL != ctx.evidence) {
+        evidence_free(ctx.evidence);
+    }
+
+    return status;
 }
 
 cl_error_t cl_scandesc_callback(int desc, const char *filename, const char **virname, unsigned long int *scanned, const struct cl_engine *engine, struct cl_scan_options *scanoptions, void *context)
@@ -4835,8 +5715,23 @@ cl_error_t cl_scandesc_callback(int desc, const char *filename, const char **vir
         goto done;
     }
     if (sb.st_size <= 5) {
-        cli_dbgmsg("cl_scandesc_callback: File too small (%u bytes), ignoring\n", (unsigned int)sb.st_size);
+        cli_dbgmsg("cl_scandesc_callback: File too small (" STDu64 " bytes), ignoring\n", (uint64_t)sb.st_size);
         status = CL_CLEAN;
+        goto done;
+    }
+    if ((engine->maxfilesize > 0) && ((uint64_t)sb.st_size > engine->maxfilesize)) {
+        cli_dbgmsg("cl_scandesc_callback: File too large (" STDu64 " bytes), ignoring\n", (uint64_t)sb.st_size);
+        if (scanoptions->heuristic & CL_SCAN_HEURISTIC_EXCEEDS_MAX) {
+            if (engine->cb_virus_found) {
+                engine->cb_virus_found(desc, "Heuristics.Limits.Exceeded.MaxFileSize", context);
+                if (virname) {
+                    *virname = "Heuristics.Limits.Exceeded.MaxFileSize";
+                }
+            }
+            status = CL_VIRUS;
+        } else {
+            status = CL_CLEAN;
+        }
         goto done;
     }
 
@@ -4865,32 +5760,29 @@ done:
 
 cl_error_t cl_scanmap_callback(cl_fmap_t *map, const char *filename, const char **virname, unsigned long int *scanned, const struct cl_engine *engine, struct cl_scan_options *scanoptions, void *context)
 {
+    if ((engine->maxfilesize > 0) && (map->len > engine->maxfilesize)) {
+        cli_dbgmsg("cl_scandesc_callback: File too large (%zu bytes), ignoring\n", map->len);
+        if (scanoptions->heuristic & CL_SCAN_HEURISTIC_EXCEEDS_MAX) {
+            if (engine->cb_virus_found) {
+                engine->cb_virus_found(fmap_fd(map), "Heuristics.Limits.Exceeded.MaxFileSize", context);
+                if (virname) {
+                    *virname = "Heuristics.Limits.Exceeded.MaxFileSize";
+                }
+            }
+            return CL_VIRUS;
+        }
+        return CL_CLEAN;
+    }
+
+    if (NULL != filename && map->name == NULL) {
+        // Use the provided name for the fmap name if one wasn't already set.
+        cli_basename(filename, strlen(filename), &map->name);
+    }
+
     return scan_common(map, filename, virname, scanned, engine, scanoptions, context);
 }
 
-cl_error_t cli_found_possibly_unwanted(cli_ctx *ctx)
-{
-    if (cli_get_last_virus(ctx)) {
-        cli_dbgmsg("found Possibly Unwanted: %s\n", cli_get_last_virus(ctx));
-        if (SCAN_HEURISTIC_PRECEDENCE) {
-            /* we found a heuristic match, don't scan further,
-             * but consider it a virus. */
-            cli_dbgmsg("cli_found_possibly_unwanted: CL_VIRUS\n");
-            return CL_VIRUS;
-        }
-        /* heuristic scan isn't taking precedence, keep scanning.
-         * If this is part of an archive, and
-         * we find a real malware we report that instead of the
-         * heuristic match */
-        ctx->found_possibly_unwanted = 1;
-    } else {
-        cli_warnmsg("cli_found_possibly_unwanted called, but virname is not set\n");
-    }
-    emax_reached(ctx);
-    return CL_CLEAN;
-}
-
-cl_error_t cli_magic_scan_file(const char *filename, cli_ctx *ctx, const char *original_name)
+cl_error_t cli_magic_scan_file(const char *filename, cli_ctx *ctx, const char *original_name, uint32_t attributes)
 {
     int fd         = -1;
     cl_error_t ret = CL_EOPEN;
@@ -4901,12 +5793,13 @@ cl_error_t cli_magic_scan_file(const char *filename, cli_ctx *ctx, const char *o
         goto done;
     }
 
-    ret = cli_magic_scan_desc(fd, filename, ctx, original_name);
+    ret = cli_magic_scan_desc(fd, filename, ctx, original_name, attributes);
 
 done:
     if (fd >= 0) {
         close(fd);
     }
+
     return ret;
 }
 
@@ -4934,7 +5827,7 @@ cl_error_t cl_scanhandle_callback(HANDLE handle, const char *filename, const cha
 
 cl_error_t cl_scanfile(const char *filename, const char **virname, unsigned long int *scanned, const struct cl_engine *engine, struct cl_scan_options *scanoptions)
 {
-	return cl_scanfile_callback(filename, virname, scanned, engine, scanoptions, NULL);
+    return cl_scanfile_callback(filename, virname, scanned, engine, scanoptions, NULL);
 }
 
 cl_error_t cl_scanfile_callback(const char *filename, const char **virname, unsigned long int *scanned, const struct cl_engine *engine, struct cl_scan_options *scanoptions, void *context)
@@ -4946,8 +5839,13 @@ cl_error_t cl_scanfile_callback(const char *filename, const char **virname, unsi
     if (!fname)
         return CL_EARG;
 
-    if ((fd = safe_open(fname, O_RDONLY | O_BINARY)) == -1)
-        return CL_EOPEN;
+    if ((fd = safe_open(fname, O_RDONLY | O_BINARY)) == -1) {
+        if (errno == EACCES) {
+            return CL_EACCES;
+        } else {
+            return CL_EOPEN;
+        }
+    }
 
     if (fname != filename)
         free((char *)fname);

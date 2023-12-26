@@ -1,7 +1,7 @@
 /*
  * Extract component parts of OLE2 files (e.g. MS Office Documents)
  *
- * Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ * Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  * Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  * Authors: Kevin Lin
@@ -47,6 +47,7 @@
 #include "scanners.h"
 #include "fmap.h"
 #include "json_api.h"
+#include "entconv.h"
 
 #if HAVE_JSON
 static char *
@@ -63,8 +64,19 @@ ole2_convert_utf(summary_ctx_t *sctx, char *begin, size_t sz, const char *encodi
 #else
     UNUSEDPARAM(encoding);
 #endif
+
+    if (NULL == begin) {
+        cli_dbgmsg("ole2_convert_utf: invalid parameter\n");
+        return NULL;
+    }
+
+    if (sz == 0) {
+        cli_dbgmsg("ole2_convert_utf: converting empty string\n");
+        return cli_calloc(1, 1); // Just send back an empty NULL-terminated string.
+    }
+
     /* applies in the both case */
-    if (sctx->codepage == 20127 || sctx->codepage == 65001) {
+    if (sctx->codepage == CODEPAGE_US_7BIT_ASCII || sctx->codepage == CODEPAGE_UTF8) {
         char *track;
         size_t bcnt, scnt;
 
@@ -74,7 +86,7 @@ ole2_convert_utf(summary_ctx_t *sctx, char *begin, size_t sz, const char *encodi
         memcpy(outbuf, begin, sz);
 
         track = outbuf + sz - 1;
-        if ((sctx->codepage == 65001) && (*track & 0x80)) { /* UTF-8 with a most significant bit */
+        if ((sctx->codepage == CODEPAGE_UTF8) && (*track & 0x80)) { /* UTF-8 with a most significant bit */
             /* locate the start of the last character */
             for (bcnt = 1; (track != outbuf); track--, bcnt++) {
                 if (((uint8_t)*track & 0xC0) != 0x80)
@@ -158,12 +170,12 @@ ole2_convert_utf(summary_ctx_t *sctx, char *begin, size_t sz, const char *encodi
                 sctx->flags |= OLE2_CODEPAGE_ERROR_INCOMPLETE;
                 break;
             } else if (inlen == 0) {
-                //cli_dbgmsg("ole2_convert_utf: input buffer is successfully translated\n");
+                // cli_dbgmsg("ole2_convert_utf: input buffer is successfully translated\n");
                 break;
             }
 
-            //outbuf[sz2 - outlen] = '\0';
-            //cli_dbgmsg("%u %s\n", inlen, outbuf);
+            // outbuf[sz2 - outlen] = '\0';
+            // cli_dbgmsg("%u %s\n", inlen, outbuf);
 
             offset = sz2 - outlen;
             if (attempt < 3)
@@ -209,7 +221,7 @@ ole2_process_property(summary_ctx_t *sctx, unsigned char *databuf, uint32_t offs
     /* endian conversion */
     proptype = sum16_endian_convert(proptype);
 
-    //cli_dbgmsg("proptype: 0x%04x\n", proptype);
+    // cli_dbgmsg("proptype: 0x%04x\n", proptype);
     if (padding != 0) {
         cli_dbgmsg("ole2_process_property: invalid padding value, non-zero\n");
         sctx->flags |= OLE2_SUMMARY_ERROR_INVALID_ENTRY;
@@ -432,13 +444,17 @@ ole2_process_property(summary_ctx_t *sctx, unsigned char *databuf, uint32_t offs
                     outstr2 = cl_base64_encode(outstr, strsize);
                     if (!outstr2) {
                         cli_dbgmsg("ole2_process_property: failed to convert to base64 string\n");
+                        free(outstr);
                         return CL_EMEM;
                     }
 
                     snprintf(b64jstr, PROPSTRLIMIT, "%s_base64", sctx->propname);
                     ret = cli_jsonbool(sctx->summary, b64jstr, 1);
-                    if (ret != CL_SUCCESS)
+                    if (ret != CL_SUCCESS) {
+                        free(outstr);
+                        free(outstr2);
                         return ret;
+                    }
                 }
 
                 ret = cli_jsonstr(sctx->summary, sctx->propname, outstr2);
@@ -725,7 +741,7 @@ static int ole2_summary_propset_json(summary_ctx_t *sctx, off_t offset)
         sctx->flags |= OLE2_SUMMARY_ERROR_DATABUF;
         return CL_EREAD;
     }
-    //foff+=(2*sizeof(uint32_t)); // keep foff pointing to start of propset segment
+    // foff+=(2*sizeof(uint32_t)); // keep foff pointing to start of propset segment
     psoff += (2 * sizeof(uint32_t));
     memcpy(&(sctx->pssize), hdr, sizeof(sctx->pssize));
     memcpy(&numprops, hdr + sizeof(sctx->pssize), sizeof(numprops));

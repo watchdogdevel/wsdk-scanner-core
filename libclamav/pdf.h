@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Nigel Horne
@@ -24,6 +24,8 @@
 #include "others.h"
 #define PDF_FILTERLIST_MAX 64
 
+#define PDF_OBJECT_RECURSION_LIMIT 25
+
 struct objstm_struct {
     uint32_t first;        // offset of first obj
     uint32_t current;      // offset of current obj
@@ -47,6 +49,7 @@ struct pdf_obj {
     size_t stream_size;           // size of stream contained in object.
     struct objstm_struct *objstm; // Should be NULL unless the obj exists in an object stream (separate buffer)
     char *path;
+    bool extracted; // We've attempted to extract this object. Check to prevent doing it more than once!
 };
 
 enum pdf_array_type { PDF_ARR_UNKNOWN = 0,
@@ -167,6 +170,7 @@ struct pdf_struct {
     struct pdf_stats stats;
     struct objstm_struct **objstms;
     uint32_t nobjstms;
+    uint32_t parse_recursion_depth;
 };
 
 #define OBJ_FLAG_PDFNAME_NONE 0x0
@@ -191,13 +195,13 @@ char *pdf_finalize_string(struct pdf_struct *pdf, struct pdf_obj *obj, const cha
 char *pdf_parse_string(struct pdf_struct *pdf, struct pdf_obj *obj, const char *objstart, size_t objsize, const char *str, char **endchar, struct pdf_stats_metadata *meta);
 struct pdf_array *pdf_parse_array(struct pdf_struct *pdf, struct pdf_obj *obj, size_t objsize, char *begin, char **endchar);
 struct pdf_dict *pdf_parse_dict(struct pdf_struct *pdf, struct pdf_obj *obj, size_t objsize, char *begin, char **endchar);
+
 int is_object_reference(char *begin, char **endchar, uint32_t *id);
 void pdf_free_dict(struct pdf_dict *dict);
 void pdf_free_array(struct pdf_array *array);
 void pdf_print_dict(struct pdf_dict *dict, unsigned long depth);
 void pdf_print_array(struct pdf_array *array, unsigned long depth);
 
-cl_error_t pdf_find_and_extract_objs(struct pdf_struct *pdf, uint32_t *alerts);
 cl_error_t pdf_find_and_parse_objs_in_objstm(struct pdf_struct *pdf, struct objstm_struct *objstm);
 
 #endif

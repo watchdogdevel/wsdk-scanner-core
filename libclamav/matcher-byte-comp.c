@@ -1,7 +1,7 @@
 /*
  *  Byte comparison matcher support functions
  *
- *  Copyright (C) 2018-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2018-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Mickey Sola
  *
@@ -75,6 +75,8 @@ cl_error_t cli_bcomp_addpatt(struct cli_matcher *root, const char *virname, cons
     char *comp_start     = NULL;
     char *comp_end       = NULL;
 
+    UNUSEDPARAM(options);
+
     if (!hexsig || !(*hexsig) || !root || !virname) {
         return CL_ENULLARG;
     }
@@ -91,18 +93,8 @@ cl_error_t cli_bcomp_addpatt(struct cli_matcher *root, const char *virname, cons
         return CL_EMEM;
     }
 
-    /* allocate virname space with the root structure's mempool instance */
-    bcomp->virname = (char *)CLI_MPOOL_VIRNAME(root->mempool, virname, options & CL_DB_OFFICIAL);
-    if (!bcomp->virname) {
-        cli_errmsg("cli_bcomp_addpatt: Unable to allocate memory for virname or NULL virname\n");
-        cli_bcomp_freemeta(root, bcomp);
-        return CL_EMEM;
-    }
-
     /* bring along the standard lsigid vector, first param marks validity of vector, 2nd is lsigid, 3rd is subsigid */
     if (lsigid) {
-        root->ac_lsigtable[lsigid[0]]->virname = bcomp->virname;
-
         bcomp->lsigid[0] = 1;
         bcomp->lsigid[1] = lsigid[0];
         bcomp->lsigid[2] = lsigid[1];
@@ -300,7 +292,7 @@ cl_error_t cli_bcomp_addpatt(struct cli_matcher *root, const char *virname, cons
     /* parse out the byte length parameter */
     buf_end     = NULL;
     byte_length = strtol(buf_start, (char **)&buf_end, 0);
-    if (buf_end && buf_end + 1 != tokens[2]) {
+    if ((buf_end && buf_end + 1 != tokens[2]) || (0 == byte_length)) {
         cli_errmsg("cli_bcomp_addpatt: while parsing (%s#%s#%s), byte length parameter included invalid characters\n", tokens[0], tokens[1], tokens[2]);
         free(buf);
         cli_bcomp_freemeta(root, bcomp);
@@ -368,7 +360,7 @@ cl_error_t cli_bcomp_addpatt(struct cli_matcher *root, const char *virname, cons
     for (i = 0; i < bcomp->comp_count; i++) {
 
         bcomp->comps[i] = (struct cli_bcomp_comp *)MPOOL_CALLOC(root->mempool, 1, sizeof(struct cli_bcomp_comp));
-        if (!bcomp->virname) {
+        if (!bcomp->comps[i]) {
             cli_errmsg("cli_bcomp_addpatt: unable to allocate memory for comp struct\n");
             free(buf);
             free((void *)buf_start);
@@ -457,19 +449,20 @@ cl_error_t cli_bcomp_addpatt(struct cli_matcher *root, const char *virname, cons
  * @param ctx the clamav context struct
  *
  */
-cl_error_t cli_bcomp_scanbuf(const unsigned char *buffer, size_t buffer_length, const char **virname, struct cli_ac_result **res, const struct cli_matcher *root, struct cli_ac_data *mdata, cli_ctx *ctx)
+cl_error_t cli_bcomp_scanbuf(const unsigned char *buffer, size_t buffer_length, struct cli_ac_result **res, const struct cli_matcher *root, struct cli_ac_data *mdata, cli_ctx *ctx)
 {
-
-    int64_t i = 0, ret = CL_SUCCESS;
+    size_t i;
+    int val                = 0;
+    cl_error_t ret         = CL_SUCCESS;
+    cl_error_t bcomp_check = CL_SUCCESS;
     uint32_t lsigid, ref_subsigid;
     uint32_t offset              = 0;
-    uint8_t viruses_found        = 0;
     struct cli_bcomp_meta *bcomp = NULL;
     struct cli_ac_result *newres = NULL;
 
     uint32_t evalcnt = 0;
     uint64_t evalids = 0;
-    char *subsigid   = NULL;
+    char subsigid[3];
 
     if (!(root) || !(root->bcomp_metas) || !(root->bcomp_metatable) || !(mdata) || !(mdata->offmatrix) || !(ctx)) {
         return CL_SUCCESS;
@@ -484,19 +477,13 @@ cl_error_t cli_bcomp_scanbuf(const unsigned char *buffer, size_t buffer_length, 
         /* check to see if we are being run in sigtool or not */
         if (bcomp->lsigid[0]) {
 
-            subsigid = cli_calloc(3, sizeof(char));
             snprintf(subsigid, 3, "%hu", bcomp->ref_subsigid);
 
             /* verify the ref_subsigid */
-            if (cli_ac_chklsig(subsigid, subsigid + strlen(subsigid),
-                               mdata->lsigcnt[bcomp->lsigid[1]], &evalcnt, &evalids, 0) != 1) {
+            val = cli_ac_chklsig(subsigid, subsigid + strlen(subsigid), mdata->lsigcnt[bcomp->lsigid[1]], &evalcnt, &evalids, 0);
+            if (val != 1) {
                 bcm_dbgmsg("cli_bcomp_scanbuf: could not verify a match for lsig reference subsigid (%s)\n", subsigid);
                 continue;
-            }
-
-            /* ensures the referenced subsig matches as expected, and also ensures mdata has the needed offset */
-            if ((ret = lsig_sub_matched(root, mdata, lsigid, ref_subsigid, CLI_OFF_NONE, 0))) {
-                break;
             }
 
             /* grab the needed offset using from the last matched subsig offset matrix, i.e. the match performed above */
@@ -507,7 +494,7 @@ cl_error_t cli_bcomp_scanbuf(const unsigned char *buffer, size_t buffer_length, 
                 continue;
             }
         } else {
-            /* can't run lsig_sub_matched in sigtool, and mdata isn't populated so run the raw matcher stuffs */
+            /* mdata isn't populated in sigtool so run the raw matcher stuffs */
             if (res) {
                 newres = (struct cli_ac_result *)cli_calloc(1, sizeof(struct cli_ac_result));
                 if (!newres) {
@@ -515,7 +502,7 @@ cl_error_t cli_bcomp_scanbuf(const unsigned char *buffer, size_t buffer_length, 
                     ret = CL_EMEM;
                     break;
                 }
-                newres->virname    = bcomp->virname;
+                newres->virname    = "test";
                 newres->customdata = NULL;
                 newres->next       = *res;
                 *res               = newres;
@@ -528,32 +515,22 @@ cl_error_t cli_bcomp_scanbuf(const unsigned char *buffer, size_t buffer_length, 
         }
 
         /* now we have all the pieces of the puzzle, so lets do our byte compare check */
-        ret = cli_bcomp_compare_check(buffer, buffer_length, offset, bcomp);
+        bcomp_check = cli_bcomp_compare_check(buffer, buffer_length, offset, bcomp);
 
-        /* set and append our lsig's virus name if the comparison came back positive */
-        if (CL_VIRUS == ret) {
-            viruses_found = 1;
-
-            if (virname) {
-                *virname = bcomp->virname;
-            }
-            /* if we aren't scanning all, let's just exit here */
-            if (!SCAN_ALLMATCHES) {
-                break;
+        /* Increase the lsig count for our subsig if the comparison came back positive.
+         * Later, the lsig-eval will evaluate the logical condition, based on these counts
+         * and will append the virus alert if the whole logical signature matches. */
+        if (CL_VIRUS == bcomp_check) {
+            /* check to see if we are being run in sigtool or not */
+            if (bcomp->lsigid[0]) {
+                mdata->lsigcnt[bcomp->lsigid[1]][bcomp->lsigid[2]]++;
             } else {
-                ret = cli_append_virus(ctx, (const char *)bcomp->virname);
+                /* Run by sigtool's --test-sigs feature without context of whole lsig or previous subsigs */
+                ret = cli_append_virus(ctx, "test");
             }
         }
     }
 
-    if (subsigid) {
-        free(subsigid);
-        subsigid = NULL;
-    }
-
-    if (ret == CL_SUCCESS && viruses_found) {
-        return CL_VIRUS;
-    }
     return ret;
 }
 
@@ -573,19 +550,20 @@ cl_error_t cli_bcomp_compare_check(const unsigned char *f_buffer, size_t buffer_
     uint32_t norm_len         = 0;
     uint32_t length           = 0;
     uint32_t i                = 0;
-    cl_error_t ret            = 0;
+    cl_error_t ret            = CL_CLEAN;
     uint16_t opt              = 0;
     uint16_t opt_val          = 0;
     int64_t value             = 0;
     int64_t bin_value         = 0;
     int16_t compare_check     = 0;
     unsigned char *end_buf    = NULL;
-    unsigned char *buffer     = NULL;
-    unsigned char *tmp_buffer = NULL;
+    unsigned char *buffer     = NULL; /* Used for BE, non-binary comparisons */
+    unsigned char *tmp_buffer = NULL; /* Used for LE, non-binary comparisons */
 
     if (!f_buffer || !bm) {
         bcm_dbgmsg("cli_bcomp_compare_check: a param is null\n");
-        return CL_ENULLARG;
+        ret = CL_ENULLARG;
+        goto done;
     }
 
     byte_len = bm->byte_len;
@@ -595,11 +573,11 @@ cl_error_t cli_bcomp_compare_check(const unsigned char *f_buffer, size_t buffer_
     /* ensure we won't run off the end of the file buffer */
     if (!(offset + bm->offset + byte_len <= length)) {
         bcm_dbgmsg("cli_bcomp_compare_check: %u bytes requested at offset %zu would go past file buffer of %u\n", byte_len, (offset + bm->offset), length);
-        return CL_CLEAN;
+        goto done;
     }
     if (!(offset + bm->offset > 0)) {
         bcm_dbgmsg("cli_bcomp_compare_check: negative offset would underflow buffer\n");
-        return CL_CLEAN;
+        goto done;
     }
 
     /* jump to byte compare offset, then store off specified bytes into a null terminated buffer */
@@ -615,7 +593,8 @@ cl_error_t cli_bcomp_compare_check(const unsigned char *f_buffer, size_t buffer_
         buffer = cli_bcomp_normalize_buffer(f_buffer, byte_len, &pad_len, opt, 1);
         if (NULL == buffer) {
             cli_errmsg("cli_bcomp_compare_check: unable to whitespace normalize temp buffer, allocation failed\n");
-            return CL_EMEM;
+            ret = CL_EMEM;
+            goto done;
         }
 
         /* adjust byte_len accordingly */
@@ -630,7 +609,8 @@ cl_error_t cli_bcomp_compare_check(const unsigned char *f_buffer, size_t buffer_
             tmp_buffer = cli_bcomp_normalize_buffer(buffer, byte_len, NULL, opt, 0);
             if (NULL == tmp_buffer) {
                 cli_errmsg("cli_bcomp_compare_check: unable to normalize temp, allocation failed\n");
-                return CL_EMEM;
+                ret = CL_EMEM;
+                goto done;
             }
         }
     }
@@ -653,18 +633,15 @@ cl_error_t cli_bcomp_compare_check(const unsigned char *f_buffer, size_t buffer_
             value = cli_strntol((char *)tmp_buffer, norm_len, (char **)&end_buf, 16);
             if ((((value == LONG_MAX) || (value == LONG_MIN)) && errno == ERANGE) || NULL == end_buf) {
 
-                free(tmp_buffer);
                 bcm_dbgmsg("cli_bcomp_compare_check: little endian hex conversion unsuccessful\n");
-                return CL_CLEAN;
+                goto done;
             }
             /*hle*/
             if (opt & CLI_BCOMP_EXACT) {
                 if (tmp_buffer + byte_len != end_buf || pad_len != 0) {
 
-                    free(tmp_buffer);
-                    free(buffer);
                     bcm_dbgmsg("cli_bcomp_compare_check: couldn't extract the exact number of requested bytes\n");
-                    return CL_CLEAN;
+                    goto done;
                 }
             }
 
@@ -674,17 +651,15 @@ cl_error_t cli_bcomp_compare_check(const unsigned char *f_buffer, size_t buffer_
         case CLI_BCOMP_HEX | CLI_BCOMP_BE:
             value = cli_strntol((char *)buffer, byte_len, (char **)&end_buf, 16);
             if ((((value == LONG_MAX) || (value == LONG_MIN)) && errno == ERANGE) || NULL == end_buf) {
-
                 bcm_dbgmsg("cli_bcomp_compare_check: big endian hex conversion unsuccessful\n");
-                return CL_CLEAN;
+                goto done;
             }
             /*hbe*/
             if (opt & CLI_BCOMP_EXACT) {
                 if (buffer + byte_len != end_buf || pad_len != 0) {
 
-                    free(buffer);
                     bcm_dbgmsg("cli_bcomp_compare_check: couldn't extract the exact number of requested bytes\n");
-                    return CL_CLEAN;
+                    goto done;
                 }
             }
 
@@ -694,11 +669,8 @@ cl_error_t cli_bcomp_compare_check(const unsigned char *f_buffer, size_t buffer_
         case CLI_BCOMP_DEC | CLI_BCOMP_LE:
             /* it may be possible for the auto option to proc this */
 
-            if (buffer) {
-                free(buffer);
-            }
             bcm_dbgmsg("cli_bcomp_compare_check: auto detection found ascii decimal for specified little endian byte extraction, which is unsupported\n");
-            return CL_CLEAN;
+            goto done;
             break;
 
         /*db*/
@@ -706,17 +678,15 @@ cl_error_t cli_bcomp_compare_check(const unsigned char *f_buffer, size_t buffer_
             value = cli_strntol((char *)buffer, byte_len, (char **)&end_buf, 10);
             if ((((value == LONG_MAX) || (value == LONG_MIN)) && errno == ERANGE) || NULL == end_buf) {
 
-                free(buffer);
                 bcm_dbgmsg("cli_bcomp_compare_check: big endian decimal conversion unsuccessful\n");
-                return CL_CLEAN;
+                goto done;
             }
             /*dbe*/
             if (opt & CLI_BCOMP_EXACT) {
                 if (buffer + byte_len != end_buf || pad_len != 0) {
 
-                    free(buffer);
                     bcm_dbgmsg("cli_bcomp_compare_check: couldn't extract the exact number of requested bytes\n");
-                    return CL_CLEAN;
+                    goto done;
                 }
             }
 
@@ -741,8 +711,8 @@ cl_error_t cli_bcomp_compare_check(const unsigned char *f_buffer, size_t buffer_
 
                 default:
                     bcm_dbgmsg("cli_bcomp_compare_check: invalid byte size for binary integer field (%u)\n", byte_len);
-                    free(buffer);
-                    return CL_EARG;
+                    ret = CL_EARG;
+                    goto done;
             }
             break;
 
@@ -765,33 +735,18 @@ cl_error_t cli_bcomp_compare_check(const unsigned char *f_buffer, size_t buffer_
 
                 default:
                     bcm_dbgmsg("cli_bcomp_compare_check: invalid byte size for binary integer field (%u)\n", byte_len);
-                    free(buffer);
-                    return CL_EARG;
+                    ret = CL_EARG;
+                    goto done;
             }
             break;
 
         default:
             bcm_dbgmsg("cli_bcomp_compare_check: options were found invalid\n");
-            if (tmp_buffer) {
-                free(tmp_buffer);
-            }
-
-            if (buffer) {
-                free(buffer);
-            }
-            return CL_ENULLARG;
-    }
-
-    if (tmp_buffer) {
-        free(tmp_buffer);
-    }
-
-    if (buffer) {
-        free(buffer);
+            ret = CL_ENULLARG;
+            goto done;
     }
 
     /* do the actual comparison */
-    ret = CL_CLEAN;
     for (i = 0; i < bm->comp_count; i++) {
         if (bm->comps && bm->comps[i]) {
             switch (bm->comps[i]->comp_symbol) {
@@ -840,17 +795,25 @@ cl_error_t cli_bcomp_compare_check(const unsigned char *f_buffer, size_t buffer_
 
                 default:
                     bcm_dbgmsg("cli_bcomp_compare_check: comparison symbol (%c) invalid\n", bm->comps[i]->comp_symbol);
-                    return CL_ENULLARG;
+                    ret = CL_ENULLARG;
+                    goto done;
             }
 
             if (CL_CLEAN == ret) {
                 /* comparison was not successful */
                 bcm_dbgmsg("cli_bcomp_compare_check: extracted value (%ld) was not %c %ld\n", (opt & CLI_BCOMP_BIN) ? bin_value : value, bm->comps[i]->comp_symbol, bm->comps[i]->comp_value);
-                return CL_CLEAN;
+                goto done;
             }
         }
     }
 
+done:
+    if (NULL != tmp_buffer) {
+        free(tmp_buffer);
+    }
+    if (NULL != buffer) {
+        free(buffer);
+    }
     return ret;
 }
 
@@ -912,9 +875,7 @@ unsigned char *cli_bcomp_normalize_buffer(const unsigned char *buffer, uint32_t 
     uint32_t pad              = 0;
     uint32_t i                = 0;
     uint16_t opt_val          = 0;
-    uint16_t hex              = 0;
     unsigned char *tmp_buffer = NULL;
-    unsigned char *hex_buffer = NULL;
 
     if (!buffer) {
         cli_errmsg("cli_bcomp_compare_check: unable to normalize temp buffer, params null\n");
@@ -949,6 +910,7 @@ unsigned char *cli_bcomp_normalize_buffer(const unsigned char *buffer, uint32_t 
 
     opt_val = opt & 0x000F;
     if (opt_val & CLI_BCOMP_HEX || opt_val & CLI_BCOMP_AUTO) {
+        unsigned char *hex_buffer;
         norm_len   = (byte_len % 2) == 0 ? byte_len : byte_len + 1;
         tmp_buffer = cli_calloc(norm_len + 1, sizeof(char));
         if (NULL == tmp_buffer) {
@@ -990,14 +952,10 @@ unsigned char *cli_bcomp_normalize_buffer(const unsigned char *buffer, uint32_t 
                 if (((int32_t)norm_len - (int32_t)i) - 2 >= 0) {
                     /* 0000BA -> B0000A */
                     if (isxdigit(hex_buffer[norm_len - i - 2]) || toupper(hex_buffer[norm_len - i - 2]) == 'X') {
-                        if (isxdigit(hex_buffer[norm_len - i - 2])) {
-                            hex = 1;
-                        }
                         tmp_buffer[i] = hex_buffer[norm_len - i - 2];
                     } else {
                         /* non-hex detected, our current buffer is invalid so zero it out and continue */
                         memset(tmp_buffer, '0', norm_len + 1);
-                        hex = 0;
                         /* nibbles after this are non-good, so skip them */
                         continue;
                     }
@@ -1005,19 +963,16 @@ unsigned char *cli_bcomp_normalize_buffer(const unsigned char *buffer, uint32_t 
 
                 /* 0000BA -> 0A00B0 */
                 if (isxdigit(hex_buffer[norm_len - i - 1]) || toupper(hex_buffer[norm_len - i - 1]) == 'X') {
-                    if (isxdigit(hex_buffer[norm_len - i - 2])) {
-                        hex = 1;
-                    }
                     tmp_buffer[i + 1] = hex_buffer[norm_len - i - 1];
                 } else {
                     /* non-hex detected, our current buffer is invalid so zero it out and continue */
                     memset(tmp_buffer, '0', norm_len + 1);
-                    hex = 0;
                 }
             }
         }
         tmp_buffer[norm_len] = '\0';
         bcm_dbgmsg("cli_bcomp_compare_check: normalized extracted bytes before comparison %.*s\n", norm_len, tmp_buffer);
+        free(hex_buffer);
     }
 
     return tmp_buffer;
@@ -1033,20 +988,14 @@ unsigned char *cli_bcomp_normalize_buffer(const unsigned char *buffer, uint32_t 
 void cli_bcomp_freemeta(struct cli_matcher *root, struct cli_bcomp_meta *bm)
 {
 
-    int i = 0;
+    uint32_t i = 0;
 
     if (!root || !bm) {
         return;
     }
 
-    if (bm->virname) {
-        MPOOL_FREE(root->mempool, bm->virname);
-        bm->virname = NULL;
-    }
-
-    /* can never have more than 2 */
     if (bm->comps) {
-        for (i = 0; i < 2; i++) {
+        for (i = 0; i < bm->comp_count; i++) {
             if (bm->comps[i]) {
                 MPOOL_FREE(root->mempool, bm->comps[i]);
                 bm->comps[i] = NULL;

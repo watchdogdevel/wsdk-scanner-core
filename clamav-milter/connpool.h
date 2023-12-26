@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Author: aCaB <acab@clamav.net>
@@ -32,7 +32,7 @@
 #include <netinet/ip.h>
 #include <pthread.h>
 
-#include "shared/optparser.h"
+#include "optparser.h"
 
 struct CP_ENTRY {
     struct sockaddr *server;

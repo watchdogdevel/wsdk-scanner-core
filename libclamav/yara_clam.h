@@ -1,7 +1,7 @@
 /*
  * Main YARA header file for ClamAV
  *
- * Copyright (C) 2014-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ * Copyright (C) 2014-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  * Authors: Steven Morgan
  *
@@ -41,7 +41,7 @@ limitations under the License.
 #ifndef _YARA_CLAM_H_
 #define _YARA_CLAM_H_
 
-#include "shared/queue.h"
+#include "queue.h"
 #include "yara_hash.h"
 #include "others.h"
 #include "str.h"

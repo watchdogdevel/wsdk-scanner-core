@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Alberto Wu
@@ -23,5 +23,5 @@
 #define __AUTOIT_H
 
 #include "others.h"
-int cli_scanautoit(cli_ctx *ctx, off_t offset);
+cl_error_t cli_scanautoit(cli_ctx *ctx, off_t offset);
 #endif

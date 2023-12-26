@@ -484,7 +484,7 @@ static int nsis_headers(struct nsis_st *n, cli_ctx *ctx)
             pos += 4;
             buf += 4;
         }
-        if ((pos += 4 + nextsz) > n->asz) {
+        if ((pos += (4 + ((uint32_t)nextsz))) > n->asz) {
             n->solid = 1;
             break;
         }
@@ -529,7 +529,7 @@ int cli_scannulsft(cli_ctx *ctx, off_t offset)
         return CL_ETMPDIR;
     }
 
-    nsist.map = *ctx->fmap;
+    nsist.map = ctx->fmap;
     if (ctx->engine->keeptmp) cli_dbgmsg("NSIS: Extracting files to %s\n", nsist.dir);
 
     do {
@@ -545,25 +545,30 @@ int cli_scannulsft(cli_ctx *ctx, off_t offset)
                 free(nsist.dir);
                 return CL_ESEEK;
             }
-            if (nsist.fno == 1)
-                ret = cli_scan_desc(nsist.ofd, ctx, 0, 0, NULL, AC_SCAN_VIR, NULL, NULL); /// TODO: Extract file names
-            else
-                ret = cli_magic_scan_desc(nsist.ofd, nsist.ofn, ctx, NULL); /// TODO: Extract file names
+            if (nsist.fno == 1) {
+                ret = cli_scan_desc(nsist.ofd, ctx, CL_TYPE_ANY, false, NULL, AC_SCAN_VIR, NULL, NULL, LAYER_ATTRIBUTES_NONE); /// TODO: Extract file names
+            } else {
+                ret = cli_magic_scan_desc(nsist.ofd, nsist.ofn, ctx, NULL, LAYER_ATTRIBUTES_NONE); /// TODO: Extract file names
+            }
             close(nsist.ofd);
-            if (!ctx->engine->keeptmp)
-                if (cli_unlink(nsist.ofn)) ret = CL_EUNLINK;
+            if (!ctx->engine->keeptmp) {
+                if (cli_unlink(nsist.ofn)) {
+                    ret = CL_EUNLINK;
+                }
+            }
         } else if (ret == CL_EMAXSIZE) {
             ret = nsist.solid ? CL_BREAK : CL_SUCCESS;
         }
     } while (ret == CL_SUCCESS);
 
-    if (ret == CL_BREAK || ret == CL_EMAXFILES)
+    if (ret == CL_BREAK)
         ret = CL_CLEAN;
 
     nsis_shutdown(&nsist);
 
-    if (!ctx->engine->keeptmp)
+    if (!ctx->engine->keeptmp) {
         cli_rmdirs(nsist.dir);
+    }
 
     free(nsist.dir);
 

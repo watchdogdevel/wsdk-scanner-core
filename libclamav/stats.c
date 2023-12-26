@@ -52,13 +52,13 @@
 
 #include <errno.h>
 
-#include "libclamav/others.h"
-#include "libclamav/clamav.h"
-#include "libclamav/dconf.h"
-#include "libclamav/stats_json.h"
-#include "libclamav/stats.h"
-#include "libclamav/hostid.h"
-#include "libclamav/www.h"
+#include "others.h"
+#include "clamav.h"
+#include "dconf.h"
+#include "stats_json.h"
+#include "stats.h"
+#include "hostid_internal.h"
+#include "www.h"
 
 #define DEBUG_STATS 0
 
@@ -572,11 +572,12 @@ char *clamav_stats_get_hostid(void *cbdata)
 #else
 char *clamav_stats_get_hostid(void *cbdata)
 {
-    char *sysctls[] = {
-        "kern.hostuuid",
-        NULL};
-    size_t bufsz, i;
     char *buf;
+
+#if HAVE_SYSCTLBYNAME
+    char *sysctls[] = {"kern.hostuuid", NULL};
+    size_t bufsz, i;
+#endif
 
     UNUSEDPARAM(cbdata);
 

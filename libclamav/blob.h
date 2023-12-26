@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Nigel Horne
@@ -21,6 +21,8 @@
 
 #ifndef __BLOB_H
 #define __BLOB_H
+
+#include "clamav.h"
 
 /*
  * Resizable chunk of memory
@@ -55,9 +57,9 @@ typedef struct fileblob {
     FILE *fp;
     int fd;
     blob b;         /*
-			 * b.name is the name of the attachment as stored in the
-			 * email, not the full path name of the temporary file
-			 */
+                     * b.name is the name of the attachment as stored in the
+                     * email, not the full path name of the temporary file
+                     */
     char *fullname; /* full pathname of the file */
     cli_ctx *ctx;   /* When set we can scan the blob, otherwise NULL */
     unsigned long bytes_scanned;
@@ -74,7 +76,7 @@ void fileblobPartialSet(fileblob *fb, const char *fullname, const char *arg);
 const char *fileblobGetFilename(const fileblob *fb);
 void fileblobSetCTX(fileblob *fb, cli_ctx *ctx);
 int fileblobAddData(fileblob *fb, const unsigned char *data, size_t len);
-int fileblobScan(const fileblob *fb);
+cl_error_t fileblobScan(const fileblob *fb);
 int fileblobInfected(const fileblob *fb);
 void sanitiseName(char *name);
 

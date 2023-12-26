@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2015-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2015-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Mickey Sola
  *
@@ -33,30 +33,32 @@
 #include <errno.h>
 #include <stdbool.h>
 
-#if defined(FANOTIFY)
+#if defined(HAVE_SYS_FANOTIFY_H)
 #include <sys/fanotify.h>
 #endif
 
-#include "../fanotif/fanotif.h"
+// libclamav
+#include "clamav.h"
+#include "scanners.h"
+#include "str.h"
 
+// common
+#include "optparser.h"
+#include "output.h"
+
+// clamd
+#include "server.h"
+#include "clamd_others.h"
+#include "scanner.h"
+
+#include "../fanotif/fanotif.h"
 #include "hash.h"
 #include "inotif.h"
-
-#include "libclamav/clamav.h"
-#include "libclamav/scanners.h"
-#include "libclamav/str.h"
-
-#include "shared/optparser.h"
-#include "shared/output.h"
-
-#include "clamd/server.h"
-#include "clamd/others.h"
-#include "clamd/scanner.h"
 #include "../misc/priv_fts.h"
 
-#if defined(FANOTIFY)
+#if defined(HAVE_SYS_FANOTIFY_H)
 
-static struct onas_bucket *onas_bucket_init();
+static struct onas_bucket *onas_bucket_init(void);
 static void onas_free_bucket(struct onas_bucket *bckt);
 static int onas_bucket_insert(struct onas_bucket *bckt, struct onas_element *elem);
 static int onas_bucket_remove(struct onas_bucket *bckt, struct onas_element *elem);
@@ -534,7 +536,7 @@ int onas_add_listnode(struct onas_lnode *tail, struct onas_lnode *node)
 /**
  * @brief Function to remove a listnode based on dirname.
  */
-int onas_rm_listnode(struct onas_lnode *head, const char *dirname)
+cl_error_t onas_rm_listnode(struct onas_lnode *head, const char *dirname)
 {
     if (!dirname || !head) return CL_ENULLARG;
 
@@ -542,19 +544,21 @@ int onas_rm_listnode(struct onas_lnode *head, const char *dirname)
     size_t n                = strlen(dirname);
 
     while ((curr = curr->next)) {
-        if (!strncmp(curr->dirname, dirname, n)) {
-            struct onas_lnode *tmp = curr->prev;
-            tmp->next              = curr->next;
-            tmp                    = curr->next;
-            tmp->prev              = curr->prev;
-
+        if (NULL == curr->dirname) {
+            logg(LOGG_DEBUG, "ClamHash: node's directory name is NULL!\n");
+            return CL_ERROR;
+        } else if (!strncmp(curr->dirname, dirname, n)) {
+            if (curr->next != NULL)
+                curr->next->prev = curr->prev;
+            if (curr->prev != NULL)
+                curr->prev->next = curr->next;
             onas_free_listnode(curr);
 
             return CL_SUCCESS;
         }
     }
 
-    return -1;
+    return CL_ERROR;
 }
 
 /*** Dealing with parent/child relationships in the table. ***/
@@ -630,7 +634,9 @@ int onas_ht_rm_child(struct onas_ht *ht, const char *prntpath, size_t prntlen, c
 
     hnode = elem->data;
 
-    if ((ret = onas_rm_listnode(hnode->childhead, &(childpath[idx])))) return CL_EARG;
+    if (CL_SUCCESS != (ret = onas_rm_listnode(hnode->childhead, &(childpath[idx])))) {
+        return CL_EARG;
+    }
 
     return CL_SUCCESS;
 }
@@ -682,7 +688,7 @@ int onas_ht_add_hierarchy(struct onas_ht *ht, const char *pathname)
 
     char *const pathargv[] = {(char *)pathname, NULL};
     if (!(ftsp = _priv_fts_open(pathargv, ftspopts, NULL))) {
-        logg("!ClamHash: could not open '%s'\n", pathname);
+        logg(LOGG_ERROR, "ClamHash: could not open '%s'\n", pathname);
         ret = CL_EARG;
         goto out;
     }
@@ -719,6 +725,7 @@ int onas_ht_add_hierarchy(struct onas_ht *ht, const char *pathname)
                     if (CL_EMEM == onas_add_hashnode_child(hnode, childlist->fts_name)) {
 
                         ret = CL_EMEM;
+                        onas_free_hashnode(hnode);
                         goto out;
                     }
                 }
@@ -728,12 +735,15 @@ int onas_ht_add_hierarchy(struct onas_ht *ht, const char *pathname)
         struct onas_element *elem = onas_element_init(hnode, hnode->pathname, hnode->pathlen);
         if (!elem) {
             ret = CL_EMEM;
+            onas_free_hashnode(hnode);
             goto out;
         }
 
         if (onas_ht_insert(ht, elem)) {
-
             ret = -1;
+            /* Note: `onas_free_hashnode(hnode) will get called by the
+             *       `onas_free_element` call below */
+            onas_free_element(elem);
             goto out;
         }
     }
@@ -772,7 +782,10 @@ int onas_ht_rm_hierarchy(struct onas_ht *ht, const char *pathname, size_t len, i
         if (!(prntname = onas_get_parent(pathname, len))) return CL_EARG;
 
         prntlen = strlen(prntname);
-        if (onas_ht_rm_child(ht, prntname, prntlen, pathname, len)) return CL_EARG;
+        if (onas_ht_rm_child(ht, prntname, prntlen, pathname, len)) {
+            free(prntname);
+            return CL_EARG;
+        }
 
         free(prntname);
     }

@@ -1,7 +1,7 @@
 /*
  *  Extract embedded objects from RTF files.
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -156,26 +156,26 @@ static int compare_state(const struct rtf_state* a, const struct rtf_state* b)
 static int push_state(struct stack* stack, struct rtf_state* state)
 {
     int toplevel;
-    size_t defelements;
 
     stack->elements++;
     if (compare_state(state, &base_state)) {
         state->default_elements++;
         return 0; /* this is default state, don't push it, we'll know when we pop it that it was the default one,
-			  we store in the state how many default elements we have on the stack */
+                          we store in the state how many default elements we have on the stack */
     }
     if (stack->stack_cnt >= stack->stack_size) {
         /* grow stack */
         struct rtf_state* states;
         stack->stack_size += 128;
-        states = cli_realloc2(stack->states, stack->stack_size * sizeof(*stack->states));
-        if (!states)
+        states = cli_realloc(stack->states, stack->stack_size * sizeof(*stack->states));
+        if (!states) {
+            // Realloc failed. Note that stack->states has not been freed and must still be cleaned up by the caller.
             return CL_EMEM;
+        }
         stack->states = states;
     }
     stack->states[stack->stack_cnt++] = *state;
     toplevel                          = state->encounteredTopLevel;
-    defelements                       = state->default_elements;
 
     *state = base_state;
 
@@ -237,19 +237,25 @@ static int rtf_object_begin(struct rtf_state* state, cli_ctx* ctx, const char* t
     return 0;
 }
 
-static int decode_and_scan(struct rtf_object_data* data, cli_ctx* ctx)
+static cl_error_t decode_and_scan(struct rtf_object_data* data, cli_ctx* ctx)
 {
-    int ret = CL_CLEAN;
+    cl_error_t ret = CL_CLEAN;
 
-    cli_dbgmsg("RTF:Scanning embedded object:%s\n", data->name);
-    if (data->bread == 1 && data->fd > 0) {
-        cli_dbgmsg("Decoding ole object\n");
-        ret = cli_scan_ole10(data->fd, ctx);
-    } else if (data->fd > 0)
-        ret = cli_magic_scan_desc(data->fd, data->name, ctx, NULL);
-    if (data->fd > 0)
+    cli_dbgmsg("RTF:Scanning embedded object: %s\n", data->name);
+
+    if (data->fd > 0) {
+        if (data->bread == 1) {
+            cli_dbgmsg("Decoding ole object\n");
+
+            ret = cli_scan_ole10(data->fd, ctx);
+        } else {
+            ret = cli_magic_scan_desc(data->fd, data->name, ctx, NULL, LAYER_ATTRIBUTES_NONE);
+        }
+
         close(data->fd);
-    data->fd = -1;
+        data->fd = -1;
+    }
+
     if (data->name) {
         if (!ctx->engine->keeptmp)
             if (cli_unlink(data->name)) ret = CL_EUNLINK;
@@ -257,9 +263,7 @@ static int decode_and_scan(struct rtf_object_data* data, cli_ctx* ctx)
         data->name = NULL;
     }
 
-    if (ret != CL_CLEAN)
-        return ret;
-    return 0;
+    return ret;
 }
 
 static int rtf_object_process(struct rtf_state* state, const unsigned char* input, const size_t len)
@@ -406,7 +410,7 @@ static int rtf_object_process(struct rtf_state* state, const unsigned char* inpu
                 if (!data->bread) {
                     if (out_data[0] != 0xd0 || out_data[1] != 0xcf) {
                         /* this is not an ole2 doc, but some ole (stream?) to be
-								 * decoded by cli_decode_ole_object*/
+                         * decoded by cli_decode_ole_object*/
                         char out[4];
                         data->bread = 1; /* flag to indicate this needs to be scanned with cli_decode_ole_object*/
                         cli_writeint32(out, data->desc_len);
@@ -551,7 +555,7 @@ int cli_scanrtf(cli_ctx* ctx)
 
     init_rtf_state(&state);
 
-    for (offset = 0; (ptr = fmap_need_off_once_len(*ctx->fmap, offset, BUFF_SIZE, &bread)) && bread; offset += bread) {
+    for (offset = 0; (ptr = fmap_need_off_once_len(ctx->fmap, offset, BUFF_SIZE, &bread)) && bread; offset += bread) {
         ptr_end = ptr + bread;
         while (ptr < ptr_end) {
             switch (state.parse_state) {

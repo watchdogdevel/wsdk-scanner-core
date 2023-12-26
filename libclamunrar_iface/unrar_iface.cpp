@@ -1,7 +1,7 @@
 /*
  * Interface to libclamunrar
  *
- * Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ * Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  * Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  * Authors: Trog, Torok Edvin, Tomasz Kojm, Micah Snyder
@@ -33,8 +33,8 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "libclamunrar/rar.hpp"
-#include "libclamunrar/dll.hpp"
+#include "rar.hpp"
+#include "dll.hpp"
 
 extern "C" {
 
@@ -296,7 +296,7 @@ done:
  * @brief  Get file metadata from the next file header.
  *
  * @param hArchive              Handle to the archive we're extracting.
- * @param[in/out] file_metadata Pointer to a pre-allocated metadata structure.
+ * @param[in,out] file_metadata Pointer to a pre-allocated metadata structure.
  * @return cl_unrar_error_t     UNRAR_OK if metadata retrieved, UNRAR_BREAK if no more files, UNRAR_ENCRYPTED if header was encrypted, else maybe UNRAR_EMEM or UNRAR_ERR.
  */
 cl_unrar_error_t unrar_peek_file_header(void* hArchive, unrar_metadata_t* file_metadata)
@@ -442,7 +442,7 @@ int CALLBACK CallbackProc(UINT msg, LPARAM UserData, LPARAM P1, LPARAM P2)
     switch (msg) {
         case UCM_CHANGEVOLUMEW: {
             /* We don't support RAR's split into multiple volumes
-         * ClamAV is not aware of more than 1 file at a time */
+             * ClamAV is not aware of more than 1 file at a time */
             status = -1;
             unrar_dbgmsg("CallbackProc: Archive has multiple volumes, but we don't support multiple volumes.\n");
             break;

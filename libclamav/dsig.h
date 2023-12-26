@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -29,7 +29,21 @@
 #include "clamav-config.h"
 #endif
 
-int cli_versig(const char *md5, const char *dsig);
+cl_error_t cli_versig(const char *md5, const char *dsig);
 int cli_versig2(const unsigned char *sha256, const char *dsig_str, const char *n_str, const char *e_str);
+
+/**
+ * @brief Connect to a signing server, send the data to be signed, and return the digital signature.
+ *
+ * Caller is responsible for freeing the returned dsig.
+ *
+ * @param host
+ * @param user
+ * @param data
+ * @param datalen
+ * @param mode
+ * @return char*
+ */
+char *cli_getdsig(const char *host, const char *user, const unsigned char *data, unsigned int datalen, unsigned short mode);
 
 #endif

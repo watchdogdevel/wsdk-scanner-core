@@ -1,7 +1,7 @@
 /*
  *  Simple library to detect and validate SSN and Credit Card numbers.
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Martin Roesch <roesch@sourcefire.com>
@@ -234,7 +234,7 @@ int dlp_is_valid_cc(const unsigned char *buffer, size_t length, int cc_only)
         return 0;
 
     j = (ssize_t)i;
-    //figure out luhn digits
+    // figure out luhn digits
     for (j = digits - 1; j >= 0; j--) {
         val = cc_digits[j] - '0';
         if (mult) {

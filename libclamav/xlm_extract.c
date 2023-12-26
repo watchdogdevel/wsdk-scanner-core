@@ -1,7 +1,7 @@
 /*
  *  Extract XLM (Excel 4.0) macro source code for component MS Office Documents
  *
- *  Copyright (C) 2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2020-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Jonas Zaddach
  *
@@ -28,18 +28,14 @@
  */
 
 #include <fcntl.h>
+#include <stdbool.h>
+
 #include "fmap.h"
 #include "entconv.h"
 #include "xlm_extract.h"
+#include "scanners.h"
 
 #define min(x, y) (((x) < (y)) ? (x) : (y))
-
-typedef enum biff8_opcode {
-    OPC_FORMULA    = 0x06,
-    OPC_NAME       = 0x18,
-    OPC_BOUNDSHEET = 0x85,
-    OPC_STRING     = 0x207,
-} biff8_opcode;
 
 // clang-format off
 const char *OPCODE_NAMES[] = {
@@ -3713,8 +3709,120 @@ typedef enum ptg_expr {
 
 } ptg_expr;
 
-static const char *
-get_function_name(unsigned index)
+#ifndef HAVE_ATTRIB_PACKED
+#define __attribute__(x)
+#endif
+#ifdef HAVE_PRAGMA_PACK
+#pragma pack(1)
+#endif
+#ifdef HAVE_PRAGMA_PACK_HPPA
+#pragma pack 1
+#endif
+
+/**
+ * @brief The OfficeArtRecordHeader fined on page 27 of the MSO-ODRAW specification:
+ *   https://interoperability.blob.core.windows.net/files/MS-ODRAW/%5bMS-ODRAW%5d.pdf
+ *
+ * We'll use this to extract images found in office documents.
+ */
+struct OfficeArtRecordHeader_PackedLittleEndian {
+    uint16_t recVerAndInstance; // 4 bytes for recVer, 12 bytes for recInstance
+    uint16_t recType;
+    uint32_t recLen;
+} __attribute__((packed));
+
+/**
+ * @brief The OfficeArtFBSE structure following its record header.
+ * See section 2.2.32 OfficeArtFBSE in:
+ *   https://interoperability.blob.core.windows.net/files/MS-ODRAW/%5bMS-ODRAW%5d.pdf
+ *
+ * Does not include the variable size nameData
+ */
+struct OfficeArtFBSE_PackedLittleEndian {
+    uint8_t btWin32; // 1-byte enum containing a mso_blip_type value
+    uint8_t btMacOS; // 1-byte enum containing a mso_blip_type value
+    unsigned char rgbUid[16];
+    uint16_t tag;
+    uint32_t size;    // size of the Blip stream
+    uint32_t cRef;    // number of references to the Blip
+    uint32_t foDelay; // An MSOFOstructure, as defined in section 2.1.4, must be 0x00000000
+    uint8_t unused1;  // unused
+    uint8_t cbName;   // length of the name field, in bytes.
+    uint8_t unused2;  // unused
+    uint8_t unused3;  // unused
+} __attribute__((packed));
+
+#ifdef HAVE_PRAGMA_PACK
+#pragma pack()
+#endif
+#ifdef HAVE_PRAGMA_PACK_HPPA
+#pragma pack
+#endif
+
+struct OfficeArtRecordHeader_Unpacked {
+    uint16_t recVer;
+    uint16_t recInstance;
+    uint16_t recType;
+    uint32_t recLen;
+} __attribute__((packed));
+
+typedef enum {
+    msoblip_ERROR    = 0x00, // Error reading the file.
+    msoblip_UNKNOWN  = 0x01, // Unknown BLIPtype.
+    msoblip_EMF      = 0x02, // EMF.
+    msoblip_WMF      = 0x03, // WMF.
+    msoblip_PICT     = 0x04, // Macintosh PICT.
+    msoblip_JPEG     = 0x05, // JPEG.
+    msoblip_PNG      = 0x06, // PNG.
+    msoblip_DIB      = 0x07, // DIB
+    msoblip_TIFF     = 0x11, // TIFF
+    msoblip_CMYKJPEG = 0x12, // JPEG in the YCCK or CMYK color space.
+} mso_blip_type;
+
+/**
+ * @brief Read the office art record header information from a buffer
+ *
+ * @param data                      data buffer starting with the record header
+ * @param data_len                  length of the buffer
+ * @param[in,out] unpacked_header   fill this
+ * @return cl_error_t               CL_SUCCESS if successfull, else some error code.
+ */
+static cl_error_t
+read_office_art_record_header(const unsigned char *data, size_t data_len, struct OfficeArtRecordHeader_Unpacked *unpacked_header)
+{
+    cl_error_t status = CL_EARG;
+    uint16_t recVerAndInstance;
+    struct OfficeArtRecordHeader_PackedLittleEndian *rawHeader;
+
+    if ((NULL == data) ||
+        (sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) > data_len) ||
+        (NULL == unpacked_header)) {
+        // invalid args
+        goto done;
+    }
+
+    rawHeader = (struct OfficeArtRecordHeader_PackedLittleEndian *)data;
+
+    recVerAndInstance = le16_to_host(rawHeader->recVerAndInstance);
+
+    unpacked_header->recVer      = recVerAndInstance & 0x000F;
+    unpacked_header->recInstance = (recVerAndInstance & 0xFFF0) >> 4;
+    unpacked_header->recType     = le16_to_host(rawHeader->recType);
+    unpacked_header->recLen      = le32_to_host(rawHeader->recLen);
+
+    cli_dbgmsg("read_office_art_record_header: office art record:\n");
+    cli_dbgmsg("read_office_art_record_header:   recVer       0x%x\n", unpacked_header->recVer);
+    cli_dbgmsg("read_office_art_record_header:   recInstance  0x%x\n", unpacked_header->recInstance);
+    cli_dbgmsg("read_office_art_record_header:   recType      0x%x\n", unpacked_header->recType);
+    cli_dbgmsg("read_office_art_record_header:   recLen       %u\n", unpacked_header->recLen);
+
+    status = CL_SUCCESS;
+
+done:
+    return status;
+}
+
+static const char *get_function_name(unsigned index)
 {
     if (index < sizeof(FUNCTIONS) / sizeof(FUNCTIONS[0])) {
         return FUNCTIONS[index];
@@ -3726,23 +3834,22 @@ get_function_name(unsigned index)
     }
 }
 
-static int
-parse_formula(char buffer[], unsigned buffer_size, char data[], unsigned data_size)
+static cl_error_t parse_formula(FILE *out_file, char data[], unsigned data_size)
 {
-    unsigned data_pos   = 0;
-    unsigned buffer_pos = 0;
+    cl_error_t status = CL_EFORMAT;
+    unsigned data_pos = 0;
     int len;
+    size_t size_written;
 
     while (data_pos < data_size) {
         ptg_expr ptg = data[data_pos] & 0x7f;
 
         if (((uint8_t)data[data_pos]) < sizeof(TOKENS) / sizeof(TOKENS[0])) {
-            int len = snprintf(&buffer[buffer_pos], buffer_size - buffer_pos, " %s", TOKENS[ptg]);
+            len = fprintf(out_file, " %s", TOKENS[ptg]);
             if (len < 0) {
-                cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting token name\n");
+                cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting token name\n");
                 goto done;
             }
-            buffer_pos += len;
         }
 
         switch (ptg) {
@@ -3763,64 +3870,76 @@ parse_formula(char buffer[], unsigned buffer_size, char data[], unsigned data_si
                 break;
             case ptgStr:
                 if (data_pos + 2 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgStr record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgStr record\n");
                     goto done;
                 }
 
                 if (data[data_pos + 2] == 1 && data_pos + 2 + 2 * data[data_pos + 1] <= data_size) {
                     char *utf8       = NULL;
                     size_t utf8_size = 0;
-                    //TODO: Is this really times two here? Or is the string length in bytes?
+                    // TODO: Is this really times two here? Or is the string length in bytes?
                     size_t str_len = data[data_pos + 1] * 2;
-                    if (str_len > buffer_size - buffer_pos) {
-                        str_len = buffer_size - buffer_pos;
+                    if (str_len > data_size - data_pos) {
+                        str_len = data_size - data_pos;
                     }
-                    if (CL_SUCCESS == cli_codepage_to_utf8(&data[data_pos + 3], str_len, 1200, &utf8, &utf8_size)) {
-                        size_t copy_size = min(buffer_size - buffer_pos, utf8_size);
-                        memcpy(&buffer[buffer_pos], utf8, copy_size);
-                        buffer_pos += copy_size;
-                        free(utf8);
+                    if (CL_SUCCESS == cli_codepage_to_utf8(&data[data_pos + 3], str_len, CODEPAGE_UTF16_LE, &utf8, &utf8_size)) {
+                        if (0 < utf8_size) {
+                            size_written = fwrite(utf8, 1, utf8_size, out_file);
+                            free(utf8);
+                            if (size_written < utf8_size) {
+                                cli_dbgmsg("[cli_extract_xlm_macros_and_images] Error writing STRING record message with UTF16LE content\n");
+                                goto done;
+                            }
+                        }
                     } else {
-                        cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Failed to decode UTF16LE string in formula\n");
-                        len = snprintf(&buffer[buffer_pos], buffer_size - buffer_pos, "<Failed to decode UTF16LE string>");
+                        cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Failed to decode UTF16LE string in formula\n");
+                        len = fprintf(out_file, "<Failed to decode UTF16LE string>");
                         if (len < 0) {
-                            cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgStr message with UTF16LE content\n");
+                            cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgStr message with UTF16LE content\n");
                             goto done;
                         }
-
-                        buffer_pos += len;
                     }
+                    data_pos += 3 + str_len;
                 } else if (data[data_pos + 2] == 0 && data_pos + 2 + data[data_pos + 1] <= data_size) {
                     unsigned str_len = data[data_pos + 1];
-                    if (str_len > buffer_size - buffer_pos) {
-                        str_len = buffer_size - buffer_pos;
+                    if (str_len > data_size - data_pos) {
+                        str_len = data_size - data_pos;
                     }
-                    memcpy(&buffer[buffer_pos], &data[data_pos], str_len);
-                    buffer_pos += str_len;
-                    data_pos += 3 + data[data_pos + 1];
+                    if (0 < str_len) {
+                        size_written = fwrite(&data[data_pos], 1, str_len, out_file);
+                        if (size_written < str_len) {
+                            cli_dbgmsg("[cli_extract_xlm_macros_and_images] Error writing STRING record message with UTF16LE content\n");
+                            goto done;
+                        }
+                    }
+                    data_pos += 3 + str_len;
+                } else {
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images] Invalid or truncated string record!\n");
+                    goto done;
                 }
                 break;
             case ptgAttr:
                 if (data_pos + 1 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgAttr record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgAttr record\n");
                     goto done;
                 }
 
                 if (data[data_pos + 1] & 0x40) {
+                    uint16_t coffset;
+
                     if (data_pos + 3 >= data_size) {
-                        cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgAttrChoose record\n");
+                        cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgAttrChoose record\n");
                         goto done;
                     }
 
-                    uint16_t coffset = data[data_pos + 2] | (data[data_pos + 3] << 8);
+                    coffset = data[data_pos + 2] | (data[data_pos + 3] << 8);
 
-                    len = snprintf(&buffer[buffer_pos], buffer_size - buffer_pos, " CHOOSE (%u)", (unsigned)(coffset + 1));
+                    len = fprintf(out_file, " CHOOSE (%u)", (unsigned)(coffset + 1));
                     if (len < 0) {
-                        cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgAttr message\n");
+                        cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgAttr message\n");
                         goto done;
                     }
 
-                    buffer_pos += len;
                     data_pos += 4 + 2 * (coffset + 1);
                 } else {
                     data_pos += 4;
@@ -3828,46 +3947,49 @@ parse_formula(char buffer[], unsigned buffer_size, char data[], unsigned data_si
                 break;
             case ptgBool:
                 if (data_pos + 1 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgBool record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgBool record\n");
                     goto done;
                 }
-                len = snprintf(&buffer[buffer_pos], buffer_size - buffer_pos, " %s", data[data_pos + 1] ? "TRUE" : "FALSE");
+
+                len = fprintf(out_file, " %s", data[data_pos + 1] ? "TRUE" : "FALSE");
                 if (len < 0) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgBool message\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgBool message\n");
                     goto done;
                 }
-                buffer_pos += len;
+
                 data_pos += 2;
                 break;
             case ptgInt:
                 if (data_pos + 2 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgInt record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgInt record\n");
                     goto done;
                 }
-                len = snprintf(&buffer[buffer_pos], buffer_size - buffer_pos, " %d", data[data_pos + 1] | (data[data_pos + 2] << 8));
+
+                len = fprintf(out_file, " %d", data[data_pos + 1] | (data[data_pos + 2] << 8));
                 if (len < 0) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgInt message\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgInt message\n");
                     goto done;
                 }
-                buffer_pos += len;
+
                 data_pos += 3;
                 break;
             case ptgFunc:
             case ptgFuncV:
             case ptgFuncA: {
                 if (data_pos + 2 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgFunc record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgFunc record\n");
                     goto done;
                 }
 
                 uint16_t func_id      = data[data_pos + 1] | (data[data_pos + 2] << 8);
                 const char *func_name = get_function_name(func_id);
-                len                   = snprintf(&buffer[buffer_pos], buffer_size - buffer_pos, " %s (0x%04x)", func_name == NULL ? "<unknown function>" : func_name, func_id);
+
+                len = fprintf(out_file, " %s (0x%04x)", func_name == NULL ? "<unknown function>" : func_name, func_id);
                 if (len < 0) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgFunc message\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgFunc message\n");
                     goto done;
                 }
-                buffer_pos += len;
+
                 data_pos += 3;
                 break;
             }
@@ -3875,23 +3997,24 @@ parse_formula(char buffer[], unsigned buffer_size, char data[], unsigned data_si
             case ptgFuncVarV:
             case ptgFuncVarA: {
                 if (data_pos + 3 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgFuncVar record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgFuncVar record\n");
                     goto done;
                 }
 
                 uint16_t func_id      = data[data_pos + 2] | (data[data_pos + 3] << 8);
                 const char *func_name = get_function_name(func_id);
-                len                   = snprintf(&buffer[buffer_pos],
-                               buffer_size - buffer_pos,
-                               " args %u func %s (0x%04x)",
-                               (unsigned)data[data_pos + 1],
-                               func_name == NULL ? "<unknown function>" : func_name,
-                               func_id);
+
+                len = fprintf(
+                    out_file,
+                    " args %u func %s (0x%04x)",
+                    (unsigned)data[data_pos + 1],
+                    func_name == NULL ? "<unknown function>" : func_name,
+                    func_id);
                 if (len < 0) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgFuncVar message\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgFuncVar message\n");
                     goto done;
                 }
-                buffer_pos += len;
+
                 data_pos += 4;
                 if (func_id == 0x806d) {
                     data_pos += 9;
@@ -3900,102 +4023,97 @@ parse_formula(char buffer[], unsigned buffer_size, char data[], unsigned data_si
             }
             case ptgName: {
                 if (data_pos + 4 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgName record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgName record\n");
                     goto done;
                 }
 
                 uint32_t val = data[data_pos + 1] | (data[data_pos + 2] << 8) | (data[data_pos + 3] << 16) | (data[data_pos + 4] << 24);
-                len          = snprintf(&buffer[buffer_pos],
-                               buffer_size - buffer_pos,
-                               " 0x%08x",
-                               val);
+
+                len = fprintf(out_file, " 0x%08x", val);
                 if (len < 0) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgName message\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgName message\n");
                     goto done;
                 }
-                buffer_pos += len;
+
                 data_pos += 5;
                 break;
             }
             case ptgNum: {
                 if (data_pos + 8 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgNum record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgNum record\n");
                     goto done;
                 }
 
                 double val = *(double *)&data[data_pos + 1];
-                len        = snprintf(&buffer[buffer_pos],
-                               buffer_size - buffer_pos,
-                               " %f",
-                               val);
+
+                len = fprintf(out_file, " %f", val);
                 if (len < 0) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgNum message\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgNum message\n");
                     goto done;
                 }
-                buffer_pos += len;
+
                 data_pos += 9;
                 break;
             }
             case ptgMemArea: {
                 if (data_pos + 6 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgMemArea record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgMemArea record\n");
                     goto done;
                 }
 
-                len = snprintf(&buffer[buffer_pos], buffer_size - buffer_pos, " REFERENCE-EXPRESSION");
+                len = fprintf(out_file, " REFERENCE-EXPRESSION");
                 if (len < 0) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgMemArea message\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgMemArea message\n");
                     goto done;
                 }
-                buffer_pos += len;
+
                 data_pos += 7;
                 break;
             }
             case ptgExp: {
                 if (data_pos + 4 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgExp record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgExp record\n");
                     goto done;
                 }
                 uint16_t row    = data[data_pos + 1] | (data[data_pos + 2] << 8);
                 uint16_t column = data[data_pos + 3] | (data[data_pos + 4] << 8);
 
-                len = snprintf(&buffer[buffer_pos], buffer_size - buffer_pos, " R%uC%u", (unsigned)(row + 1), (unsigned)(column + 1));
+                len = fprintf(out_file, " R%uC%u", (unsigned)(row + 1), (unsigned)(column + 1));
                 if (len < 0) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgExp message\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgExp message\n");
                     goto done;
                 }
-                buffer_pos += len;
+
                 data_pos += 5;
                 break;
             }
             case ptgRef:
             case ptgRefV: {
                 if (data_pos + 4 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgRef record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgRef record\n");
                     goto done;
                 }
 
                 uint16_t row    = data[data_pos + 1] | (data[data_pos + 2] << 8);
                 uint16_t column = data[data_pos + 3] | (data[data_pos + 4] << 8);
 
-                len = snprintf(&buffer[buffer_pos],
-                               buffer_size - buffer_pos,
-                               " R%s%uC%s%u",
-                               (row & (1 << 14)) ? "~" : "",
-                               (unsigned)((row & 0x3fff) + ((row & (1 << 14)) ? 0 : 1)),
-                               (row & (1 << 15)) ? "~" : "",
-                               (unsigned)(column + ((row & (1 << 15)) ? 0 : 1)));
+                len = fprintf(
+                    out_file,
+                    " R%s%uC%s%u",
+                    (row & (1 << 14)) ? "~" : "",
+                    (unsigned)((row & 0x3fff) + ((row & (1 << 14)) ? 0 : 1)),
+                    (row & (1 << 15)) ? "~" : "",
+                    (unsigned)(column + ((row & (1 << 15)) ? 0 : 1)));
                 if (len < 0) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgRef message\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgRef message\n");
                     goto done;
                 }
-                buffer_pos += len;
                 data_pos += 5;
                 break;
             }
             case ptgArea: {
                 if (data_pos + 8 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgArea record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgArea record\n");
                     goto done;
                 }
 
@@ -4003,130 +4121,554 @@ parse_formula(char buffer[], unsigned buffer_size, char data[], unsigned data_si
                 uint16_t column1 = data[data_pos + 3] | (data[data_pos + 4] << 8);
                 uint16_t row2    = data[data_pos + 5] | (data[data_pos + 6] << 8);
                 uint16_t column2 = data[data_pos + 7] | (data[data_pos + 8] << 8);
-                len              = snprintf(&buffer[buffer_pos],
-                               buffer_size - buffer_pos,
-                               " R%s%uC%s%u:R%s%uC%s%u",
-                               (row1 & (1 << 14)) ? "~" : "",
-                               (unsigned)((row1 & 0x3fff) + ((row1 & (1 << 14)) ? 0 : 1)),
-                               (row1 & (1 << 15)) ? "~" : "",
-                               (unsigned)(column1 + ((row1 & (1 << 15)) ? 0 : 1)),
-                               (row2 & (1 << 14)) ? "~" : "",
-                               (unsigned)((row2 & 0x3fff) + ((row2 & (1 << 14)) ? 0 : 1)),
-                               (row2 & (1 << 15)) ? "~" : "",
-                               (unsigned)(column2 + ((row2 & (1 << 15)) ? 0 : 1)));
+
+                len = fprintf(
+                    out_file,
+                    " R%s%uC%s%u:R%s%uC%s%u",
+                    (row1 & (1 << 14)) ? "~" : "",
+                    (unsigned)((row1 & 0x3fff) + ((row1 & (1 << 14)) ? 0 : 1)),
+                    (row1 & (1 << 15)) ? "~" : "",
+                    (unsigned)(column1 + ((row1 & (1 << 15)) ? 0 : 1)),
+                    (row2 & (1 << 14)) ? "~" : "",
+                    (unsigned)((row2 & 0x3fff) + ((row2 & (1 << 14)) ? 0 : 1)),
+                    (row2 & (1 << 15)) ? "~" : "",
+                    (unsigned)(column2 + ((row2 & (1 << 15)) ? 0 : 1)));
                 if (len < 0) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgArea message\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgArea message\n");
                     goto done;
                 }
-                buffer_pos += len;
+
                 data_pos += 9;
                 break;
             }
             case ptgRef3d:
             case ptgRef3dV: {
                 if (data_pos + 6 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgRef3d record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgRef3d record\n");
                     goto done;
                 }
 
                 uint16_t row    = data[data_pos + 3] | (data[data_pos + 4] << 8);
                 uint16_t column = data[data_pos + 5] | (data[data_pos + 6] << 8);
 
-                len = snprintf(&buffer[buffer_pos],
-                               buffer_size - buffer_pos,
-                               " R%s%uC%s%u",
-                               (row & (1 << 14)) ? "~" : "",
-                               (unsigned)((row & 0x3fff) + ((row & (1 << 14)) ? 0 : 1)),
-                               (row & (1 << 15)) ? "~" : "",
-                               (unsigned)(column + ((row & (1 << 15)) ? 0 : 1)));
+                len = fprintf(
+                    out_file,
+                    " R%s%uC%s%u",
+                    (row & (1 << 14)) ? "~" : "",
+                    (unsigned)((row & 0x3fff) + ((row & (1 << 14)) ? 0 : 1)),
+                    (row & (1 << 15)) ? "~" : "",
+                    (unsigned)(column + ((row & (1 << 15)) ? 0 : 1)));
                 if (len < 0) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgRef3d message\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgRef3d message\n");
                     goto done;
                 }
-                buffer_pos += len;
+
                 data_pos += 7;
                 break;
             }
             case ptgNameX: {
                 if (data_pos + 6 >= data_size) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Malformed ptgNameX record\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Malformed ptgNameX record\n");
                     goto done;
                 }
 
                 uint16_t name = data[data_pos + 3] | (data[data_pos + 4] << 8);
 
-                len = snprintf(&buffer[buffer_pos],
-                               buffer_size - buffer_pos,
-                               " NAMEIDX %u",
-                               (unsigned)name);
+                len = fprintf(
+                    out_file,
+                    " NAMEIDX %u",
+                    (unsigned)name);
                 if (len < 0) {
-                    cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Error formatting ptgNameX message\n");
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Error formatting ptgNameX message\n");
                     goto done;
                 }
-                buffer_pos += len;
+
                 data_pos += 7;
                 break;
             }
             default:
-                cli_dbgmsg("[cli_xlm_extract_macros:parse_formula] Encountered unknown ptg token 0x%02x\n", ptg);
+                if (ptg < sizeof(TOKENS) / sizeof(char *)) {
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Encountered unexpected ptg token: %s\n", TOKENS[ptg]);
+                } else {
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images:parse_formula] Encountered unknown ptg token: 0x%02x\n", ptg);
+                }
                 goto done;
         }
     }
 
+    status = CL_SUCCESS;
+
 done:
-    return buffer_pos;
+    return status;
 }
 
-cl_error_t
-cli_xlm_extract_macros(const char *dir, cli_ctx *ctx, struct uniq *U, char *hash, uint32_t which)
+/**
+ * @brief Handle each type of Blip record. See section 2.2.23 OfficeArtBlip in:
+ * https://interoperability.blob.core.windows.net/files/MS-ODRAW/%5bMS-ODRAW%5d.pdf
+ *
+ * @param blip_store_container
+ * @param blip_store_container_len
+ * @param ctx
+ * @return cl_error_t
+ */
+cl_error_t process_blip_record(struct OfficeArtRecordHeader_Unpacked *rh, const unsigned char *index, size_t remaining, cli_ctx *ctx)
 {
+    cl_error_t status = CL_EARG;
+    cl_error_t ret;
+
+    char *extracted_image_filepath = NULL;
+    int extracted_image_tempfd     = -1;
+
+    size_t blip_bytes_before_image      = 0; /* the number of bytes between the record header and the image */
+    const unsigned char *start_of_image = NULL;
+    size_t size_of_image                = 0;
+    const char *extracted_image_type    = NULL;
+
+    if (0x0 != rh->recVer) {
+        cli_dbgmsg("process_blip_store_container: Invalid recVer for Blip record header: %u\n", rh->recVer);
+    }
+
+    switch (rh->recType) {
+        case 0xF01A: { /* OfficeArtBlipEMF */
+            cli_dbgmsg("process_blip_store_container: Found OfficeArtBlipEMF (Enhanced Metafile Format)\n");
+            if (0x3D4 == rh->recInstance) {
+                blip_bytes_before_image += 16 + 34; /* 1 16-byte UID + 34-byte metafile header */
+            } else if (0x3D5 == rh->recInstance) {
+                blip_bytes_before_image += 32 + 34; /* 2 16-byte UIDs + 34-byte metafile header */
+            } else {
+                cli_dbgmsg("process_blip_store_container: Invalid recInstance for OfficeArtBlipEMF\n");
+            }
+            extracted_image_type = "EMF";
+            break;
+        }
+        case 0xF01B: { /* OfficeArtBlipWMF */
+            cli_dbgmsg("process_blip_store_container: Found OfficeArtBlipWMF (Windows Metafile Format)\n");
+            if (0x216 == rh->recInstance) {
+                blip_bytes_before_image += 16 + 34; /* 1 16-byte UID + 34-byte metafile header */
+            } else if (0x217 == rh->recInstance) {
+                blip_bytes_before_image += 32 + 34; /* 2 16-byte UIDs + 34-byte metafile header */
+            } else {
+                cli_dbgmsg("process_blip_store_container: Invalid recInstance for OfficeArtBlipWMF\n");
+            }
+            extracted_image_type = "WMF";
+            break;
+        }
+        case 0xF01C: { /* OfficeArtBlipPICT */
+            cli_dbgmsg("process_blip_store_container: Found OfficeArtBlipPICT (Macintosh PICT)\n");
+            if (0x542 == rh->recInstance) {
+                blip_bytes_before_image += 16 + 34; /* 1 16-byte UID + 34-byte metafile header */
+            } else if (0x543 == rh->recInstance) {
+                blip_bytes_before_image += 32 + 34; /* 2 16-byte UIDs + 34-byte metafile header */
+            } else {
+                cli_dbgmsg("process_blip_store_container: Invalid recInstance for OfficeArtBlipPICT\n");
+            }
+            extracted_image_type = "PICT";
+            break;
+        }
+        case 0xF01D:   /* OfficeArtBlipJPEG */
+        case 0xF02A: { /* OfficeArtBlipJPEG */
+            cli_dbgmsg("process_blip_store_container: Found OfficeArtBlipJPEG\n");
+            if (0x46A == rh->recInstance || 0x6E2 == rh->recInstance) {
+                blip_bytes_before_image += 16 + 1; /* 1 16-byte UID + 1-byte tag */
+            } else if (0x46B == rh->recInstance || 0x6E3 == rh->recInstance) {
+                blip_bytes_before_image += 32 + 1; /* 2 16-byte UIDs + 1-byte tag */
+            } else {
+                cli_dbgmsg("process_blip_store_container: Invalid recInstance for OfficeArtBlipJPEG\n");
+            }
+            extracted_image_type = "JPEG";
+            break;
+        }
+        case 0xF01E: { /* OfficeArtBlipPNG */
+            cli_dbgmsg("process_blip_store_container: Found OfficeArtBlipPNG\n");
+            if (0x6E0 == rh->recInstance) {
+                blip_bytes_before_image += 16 + 1; /* 1 16-byte UID + 1-byte tag */
+            } else if (0x6E1 == rh->recInstance) {
+                blip_bytes_before_image += 32 + 1; /* 2 16-byte UIDs + 1-byte tag */
+            } else {
+                cli_dbgmsg("process_blip_store_container: Invalid recInstance for OfficeArtBlipPNG\n");
+            }
+            extracted_image_type = "PNG";
+            break;
+        }
+        case 0xF01F: { /* OfficeArtBlipDIB */
+            cli_dbgmsg("process_blip_store_container: Found OfficeArtBlipDIB (device independent bitmap)\n");
+            if (0x7A8 == rh->recInstance) {
+                blip_bytes_before_image += 16 + 1; /* 1 16-byte UID + 1-byte tag */
+            } else if (0x7A9 == rh->recInstance) {
+                blip_bytes_before_image += 32 + 1; /* 2 16-byte UIDs + 1-byte tag */
+            } else {
+                cli_dbgmsg("process_blip_store_container: Invalid recInstance for OfficeArtBlipDIB\n");
+            }
+            extracted_image_type = "DIB";
+            break;
+        }
+        case 0xF029: { /* OfficeArtBlipTIFF */
+            cli_dbgmsg("process_blip_store_container: Found OfficeArtBlipTIFF\n");
+            if (0x6E4 == rh->recInstance) {
+                blip_bytes_before_image += 16 + 1; /* 1 16-byte UID + 1-byte tag */
+            } else if (0x6E5 == rh->recInstance) {
+                blip_bytes_before_image += 32 + 1; /* 2 16-byte UIDs + 1-byte tag */
+            } else {
+                cli_dbgmsg("process_blip_store_container: Invalid recInstance for OfficeArtBlipTIFF\n");
+            }
+            extracted_image_type = "TIFF";
+            break;
+        }
+        default: {
+            cli_dbgmsg("Unknown OfficeArtBlip type!\n");
+        }
+    }
+
+    if (0 == blip_bytes_before_image) {
+        cli_dbgmsg("Was not able to identify the Blip type, skipping...\n");
+
+    } else if (remaining < sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) + blip_bytes_before_image) {
+        cli_dbgmsg("Not enough remaining bytes in blip array for image data\n");
+
+    } else {
+        start_of_image = index + sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) + blip_bytes_before_image;
+        size_of_image  = MIN(rh->recLen, remaining - (sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) + blip_bytes_before_image));
+
+        cli_dbgmsg("Scanning extracted image of size %zu\n", size_of_image);
+
+        if (ctx->engine->keeptmp) {
+            /* Drop a temp file and scan that */
+            if (CL_SUCCESS != (ret = cli_gentempfd_with_prefix(
+                                   ctx->sub_tmpdir,
+                                   extracted_image_type,
+                                   &extracted_image_filepath,
+                                   &extracted_image_tempfd))) {
+                cli_warnmsg("Failed to create temp file for extracted %s file\n", extracted_image_type);
+                status = CL_EOPEN;
+                goto done;
+            }
+
+            if (cli_writen(extracted_image_tempfd, start_of_image, size_of_image) != size_of_image) {
+                cli_errmsg("failed to write output file\n");
+                status = CL_EWRITE;
+                goto done;
+            }
+
+            ret = cli_magic_scan_desc_type(extracted_image_tempfd, extracted_image_filepath, ctx, CL_TYPE_ANY,
+                                           NULL, LAYER_ATTRIBUTES_NONE);
+        } else {
+            /* Scan the buffer */
+            ret = cli_magic_scan_buff(start_of_image, size_of_image, ctx, NULL, LAYER_ATTRIBUTES_NONE);
+        }
+        if (CL_SUCCESS != ret) {
+            status = ret;
+            goto done;
+        }
+    }
+
+    if (remaining < sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) + rh->recLen) {
+        remaining = 0;
+    } else {
+        remaining -= sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) + rh->recLen;
+        index += sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) + rh->recLen;
+    }
+
+    status = CL_SUCCESS;
+
+done:
+    if (-1 != extracted_image_tempfd) {
+        close(extracted_image_tempfd);
+    }
+    if (NULL != extracted_image_filepath) {
+        free(extracted_image_filepath);
+    }
+
+    return status;
+}
+
+/**
+ * @brief Process each Blip Store Container File Block in a Blip Store Container
+ *
+ * @param blip_store_container
+ * @param blip_store_container_len
+ * @param ctx
+ * @return cl_error_t
+ */
+cl_error_t process_blip_store_container(const unsigned char *blip_store_container, size_t blip_store_container_len, cli_ctx *ctx)
+{
+    cl_error_t status = CL_EARG;
+
+    struct OfficeArtRecordHeader_Unpacked rh;
+    const unsigned char *index = blip_store_container;
+    size_t remaining           = blip_store_container_len;
+
+    while (0 < remaining) {
+
+        if (CL_SUCCESS != read_office_art_record_header(index, remaining, &rh)) {
+            /* Failed to get header, abort. */
+            cli_dbgmsg("process_blip_store_container: Failed to get header\n");
+            goto done;
+        }
+
+        if (0x0 != rh.recVer) {
+            cli_dbgmsg("process_blip_store_container: Invalid recVer for Blip record header: %u\n", rh.recVer);
+        }
+
+        /*
+         * Handle each type of Blip Store Container File Block. See section 2.2.22 OfficeArtBStoreContainerFileBlock in:
+         * https://interoperability.blob.core.windows.net/files/MS-ODRAW/%5bMS-ODRAW%5d.pdf
+         */
+        if (0xF007 == rh.recType) {
+            /* it's an OfficeArtFBSErecord */
+            cli_dbgmsg("process_blip_store_container: Found a File Blip Store Entry (FBSE) record\n");
+
+            if (0x2 != rh.recVer) {
+                cli_dbgmsg("process_blip_store_container: Invalid recVer for OfficeArtFBSErecord: 0x%x\n", rh.recVer);
+            }
+
+            if (sizeof(struct OfficeArtFBSE_PackedLittleEndian) > remaining - sizeof(struct OfficeArtRecordHeader_PackedLittleEndian)) {
+                cli_dbgmsg("process_blip_store_container: Not enough bytes for FSBE record data\n");
+            } else {
+                struct OfficeArtFBSE_PackedLittleEndian *FBSE_record_data = (struct OfficeArtFBSE_PackedLittleEndian *)(index + sizeof(struct OfficeArtRecordHeader_PackedLittleEndian));
+
+                if (FBSE_record_data->cbName > remaining - sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) - sizeof(struct OfficeArtFBSE_PackedLittleEndian)) {
+                    cli_dbgmsg("process_blip_store_container: Not enough bytes for FSBE record data + blip file name\n");
+                } else {
+                    struct OfficeArtRecordHeader_Unpacked embeddedBlip_rh;
+                    const unsigned char *embeddedBlip;
+                    size_t embeddedBlip_size;
+                    char *blip_file_name       = NULL;
+                    char blip_name_buffer[256] = {0};
+
+                    if (FBSE_record_data->cbName > 0) {
+                        memcpy(blip_name_buffer,
+                               (char *)(index +
+                                        sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) +
+                                        sizeof(struct OfficeArtFBSE_PackedLittleEndian)),
+                               (size_t)FBSE_record_data->cbName);
+                        blip_name_buffer[FBSE_record_data->cbName] = '\0';
+
+                        blip_file_name = blip_name_buffer;
+                        cli_dbgmsg("Blip file name: %s\n", blip_file_name);
+                    }
+
+                    embeddedBlip = (const unsigned char *)(index +
+                                                           sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) +
+                                                           sizeof(struct OfficeArtFBSE_PackedLittleEndian) +
+                                                           (size_t)FBSE_record_data->cbName);
+
+                    embeddedBlip_size = remaining -
+                                        sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) -
+                                        sizeof(struct OfficeArtFBSE_PackedLittleEndian) -
+                                        (size_t)FBSE_record_data->cbName;
+
+                    if (le32_to_host(FBSE_record_data->size) > embeddedBlip_size) {
+                        cli_dbgmsg("process_blip_store_container: WARNING: The File Blip Store Entry claims that the Blip data is bigger than the remaining bytes in the record!\n");
+                        cli_dbgmsg("process_blip_store_container:   %d > %zu!\n", le32_to_host(FBSE_record_data->size), embeddedBlip_size);
+                    } else {
+                        /* limit embeddedBlip_size to the size of what's actually left */
+                        embeddedBlip_size = le32_to_host(FBSE_record_data->size);
+                    }
+
+                    if (CL_SUCCESS != read_office_art_record_header(embeddedBlip, embeddedBlip_size, &embeddedBlip_rh)) {
+                        /* Failed to get header, abort. */
+                        cli_dbgmsg("process_blip_store_container: Failed to get header\n");
+                        goto done;
+                    }
+                    status = process_blip_record(&embeddedBlip_rh, embeddedBlip, embeddedBlip_size, ctx);
+                    if (CL_SUCCESS != status) {
+                        goto done;
+                    }
+                }
+            }
+
+        } else if ((0xF018 <= rh.recType) && (0xF117 >= rh.recType)) {
+            /* it's an OfficeArtBlip record */
+            cli_dbgmsg("process_blip_store_container: Found a Blip record\n");
+            status = process_blip_record(&rh, index, remaining, ctx);
+            if (CL_SUCCESS != status) {
+                goto done;
+            }
+
+        } else {
+            /* unexpected record type. */
+            cli_dbgmsg("process_blip_store_container: Unexpected record type\n");
+        }
+
+        if (remaining < sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) + rh.recLen) {
+            remaining = 0;
+        } else {
+            remaining -= sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) + rh.recLen;
+            index += sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) + rh.recLen;
+        }
+    }
+
+    status = CL_SUCCESS;
+
+done:
+
+    return status;
+}
+
+cl_error_t cli_extract_images_from_drawing_group(const unsigned char *drawinggroup, size_t drawinggroup_len, cli_ctx *ctx)
+{
+    cl_error_t status = CL_EARG;
+
+    struct OfficeArtRecordHeader_Unpacked rh;
+    const unsigned char *index = drawinggroup;
+    size_t remaining           = drawinggroup_len;
+
+    if (NULL == drawinggroup || 0 == drawinggroup_len) {
+        cli_dbgmsg("cli_extract_images_from_drawing_group: Invalid arguments\n");
+        goto done;
+    }
+
+    if (CL_SUCCESS != read_office_art_record_header(drawinggroup, drawinggroup_len, &rh)) {
+        /* Failed to get header, abort. */
+        cli_dbgmsg("cli_extract_images_from_drawing_group: Failed to get drawing group record header\n");
+        goto done;
+    }
+
+    if (!((0xF == rh.recVer) &&
+          (0x000 == rh.recInstance) &&
+          (0xF000 == rh.recType))) {
+        /* Invalid record values for drawing group record header */
+        cli_dbgmsg("cli_extract_images_from_drawing_group: Invalid record values for drawing group record header\n");
+        goto done;
+    }
+
+    if (rh.recLen > drawinggroup_len) {
+        /* Record header claims to be longer than our drawing group buffer */
+        cli_dbgmsg("cli_extract_images_from_drawing_group: Record header claims to be longer than our drawing group buffer:\n");
+        cli_dbgmsg("cli_extract_images_from_drawing_group:   %u > %zu\n", rh.recLen, drawinggroup_len);
+    }
+
+    /* Looks like we really found an Office Art Drawing Group (container).
+     * See section 2.2.12 OfficeArtDggContainer in:
+     * https://interoperability.blob.core.windows.net/files/MS-ODRAW/%5bMS-ODRAW%5d.pdf */
+    cli_dbgmsg("cli_extract_images_from_drawing_group: Found drawing group of size %u bytes\n", rh.recLen);
+
+    /* Just skip over this first header */
+    if (remaining < sizeof(struct OfficeArtRecordHeader_PackedLittleEndian)) {
+        remaining = 0;
+    } else {
+        remaining -= sizeof(struct OfficeArtRecordHeader_PackedLittleEndian);
+        index += sizeof(struct OfficeArtRecordHeader_PackedLittleEndian);
+    }
+
+    while (0 < remaining) {
+        if (CL_SUCCESS != read_office_art_record_header(index, remaining, &rh)) {
+            /* Failed to get header, abort. */
+            cli_dbgmsg("cli_extract_images_from_drawing_group: Failed to get header\n");
+            goto done;
+        }
+
+        if (sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) > remaining) {
+            cli_dbgmsg("cli_extract_images_from_drawing_group: Not enough data remaining for BLIP store.\n");
+            goto done;
+        }
+
+        if ((0xF == rh.recVer) &&
+            (0xF001 == rh.recType)) {
+            /* Looks like we found a BLIP store container (array of OfficeArtBStoreContainerFileBlock records)
+             * See section 2.2.20 OfficeArtBStoreContainer in:
+             * https://interoperability.blob.core.windows.net/files/MS-ODRAW/%5bMS-ODRAW%5d.pdf */
+            const unsigned char *start_of_blip_store_container = index + sizeof(struct OfficeArtRecordHeader_PackedLittleEndian);
+            size_t blip_store_container_len                    = remaining - sizeof(struct OfficeArtRecordHeader_PackedLittleEndian);
+
+            cli_dbgmsg("cli_extract_images_from_drawing_group: Found an OfficeArtBStoreContainerFileBlock (Blip store).\n");
+            cli_dbgmsg("cli_extract_images_from_drawing_group:   size: %u bytes, contains: %u file block records\n",
+                       rh.recLen, rh.recInstance);
+
+            if (rh.recLen > blip_store_container_len) {
+                cli_dbgmsg("cli_extract_images_from_drawing_group: WARNING: The blip store header claims to be bigger than the remaining bytes in the drawing group!\n");
+                cli_dbgmsg("cli_extract_images_from_drawing_group:   %d > %zu!\n", rh.recLen, blip_store_container_len);
+            } else {
+                /* limit rgfb enumeration to the size of the blip store */
+                blip_store_container_len = rh.recLen;
+            }
+
+            status = process_blip_store_container(start_of_blip_store_container, blip_store_container_len, ctx);
+            if (CL_SUCCESS != status) {
+                goto done;
+            }
+        }
+
+        if (remaining < sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) + rh.recLen) {
+            remaining = 0;
+        } else {
+            remaining -= sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) + rh.recLen;
+            index += sizeof(struct OfficeArtRecordHeader_PackedLittleEndian) + rh.recLen;
+        }
+    }
+
+    status = CL_SUCCESS;
+
+done:
+
+    return status;
+}
+
+cl_error_t cli_extract_xlm_macros_and_images(const char *dir, cli_ctx *ctx, char *hash, uint32_t which)
+{
+    cl_error_t status = CL_SUCCESS;
+    cl_error_t ret;
     char fullname[PATH_MAX];
     int in_fd = -1, out_fd = -1;
-    cl_error_t ret = CL_SUCCESS;
+    FILE *out_file = NULL;
     const char *opcode_name;
     char *tempfile = NULL;
-    char buf[1024];
-    char *data = NULL;
+    char *data     = NULL;
     int len;
-    int len2;
+    size_t size_written;
+    size_t size_read;
     struct {
         uint16_t opcode;
         uint16_t length;
     } __attribute__((packed)) biff_header;
     const char FILE_HEADER[] = "-- BIFF content extracted and disassembled from CL_TYPE_MSXL .xls file because a XLM macro was found in the document\n";
 
-    UNUSEDPARAM(U);
+    unsigned char *drawinggroup = NULL;
+    size_t drawinggroup_len     = 0;
+
+    biff8_opcode previous_biff8_opcode = 0x0; // Initialize to 0x0, which isn't even in our enum.
+                                              // This variable will allow the OPC_CONTINUE record
+                                              // to know which record it is continuing.
 
     snprintf(fullname, sizeof(fullname), "%s" PATHSEP "%s_%u", dir, hash, which);
     fullname[sizeof(fullname) - 1] = '\0';
     in_fd                          = open(fullname, O_RDONLY | O_BINARY);
 
     if (in_fd == -1) {
-        cli_dbgmsg("[cli_xlm_extract_macros] Failed to open input file\n");
-        ret = CL_EACCES;
+        cli_dbgmsg("[cli_extract_xlm_macros_and_images] Failed to open input file\n");
+        /* Don't return an error. If the file is missing, an error probably occured
+         * earlier, such as a UTF8 conversion error in parse_formula() and so the file was never written.
+         * There are no macros to scan, so report SUCCESS / CLEAN. */
         goto done;
     }
 
-    if ((ret = cli_gentempfd(dir, &tempfile, &out_fd)) != CL_SUCCESS) {
-        cli_dbgmsg("[cli_xlm_extract_macros] Failed to open output file\n");
+    if ((ret = cli_gentempfd_with_prefix(ctx->sub_tmpdir, "xlm_macros", &tempfile, &out_fd)) != CL_SUCCESS) {
+        cli_dbgmsg("[cli_extract_xlm_macros_and_images] Failed to open output file descriptor\n");
+        status = ret;
+        goto done;
+    }
+
+    out_file = fdopen(out_fd, "wb");
+    if (NULL == out_file) {
+        cli_dbgmsg("[cli_extract_xlm_macros_and_images] Failed to open output file pointer\n");
         goto done;
     }
 
     if ((data = malloc(BIFF8_MAX_RECORD_LENGTH)) == NULL) {
-        cli_dbgmsg("[cli_xlm_extract_macros] Failed to allocate memory for BIFF data\n");
-        ret = CL_EMEM;
+        cli_dbgmsg("[cli_extract_xlm_macros_and_images] Failed to allocate memory for BIFF data\n");
+        status = CL_EMEM;
         goto done;
     }
 
     if (cli_writen(out_fd, FILE_HEADER, sizeof(FILE_HEADER) - 1) != sizeof(FILE_HEADER) - 1) {
-        cli_dbgmsg("[cli_xlm_extract_macros] Failed to write header\n");
-        ret = CL_EWRITE;
+        cli_dbgmsg("[cli_extract_xlm_macros_and_images] Failed to write header\n");
+        status = CL_EWRITE;
         goto done;
     }
 
-    cli_dbgmsg("[cli_xlm_extract_macros] Extracting macros to %s\n", tempfile);
+    cli_dbgmsg("[cli_extract_xlm_macros_and_images] Extracting macros to %s\n", tempfile);
 
-    while ((ret = cli_readn(in_fd, &biff_header, sizeof(biff_header))) == sizeof(biff_header)) {
+    while (sizeof(biff_header) == (size_read = cli_readn(in_fd, &biff_header, sizeof(biff_header)))) {
         biff_header.opcode = le16_to_host(biff_header.opcode);
         biff_header.length = le16_to_host(biff_header.length);
 
@@ -4136,23 +4678,23 @@ cli_xlm_extract_macros(const char *dir, cli_ctx *ctx, struct uniq *U, char *hash
             opcode_name = NULL;
         }
 
-        len = snprintf(buf, sizeof(buf), "%04x %6d   %s", biff_header.opcode, biff_header.length, opcode_name == NULL ? "<unknown>" : opcode_name);
-
+        len = fprintf(out_file, "%04x %6d   %s", biff_header.opcode, biff_header.length, opcode_name == NULL ? "<unknown>" : opcode_name);
         if (len < 0) {
-            cli_dbgmsg("[cli_xlm_extract_macros] Error formatting opcode message\n");
-            ret = CL_EFORMAT;
+            cli_dbgmsg("[cli_extract_xlm_macros_and_images] Error formatting opcode message\n");
+            status = CL_EFORMAT;
             goto done;
         }
+        len = 0;
 
         if (biff_header.length > BIFF8_MAX_RECORD_LENGTH) {
-            cli_dbgmsg("[cli_xlm_extract_macros] Record size exceeds maximum allowed\n");
-            ret = CL_EFORMAT;
+            cli_dbgmsg("[cli_extract_xlm_macros_and_images] Record size exceeds maximum allowed\n");
+            status = CL_EFORMAT;
             goto done;
         }
 
         if (cli_readn(in_fd, data, biff_header.length) != biff_header.length) {
-            cli_dbgmsg("[cli_xlm_extract_macros] Failed to read BIFF record data\n");
-            ret = CL_EREAD;
+            cli_dbgmsg("[cli_extract_xlm_macros_and_images] Failed to read BIFF record data\n");
+            status = CL_EREAD;
             goto done;
         }
 
@@ -4168,27 +4710,29 @@ cli_xlm_extract_macros(const char *dir, cli_ctx *ctx, struct uniq *U, char *hash
                     formula_header.row    = data[0] | (data[1] << 8);
                     formula_header.column = data[2] | (data[3] << 8);
                     formula_header.length = data[20] | (data[21] << 8);
-                    len2                  = snprintf(&buf[len],
-                                    sizeof(buf) - len, " - R%dC%d len=%d ",
-                                    (unsigned)(formula_header.row + 1),
-                                    (unsigned)(formula_header.column + 1),
-                                    formula_header.length);
-                    if (len2 < 0) {
-                        cli_dbgmsg("[cli_xlm_extract_macros] Error formatting FORMULA record message\n");
-                        ret = CL_EFORMAT;
-                        goto done;
+
+                    len = fprintf(
+                        out_file,
+                        " - R%dC%d len=%d ",
+                        (unsigned)(formula_header.row + 1),
+                        (unsigned)(formula_header.column + 1),
+                        formula_header.length);
+                    if (len < 0) {
+                        cli_dbgmsg("[cli_extract_xlm_macros_and_images] Error formatting FORMULA record message\n");
+
+                        // Move along to the next record.
+                        break;
                     }
 
-                    len += len2;
+                    ret = parse_formula(out_file, &data[22], biff_header.length - 21);
+                    if (CL_SUCCESS != ret) {
+                        cli_dbgmsg("[cli_extract_xlm_macros_and_images] Error parsing formula in FORMULA record message\n");
 
-                    len2 = parse_formula(&buf[len], sizeof(buf) - len, &data[22], biff_header.length - 21);
-                    if (len2 < 0) {
-                        cli_dbgmsg("[cli_xlm_extract_macros] Error parsing formula in FORMULA record message\n");
-                        ret = CL_EFORMAT;
-                        goto done;
+                        // Move along to the next record.
+                        break;
                     }
 
-                    len += len2;
+                    // formula successfully parsed.
                 }
 
                 break;
@@ -4209,24 +4753,58 @@ cli_xlm_extract_macros(const char *dir, cli_ctx *ctx, struct uniq *U, char *hash
                                 name = "?";
                                 break;
                         }
-                        len2 = snprintf(&buf[len], sizeof(buf) - len, " - built-in-name %u %s", (unsigned)code, name);
+
+                        len = fprintf(out_file, " - built-in-name %u %s", (unsigned)code, name);
                     } else {
                         int name_len  = data[3] | (data[4] << 8);
                         size_t offset = data[14] != 0 ? 14 : 15;
                         name_len      = min(name_len, (int)(biff_header.length - offset));
-                        len2          = snprintf(&buf[len], sizeof(buf) - len, " - %.*s", name_len, &data[offset]);
-                    }
-                    if (len2 < 0) {
-                        cli_dbgmsg("[cli_xlm_extract_macros] Error formatting NAME record message\n");
-                        ret = CL_EFORMAT;
-                        goto done;
-                    }
-                    len += len2;
 
+                        len = fprintf(out_file, " - %.*s", name_len, &data[offset]);
+                    }
+                    if (len < 0) {
+                        cli_dbgmsg("[cli_extract_xlm_macros_and_images] Error formatting NAME record message\n");
+
+                        // Move along to the next record.
+                        break;
+                    }
+
+                    // name record successfully parsed
                 } else {
-                    cli_dbgmsg("[cli_xlm_extract_macros] Skipping broken NAME record (length %u)\n", biff_header.length);
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images] Skipping broken NAME record (length %u)\n", biff_header.length);
                 }
 
+                break;
+            }
+            case OPC_MSODRAWINGGROUP: {
+                /*
+                 * Extract the entire drawing group before we parse it.
+                 */
+                if (NULL == drawinggroup) {
+                    /* Found beginning of a drawing group */
+                    drawinggroup_len = (size_t)biff_header.length;
+                    drawinggroup     = malloc(drawinggroup_len);
+                    memcpy(drawinggroup, data, drawinggroup_len);
+                    // cli_dbgmsg("Collected %zu drawing group bytes\n", drawinggroup_len);
+
+                } else {
+                    /* already found the beginning of a drawing group, extract the remaining chunks */
+                    drawinggroup_len += biff_header.length;
+                    CLI_REALLOC(drawinggroup, drawinggroup_len, status = CL_EMEM);
+                    memcpy(drawinggroup + (drawinggroup_len - biff_header.length), data, biff_header.length);
+                    // cli_dbgmsg("Collected %d drawing group bytes\n", biff_header.length);
+                }
+                break;
+            }
+            case OPC_CONTINUE: {
+                if ((OPC_MSODRAWINGGROUP == previous_biff8_opcode) &&
+                    (NULL != drawinggroup)) {
+                    /* already found the beginning of an image, extract the remaining chunks */
+                    drawinggroup_len += biff_header.length;
+                    CLI_REALLOC(drawinggroup, drawinggroup_len, status = CL_EMEM);
+                    memcpy(drawinggroup + (drawinggroup_len - biff_header.length), data, biff_header.length);
+                    // cli_dbgmsg("Collected %d image bytes\n", biff_header.length);
+                }
                 break;
             }
             case OPC_BOUNDSHEET: {
@@ -4266,84 +4844,85 @@ cli_xlm_extract_macros(const char *dir, cli_ctx *ctx, struct uniq *U, char *hash
                             break;
                     }
 
-                    len2 = snprintf(&buf[len], sizeof(buf) - len, " - %s, %s", sheet_type, sheet_state);
-
-                    if (len2 < 0) {
-                        cli_dbgmsg("[cli_xlm_extract_macros] Error formatting BOUNDSHEET record message\n");
-                        ret = CL_EFORMAT;
+                    len = fprintf(out_file, " - %s, %s", sheet_type, sheet_state);
+                    if (len < 0) {
+                        cli_dbgmsg("[cli_extract_xlm_macros_and_images] Error formatting BOUNDSHEET record message\n");
+                        // Move along to the next record.
                         break;
                     }
 
-                    len += len2;
+                    // boundsheet record successfully parsed
                 } else {
-                    cli_dbgmsg("[cli_xlm_extract_macros] Skipping broken BOUNDSHEET record (length %u)\n", biff_header.length);
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images] Skipping broken BOUNDSHEET record (length %u)\n", biff_header.length);
                 }
                 break;
             }
             case OPC_STRING: {
-                //Documented in Microsoft Office Excel97-2007Binary File Format (.xls) Specification
-                //Page 17: Unicode Strings in BIFF8
+                // Documented in Microsoft Office Excel97-2007Binary File Format (.xls) Specification
+                // Page 17: Unicode Strings in BIFF8
                 if (biff_header.length >= 4) {
                     uint16_t string_length = data[0] | (data[1] << 8);
                     uint8_t flags          = data[2];
 
                     if (flags & 0x4) {
-                        cli_dbgmsg("[cli_xlm_extract_macros] East Asian extended strings not implemented\n");
+                        cli_dbgmsg("[cli_extract_xlm_macros_and_images] East Asian extended strings not implemented\n");
                     }
 
                     if (flags & 0x8) {
-                        cli_dbgmsg("[cli_xlm_extract_macros] Rich strings not implemented\n");
+                        cli_dbgmsg("[cli_extract_xlm_macros_and_images] Rich strings not implemented\n");
                     }
 
-                    if (!(flags & 0x1)) { //String is compressed
-                        len2 = snprintf(&buf[len], sizeof(buf) - len, " - \"%.*s\"", (int)(biff_header.length - 3), &data[6]);
-                        if (len2 < 0) {
-                            cli_dbgmsg("[cli_xlm_extract_macros] Error formatting STRING record message with ANSI content\n");
-                            ret = CL_EFORMAT;
+                    if (!(flags & 0x1)) {
+                        // String is compressed
+                        len = fprintf(out_file, " - \"%.*s\"", (int)(biff_header.length - 3), &data[6]);
+                        if (len < 0) {
+                            cli_dbgmsg("[cli_extract_xlm_macros_and_images] Error formatting STRING record message with ANSI content\n");
+
+                            // Move along to the next record.
                             break;
                         }
-                        len += len2;
                     } else {
                         char *utf8       = NULL;
                         size_t utf8_size = 0;
-                        len2             = snprintf(&buf[len], sizeof(buf) - len, " - ");
 
-                        if (len2 < 0) {
-                            cli_dbgmsg("[cli_xlm_extract_macros] Error formatting STRING record message with UTF16 content\n");
-                            ret = CL_EFORMAT;
+                        len = fprintf(out_file, " - ");
+                        if (len < 0) {
+                            cli_dbgmsg("[cli_extract_xlm_macros_and_images] Error formatting STRING record message with UTF16 content\n");
+
+                            // Move along to the next record.
                             break;
                         }
-
-                        len += len2;
 
                         if (string_length > biff_header.length - 3) {
                             string_length = biff_header.length - 3;
                         }
 
-                        if (CL_SUCCESS == cli_codepage_to_utf8(&data[3], string_length, 1200, &utf8, &utf8_size)) {
-                            size_t copy_size = utf8_size;
-                            if (copy_size > sizeof(buf) - len) {
-                                copy_size = sizeof(buf) - len;
+                        if (CL_SUCCESS == cli_codepage_to_utf8(&data[3], string_length, CODEPAGE_UTF16_LE, &utf8, &utf8_size)) {
+                            if (0 < utf8_size) {
+                                size_written = fwrite(utf8, 1, utf8_size, out_file);
+                                free(utf8);
+                                if (size_written < utf8_size) {
+                                    cli_dbgmsg("[cli_extract_xlm_macros_and_images] Error writing STRING record message with UTF16LE content\n");
+                                    goto done;
+                                }
                             }
-                            memcpy(&buf[len], utf8, copy_size);
-                            len += copy_size;
-                            free(utf8);
                         } else {
-                            cli_dbgmsg("[cli_xlm_extract_macros] Failed to decode UTF16LE string\n");
-                            len2 = snprintf(&buf[len], sizeof(buf) - len, "<Failed to decode UTF16LE string>");
-                            if (len2 < 0) {
-                                cli_dbgmsg("[cli_xlm_extract_macros] Error formatting STRING record message with UTF16LE content\n");
+                            cli_dbgmsg("[cli_extract_xlm_macros_and_images] Failed to decode UTF16LE string\n");
+                            len = fprintf(out_file, "<Failed to decode UTF16LE string>");
+                            if (len < 0) {
+                                cli_dbgmsg("[cli_extract_xlm_macros_and_images] Error formatting STRING record message with UTF16LE content\n");
                                 goto done;
                             }
-
-                            len += len2;
                         }
                     }
                 } else {
-                    cli_dbgmsg("[cli_xlm_extract_macros] Skipping broken STRING record (length %u)\n", biff_header.length);
+                    cli_dbgmsg("[cli_extract_xlm_macros_and_images] Skipping broken STRING record (length %u)\n", biff_header.length);
+
+                    // Move along to the next record.
+                    break;
                 }
 
-                //Not implemented. See Microsoft Office Excel97-2007Binary File Format (.xls) Specification Page 18 for details.
+                // Not implemented. See Microsoft Office Excel97-2007Binary File Format (.xls) Specification Page 18 for details.
                 break;
             }
             default: {
@@ -4351,64 +4930,74 @@ cli_xlm_extract_macros(const char *dir, cli_ctx *ctx, struct uniq *U, char *hash
             }
         }
 
-        if ((size_t)len < sizeof(buf)) {
-            buf[len] = '\n';
-            len += 1;
+        len = fputc('\n', out_file);
+        if (len == EOF) {
+            cli_dbgmsg("[cli_extract_xlm_macros_and_images] Error writing new line to out file\n");
+            goto done;
         }
 
-        if (((int)cli_writen(out_fd, buf, len)) != len) {
-            cli_dbgmsg("[cli_xlm_extract_macros] Failed to write output\n");
-            ret = CL_EWRITE;
-            goto done;
+        /* Keep track of which biff record we're continuing if we encounter OPC_CONTINUE */
+        if (OPC_CONTINUE != biff_header.opcode) {
+            previous_biff8_opcode = biff_header.opcode;
         }
     }
 
-    if (ret < 0) {
-        ret = CL_EREAD;
+    /* Scan the extracted content */
+    if (lseek(out_fd, 0, SEEK_SET) != 0) {
+        cli_dbgmsg("cli_extract_xlm_macros_and_images: Failed to seek to beginning of temporary file\n");
+        status = CL_ESEEK;
         goto done;
     }
 
-    if (out_fd != -1) {
-        if (lseek(out_fd, 0, SEEK_SET) != 0) {
-            cli_dbgmsg("cli_xlm_extract_macros: Failed to seek to beginning of temporary file\n");
-            ret = CL_ESEEK;
-            goto done;
-        }
-
-        ctx->recursion += 1;
-        cli_set_container(ctx, CL_TYPE_MSOLE2, 0); //TODO: set correct container size
-
-        if (cli_scan_desc(out_fd, ctx, CL_TYPE_SCRIPT, 0, NULL, AC_SCAN_VIR, NULL, NULL) == CL_VIRUS) {
-            ctx->recursion -= 1;
-            ret = CL_VIRUS;
-            goto done;
-        }
-
-        ctx->recursion -= 1;
+    if (CL_VIRUS == cli_scan_desc(out_fd, ctx, CL_TYPE_SCRIPT, false, NULL, AC_SCAN_VIR,
+                                  NULL, NULL, LAYER_ATTRIBUTES_NONE)) {
+        status = CL_VIRUS;
+        goto done;
     }
 
-    ret = CL_SUCCESS;
+    /* If a read failed, return with an error. */
+    if (size_read == (size_t)-1) {
+        cli_dbgmsg("cli_extract_xlm_macros_and_images: Read error occured when trying to read BIFF header. Truncated or malformed XLM macro file?\n");
+        status = CL_EREAD;
+        goto done;
+    }
+
+    if (NULL != drawinggroup) {
+        /*
+         * A drawing group was extracted, now we need to find all the images inside.
+         * If we fail to extract images, that's fine.
+         */
+        ret = cli_extract_images_from_drawing_group(drawinggroup, drawinggroup_len, ctx);
+        if (CL_SUCCESS != ret) {
+            status = ret;
+            goto done;
+        }
+    }
+
+    status = CL_SUCCESS;
 
 done:
+    FREE(drawinggroup);
+
     if (in_fd != -1) {
         close(in_fd);
         in_fd = -1;
     }
 
-    if (out_fd != -1) {
+    if (NULL != out_file) {
+        fclose(out_file);
+        out_file = NULL;
+    } else if (-1 != out_fd) {
         close(out_fd);
         out_fd = -1;
     }
 
-    if (data != NULL) {
-        free(data);
-        data = NULL;
-    }
+    FREE(data);
 
-    if (tempfile != NULL) {
-        free(tempfile);
-        tempfile = NULL;
+    if (tempfile && !ctx->engine->keeptmp) {
+        remove(tempfile);
     }
+    FREE(tempfile);
 
-    return ret;
+    return status;
 }

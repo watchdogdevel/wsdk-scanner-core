@@ -1,7 +1,7 @@
 /*
  *  Support for PCRE regex variant
  *
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Kevin Lin
@@ -54,7 +54,7 @@ struct cli_pcre_data {
 };
 
 struct cli_pcre_results {
-    int err;
+    cl_error_t err;
     uint32_t match[2]; /* populated by cli_pcre_match to be start (0) and end (1) offset of match */
 
     pcre2_match_data *match_data;
@@ -69,16 +69,28 @@ struct cli_pcre_data {
 };
 
 struct cli_pcre_results {
-    int err;
+    cl_error_t err;
     uint32_t match[2]; /* populated by cli_pcre_match to be start (0) and end (1) offset of match */
 
     int ovector[OVECCOUNT];
 };
 #endif
 
-cl_error_t cli_pcre_init_internal();
+cl_error_t cli_pcre_init_internal(void);
 cl_error_t cli_pcre_addoptions(struct cli_pcre_data *pd, const char **opt, int errout);
 cl_error_t cli_pcre_compile(struct cli_pcre_data *pd, long long unsigned match_limit, long long unsigned match_limit_recursion, unsigned int options, int opt_override);
+
+/**
+ * @brief perform a pcre match on a string
+ *
+ * @param pd
+ * @param buffer
+ * @param buflen
+ * @param override_offset
+ * @param options
+ * @param results
+ * @return int greater than zero if a match. 0 if no match. A PCRE2_ERROR_* error code if something went wrong.
+ */
 int cli_pcre_match(struct cli_pcre_data *pd, const unsigned char *buffer, size_t buflen, size_t override_offset, int options, struct cli_pcre_results *results);
 void cli_pcre_report(const struct cli_pcre_data *pd, const unsigned char *buffer, size_t buflen, int rc, struct cli_pcre_results *results);
 

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -33,12 +33,12 @@
 
 /* Certain OSs already use 64bit variables in their stat struct */
 #if (!defined(__FreeBSD__) && !defined(__APPLE__))
-#define STAT64_BLACKLIST 1
+#define STAT64_OK 1
 #else
-#define STAT64_BLACKLIST 0
+#define STAT64_OK 0
 #endif
 
-#if defined(HAVE_STAT64) && STAT64_BLACKLIST
+#if defined(HAVE_STAT64) && STAT64_OK
 
 #include <unistd.h>
 
@@ -47,6 +47,7 @@
 #define LSTAT lstat64
 #define FSTAT fstat64
 #define safe_open(a, b) open(a, b | O_LARGEFILE)
+
 #else
 
 #define STATBUF struct stat
@@ -64,6 +65,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <stdbool.h>
 
 #include "clamav-types.h"
 #include "clamav-version.h"
@@ -140,7 +142,7 @@ typedef enum cl_error_t {
 #define CL_DB_OFFICIAL_ONLY     0x1000
 #define CL_DB_BYTECODE          0x2000
 #define CL_DB_SIGNED            0x4000  /* internal */
-#define CL_DB_BYTECODE_UNSIGNED 0x8000
+#define CL_DB_BYTECODE_UNSIGNED 0x8000  /* Caution: You should never run bytecode signatures from untrusted sources. Doing so may result in arbitrary code execution. */
 #define CL_DB_UNSIGNED          0x10000 /* internal */
 #define CL_DB_BYTECODE_STATS    0x20000
 #define CL_DB_ENHANCED          0x40000
@@ -191,8 +193,8 @@ struct cl_scan_options {
 #define CL_SCAN_HEURISTIC_STRUCTURED                0x200  /* data loss prevention options, i.e. alert when detecting personal information */
 #define CL_SCAN_HEURISTIC_STRUCTURED_SSN_NORMAL     0x400  /* alert when detecting social security numbers */
 #define CL_SCAN_HEURISTIC_STRUCTURED_SSN_STRIPPED   0x800  /* alert when detecting stripped social security numbers */
-
 #define CL_SCAN_HEURISTIC_STRUCTURED_CC             0x1000 /* alert when detecting credit card numbers */
+#define CL_SCAN_HEURISTIC_BROKEN_MEDIA              0x2000 /* alert if a file does not match the identified file format, works with JPEG, TIFF, GIF, PNG */
 
 /* mail scanning options */
 #define CL_SCAN_MAIL_PARTIAL_MESSAGE                0x1
@@ -299,6 +301,7 @@ enum cl_engine_field {
     CL_ENGINE_MAX_SCRIPTNORMALIZE, /* uint64_t */
     CL_ENGINE_MAX_ZIPTYPERCG,      /* uint64_t */
     CL_ENGINE_FORCETODISK,         /* uint32_t */
+    CL_ENGINE_CACHE_SIZE,          /* uint32_t */
     CL_ENGINE_DISABLE_CACHE,       /* uint32_t */
     CL_ENGINE_DISABLE_PE_STATS,    /* uint32_t */
     CL_ENGINE_STATS_TIMEOUT,       /* uint32_t */
@@ -423,7 +426,7 @@ extern cl_error_t cl_engine_settings_free(struct cl_settings *settings);
 /**
  * @brief Prepare the scanning engine.
  *
- * Called this after all required databases have been loaded and settings have
+ * Call this after all required databases have been loaded and settings have
  * been applied.
  *
  * @param engine        A scan engine.
@@ -473,8 +476,8 @@ extern cl_error_t cl_engine_free(struct cl_engine *engine);
  * @param type      File type detected via magic - i.e. NOT on the fly - (e.g. "CL_TYPE_MSEXE").
  * @param context   Opaque application provided data.
  * @return          CL_CLEAN = File is scanned.
- * @return          CL_BREAK = Whitelisted by callback - file is skipped and marked as clean.
- * @return          CL_VIRUS = Blacklisted by callback - file is skipped and marked as infected.
+ * @return          CL_BREAK = Allowed by callback - file is skipped and marked as clean.
+ * @return          CL_VIRUS = Blocked by callback - file is skipped and marked as infected.
  */
 typedef cl_error_t (*clcb_pre_cache)(int fd, const char *type, void *context);
 /**
@@ -486,6 +489,52 @@ typedef cl_error_t (*clcb_pre_cache)(int fd, const char *type, void *context);
  * @param callback  The callback function pointer.
  */
 extern void cl_engine_set_clcb_pre_cache(struct cl_engine *engine, clcb_pre_cache callback);
+
+/*
+ * Attributes of each layer in scan.
+ */
+#define LAYER_ATTRIBUTES_NONE 0x0
+#define LAYER_ATTRIBUTES_NORMALIZED 0x1 /** This layer was modified to make matching more generic, reliable. */
+#define LAYER_ATTRIBUTES_DECRYPTED 0x2  /** Decryption was used to extract this layer. I.e. had to decrypt some previous layer. */
+
+/**
+ * @brief File inspection callback.
+ *
+ * DISCLAIMER: This interface is to be considered unstable while we continue to evaluate it.
+ * We may change this interface in the future.
+ *
+ * Called for each NEW file (inner and outer).
+ * Provides capability to record embedded file information during a scan.
+ *
+ * @param fd                  Current file descriptor which is about to be scanned.
+ * @param type                Current file type detected via magic - i.e. NOT on the fly - (e.g. "CL_TYPE_MSEXE").
+ * @param ancestors           An array of ancestors filenames of size `recursion_level`. filenames may be NULL.
+ * @param parent_file_size    Parent file size.
+ * @param file_name           Current file name, or NULL if the file does not have a name or ClamAV failed to record the name.
+ * @param file_size           Current file size.
+ * @param file_buffer         Current file buffer pointer.
+ * @param recursion_level     Recursion level / depth of the current file.
+ * @param layer_attributes    See LAYER_ATTRIBUTES_* flags.
+ * @param context             Opaque application provided data.
+ * @return                    CL_CLEAN = File is scanned.
+ * @return                    CL_BREAK = Whitelisted by callback - file is skipped and marked as clean.
+ * @return                    CL_VIRUS = Blacklisted by callback - file is skipped and marked as infected.
+ */
+typedef cl_error_t (*clcb_file_inspection)(int fd, const char *type, const char **ancestors, size_t parent_file_size,
+                                           const char *file_name, size_t file_size, const char *file_buffer,
+                                           uint32_t recursion_level, uint32_t layer_attributes, void *context);
+/**
+ * @brief Set a custom file inspection callback function.
+ *
+ * DISCLAIMER: This interface is to be considered unstable while we continue to evaluate it.
+ * We may change this interface in the future.
+ *
+ * Caution: changing options for an engine that is in-use is not thread-safe!
+ *
+ * @param engine    The initialized scanning engine.
+ * @param callback  The callback function pointer.
+ */
+extern void cl_engine_set_clcb_file_inspection(struct cl_engine *engine, clcb_file_inspection callback);
 
 /**
  * @brief Pre-scan callback.
@@ -499,8 +548,8 @@ extern void cl_engine_set_clcb_pre_cache(struct cl_engine *engine, clcb_pre_cach
  * @param type      File type detected via magic - i.e. NOT on the fly - (e.g. "CL_TYPE_MSEXE").
  * @param context   Opaque application provided data.
  * @return          CL_CLEAN = File is scanned.
- * @return          CL_BREAK = Whitelisted by callback - file is skipped and marked as clean.
- * @return          CL_VIRUS = Blacklisted by callback - file is skipped and marked as infected.
+ * @return          CL_BREAK = Allowed by callback - file is skipped and marked as clean.
+ * @return          CL_VIRUS = Blocked by callback - file is skipped and marked as infected.
  */
 typedef cl_error_t (*clcb_pre_scan)(int fd, const char *type, void *context);
 /**
@@ -526,8 +575,8 @@ extern void cl_engine_set_clcb_pre_scan(struct cl_engine *engine, clcb_pre_scan 
  * @param virname   A signature name if there was one or more matches.
  * @param context   Opaque application provided data.
  * @return          Scan result is not overridden.
- * @return          CL_BREAK = Whitelisted by callback - scan result is set to CL_CLEAN.
- * @return          Blacklisted by callback - scan result is set to CL_VIRUS.
+ * @return          CL_BREAK = Allowed by callback - scan result is set to CL_CLEAN.
+ * @return          Blocked by callback - scan result is set to CL_VIRUS.
  */
 typedef cl_error_t (*clcb_post_scan)(int fd, int result, const char *virname, void *context);
 /**
@@ -541,14 +590,14 @@ typedef cl_error_t (*clcb_post_scan)(int fd, int result, const char *virname, vo
 extern void cl_engine_set_clcb_post_scan(struct cl_engine *engine, clcb_post_scan callback);
 
 /**
- * @brief Post-scan callback.
+ * @brief Virus-found callback.
  *
  * Called for each signature match.
  * If all-match is enabled, clcb_virus_found() may be called multiple times per
  * scan.
  *
  * In addition, clcb_virus_found() does not have a return value and thus.
- * can not be used to whitelist the match.
+ * can not be used to ignore the match.
  *
  * @param fd        File descriptor which was scanned.
  * @param virname   Virus name.
@@ -599,6 +648,66 @@ enum cl_msg {
     CL_MSG_WARN         = 64, /* LibClamAV WARNING: */
     CL_MSG_ERROR        = 128 /* LibClamAV ERROR: */
 };
+
+/**
+ * @brief Progress callback for sig-load, engine-compile, and engine-free.
+ *
+ * Progress is complete when total_items == now_completed.
+ *
+ * Note: The callback should return CL_SUCCESS. We reserve the right to have it
+ *       cancel the operation in the future if you return something else...
+ *       ... but for now, the return value will be ignored.
+ *
+ * @param total_items   Total number of items
+ * @param now_completed Number of items completed
+ * @param context       Opaque application provided data
+ * @return cl_error_t   reserved for future use
+ */
+typedef cl_error_t (*clcb_progress)(size_t total_items, size_t now_completed, void *context);
+
+/**
+ * @brief Set a progress callback function to be called incrementally during a
+ * database load.
+ *
+ * Caution: changing options for an engine that is in-use is not thread-safe!
+ *
+ * @param engine    The initialized scanning engine
+ * @param callback  The callback function pointer
+ * @param context   Opaque application provided data
+ */
+extern void cl_engine_set_clcb_sigload_progress(struct cl_engine *engine, clcb_progress callback, void *context);
+
+/**
+ * @brief Set a progress callback function to be called incrementally during an
+ * engine compile.
+ *
+ * Disclaimer: the number of items for this is a rough estimate of the items that
+ * tend to take longest to compile and doesn't represent an accurate number of
+ * things compiled.
+ *
+ * Caution: changing options for an engine that is in-use is not thread-safe!
+ *
+ * @param engine    The initialized scanning engine
+ * @param callback  The callback function pointer
+ * @param context   Opaque application provided data
+ */
+extern void cl_engine_set_clcb_engine_compile_progress(struct cl_engine *engine, clcb_progress callback, void *context);
+
+/**
+ * @brief Set a progress callback function to be called incrementally during an
+ * engine free (if the engine is in fact freed).
+ *
+ * Disclaimer: the number of items for this is a rough estimate of the items that
+ * tend to take longest to free and doesn't represent an accurate number of
+ * things freed.
+ *
+ * Caution: changing options for an engine that is in-use is not thread-safe!
+ *
+ * @param engine    The initialized scanning engine
+ * @param callback  The callback function pointer
+ * @param context   Opaque application provided data
+ */
+extern void cl_engine_set_clcb_engine_free_progress(struct cl_engine *engine, clcb_progress callback, void *context);
 
 /**
  * @brief Logging message callback for info, warning, and error messages.
@@ -657,7 +766,7 @@ extern void cl_engine_set_clcb_hash(struct cl_engine *engine, clcb_hash callback
 /**
  * @brief Archive meta matching callback function.
  *
- * May be used to blacklist archive/container samples based on archive metadata.
+ * May be used to block archive/container samples based on archive metadata.
  * Function is invoked multiple times per archive. Typically once per contained file.
  *
  * Note: Used by the --archive-verbose clamscan option. Overriding this will alter
@@ -670,7 +779,7 @@ extern void cl_engine_set_clcb_hash(struct cl_engine *engine, clcb_hash callback
  * @param is_encrypted      Boolean non-zero if the contained file is encrypted.
  * @param filepos_container File index in container.
  * @param context           Opaque application provided data.
- * @return                  CL_VIRUS to blacklist
+ * @return                  CL_VIRUS to block (alert on)
  * @return                  CL_CLEAN to continue scanning
  */
 typedef cl_error_t (*clcb_meta)(const char *container_type, unsigned long fsize_container, const char *filename,
@@ -705,6 +814,27 @@ typedef int (*clcb_file_props)(const char *j_propstr, int rc, void *cbdata);
  * @param callback  The callback function pointer.
  */
 extern void cl_engine_set_clcb_file_props(struct cl_engine *engine, clcb_file_props callback);
+
+/**
+ * @brief generic data callback function.
+ *
+ * Callback handler prototype for callbacks passing back data and application context.
+ *
+ * @param data      A pointer to some data. Should be treated as read-only and may be freed after callback.
+ * @param data_len  The length of data.
+ * @param cbdata    Opaque application provided data.
+ */
+typedef int (*clcb_generic_data)(const unsigned char *const data, const size_t data_len, void *cbdata);
+
+/**
+ * @brief Set a custom VBA macro callback function.
+ *
+ * Caution: changing options for an engine that is in-use is not thread-safe!
+ *
+ * @param engine    The initialized scanning engine.
+ * @param callback  The callback function pointer.
+ */
+extern void cl_engine_set_clcb_vba(struct cl_engine *engine, clcb_generic_data callback);
 
 /* ----------------------------------------------------------------------------
  * Statistics/telemetry gathering callbacks.
@@ -904,7 +1034,7 @@ extern cl_error_t cl_scandesc(int desc, const char *filename, const char **virna
  * @param[out] scanned      The number of bytes scanned.
  * @param engine            The scanning engine.
  * @param scanoptions       Scanning options.
- * @param[in/out] context   An opaque context structure allowing the caller to record details about the sample being scanned.
+ * @param[in,out] context   An opaque context structure allowing the caller to record details about the sample being scanned.
  * @return cl_error_t       CL_CLEAN, CL_VIRUS, or an error code if an error occured during the scan.
  */
 extern cl_error_t cl_scandesc_callback(int desc, const char *filename, const char **virname, unsigned long int *scanned, const struct cl_engine *engine, struct cl_scan_options *scanoptions, void *context);
@@ -960,7 +1090,7 @@ extern cl_error_t cl_scanfile(const char *filename, const char **virname, unsign
  * @param[out] scanned      The number of bytes scanned.
  * @param engine            The scanning engine.
  * @param scanoptions       Scanning options.
- * @param[in/out] context   An opaque context structure allowing the caller to record details about the sample being scanned.
+ * @param[in,out] context   An opaque context structure allowing the caller to record details about the sample being scanned.
  * @return cl_error_t       CL_CLEAN, CL_VIRUS, or an error code if an error occured during the scan.
  */
 extern cl_error_t cl_scanfile_callback(const char *filename, const char **virname, unsigned long int *scanned, const struct cl_engine *engine, struct cl_scan_options *scanoptions, void *context);
@@ -968,7 +1098,23 @@ extern cl_error_t cl_scanfile_callback(const char *filename, const char **virnam
 /* ----------------------------------------------------------------------------
  * Database handling.
  */
+
+/**
+ * @brief Load the signature databases found at the path.
+ *
+ * @param path          May be a file or directory.
+ * @param engine        The engine to load the signatures into
+ * @param[out] signo    The number of signatures loaded
+ * @param dboptions     Database load bitflag field. See the CL_DB_* defines, above.
+ * @return cl_error_t
+ */
 extern cl_error_t cl_load(const char *path, struct cl_engine *engine, unsigned int *signo, unsigned int dboptions);
+
+/**
+ * @brief Get the default database directory path.
+ *
+ * @return const char*
+ */
 extern const char *cl_retdbdir(void);
 
 /* ----------------------------------------------------------------------------
@@ -1024,6 +1170,30 @@ extern cl_error_t cl_cvdverify(const char *file);
  * @param cvd   Pointer to a CVD header struct.
  */
 extern void cl_cvdfree(struct cl_cvd *cvd);
+
+/**
+ * @brief Unpack a CVD file.
+ *
+ * Will verify the CVD is correctly signed unless the `dont_verify` parameter is true.
+ *
+ * @param file          Filepath of CVD file.
+ * @param dir           Destination directory.
+ * @param dont_verify   If true, don't verify the CVD.
+ * @return cl_error_t   CL_SUCCESS if success, else a CL_E* error code.
+ */
+extern cl_error_t cl_cvdunpack(const char *file, const char *dir, bool dont_verify);
+
+/**
+ * @brief Retrieve the age of CVD disk data.
+ *
+ * Will retrieve the age of the youngest file in a database directory,
+ * or the age of a single CVD (or CLD) file.
+ *
+ * @param path          Filepath of CVD directory or file.
+ * @param age_seconds   Age of the directory or file.
+ * @return cl_error_t   CL_SUCCESS if success, else a CL_E* error code.
+ */
+extern cl_error_t cl_cvdgetage(const char *path, time_t *age_seconds);
 
 /* ----------------------------------------------------------------------------
  * DB directory stat functions.
@@ -1099,7 +1269,7 @@ extern const char *cl_retver(void);
 /* ----------------------------------------------------------------------------
  * Others.
  */
-extern const char *cl_strerror(int clerror);
+extern const char *cl_strerror(cl_error_t clerror);
 
 /* ----------------------------------------------------------------------------
  * Custom data scanning.
@@ -1135,7 +1305,7 @@ typedef off_t (*clcb_pread)(void *handle, void *buf, size_t count, off_t offset)
  * @brief Open a map given a handle.
  *
  * Open a map for scanning custom data accessed by a handle and pread (lseek +
- * read)-like interface. For example a WIN32 HANDLE.
+ * read)-like interface. For example a file descriptor or a WIN32 HANDLE.
  * By default fmap will use aging to discard old data, unless you tell it not
  * to.
  *
@@ -1144,12 +1314,12 @@ typedef off_t (*clcb_pread)(void *handle, void *buf, size_t count, off_t offset)
  * @param handle        A handle that may be accessed using lseek + read.
  * @param offset        Initial offset to start scanning.
  * @param len           Length of the data from the start (not the offset).
- * @param use_aging     Set to a non-zero value to enable aging.
  * @param pread_cb      A callback function to read data from the handle.
+ * @param use_aging     Set to a non-zero value to enable aging.
  * @return cl_fmap_t*   A map representing the handle interface.
  */
 extern cl_fmap_t *cl_fmap_open_handle(void *handle, size_t offset, size_t len,
-                                      clcb_pread, int use_aging);
+                                      clcb_pread pread_cb, int use_aging);
 
 /**
  * @brief Open a map given a buffer.

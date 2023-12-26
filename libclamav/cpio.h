@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm <tkojm@clamav.net>
@@ -22,10 +22,11 @@
 #ifndef __CPIO_H
 #define __CPIO_H
 
+#include "clamav.h"
 #include "others.h"
 
-int cli_scancpio_old(cli_ctx *ctx);
-int cli_scancpio_odc(cli_ctx *ctx);
-int cli_scancpio_newc(cli_ctx *ctx, int crc);
+cl_error_t cli_scancpio_old(cli_ctx *ctx);
+cl_error_t cli_scancpio_odc(cli_ctx *ctx);
+cl_error_t cli_scancpio_newc(cli_ctx *ctx, int crc);
 
 #endif

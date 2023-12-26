@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Alberto Wu, Tomasz Kojm, Andrew Williams
@@ -87,16 +87,11 @@ enum {
 #define CLI_PEHEADER_OPT_STRICT_ON_PE_ERRORS 0x8
 #define CLI_PEHEADER_OPT_REMOVE_MISSING_SECTIONS 0x10
 
-#define CLI_PEHEADER_RET_SUCCESS 0
-#define CLI_PEHEADER_RET_GENERIC_ERROR -1
-#define CLI_PEHEADER_RET_BROKEN_PE -2
-#define CLI_PEHEADER_RET_JSON_TIMEOUT -3
-
-int cli_pe_targetinfo(fmap_t *map, struct cli_exe_info *peinfo);
-int cli_peheader(fmap_t *map, struct cli_exe_info *peinfo, uint32_t opts, cli_ctx *ctx);
+cl_error_t cli_pe_targetinfo(cli_ctx *ctx, struct cli_exe_info *peinfo);
+cl_error_t cli_peheader(fmap_t *map, struct cli_exe_info *peinfo, uint32_t opts, cli_ctx *ctx);
 
 cl_error_t cli_check_auth_header(cli_ctx *ctx, struct cli_exe_info *peinfo);
-int cli_genhash_pe(cli_ctx *ctx, unsigned int class, int type, stats_section_t *hashes);
+cl_error_t cli_genhash_pe(cli_ctx *ctx, unsigned int class, int type, stats_section_t *hashes);
 
 uint32_t cli_rawaddr(uint32_t, const struct cli_exe_section *, uint16_t, unsigned int *, size_t, uint32_t);
 void findres(uint32_t, uint32_t, fmap_t *map, struct cli_exe_info *, int (*)(void *, uint32_t, uint32_t, uint32_t, uint32_t), void *);

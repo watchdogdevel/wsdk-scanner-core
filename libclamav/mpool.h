@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB <acab@clamav.net>
@@ -29,7 +29,6 @@
 #ifdef USE_MPOOL
 
 #include "clamav-types.h"
-#include "readdb.h"
 
 typedef struct MP mpool_t;
 struct cl_engine;

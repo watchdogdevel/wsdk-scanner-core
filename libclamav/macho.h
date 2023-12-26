@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm <tkojm@clamav.net>
@@ -26,9 +26,9 @@
 #include "execs.h"
 #include "fmap.h"
 
-int cli_scanmacho(cli_ctx *ctx, struct cli_exe_info *fileinfo);
-int cli_machoheader(fmap_t *map, struct cli_exe_info *fileinfo);
-int cli_scanmacho_unibin(cli_ctx *ctx);
-int cli_unpackmacho(cli_ctx *ctx);
+cl_error_t cli_scanmacho(cli_ctx *ctx, struct cli_exe_info *fileinfo);
+cl_error_t cli_machoheader(cli_ctx *ctx, struct cli_exe_info *fileinfo);
+cl_error_t cli_scanmacho_unibin(cli_ctx *ctx);
+cl_error_t cli_unpackmacho(cli_ctx *ctx);
 
 #endif

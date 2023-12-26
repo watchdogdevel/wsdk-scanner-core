@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Mickey Sola
@@ -22,7 +22,8 @@
 #ifndef __ONAS_CLAMONACC_H
 #define __ONAS_CLAMONACC_H
 
-#include "libclamav/clamav.h"
+// libclamav
+#include "clamav.h"
 
 #ifndef ONAS_DEBUG
 #define ONAS_DEBUG

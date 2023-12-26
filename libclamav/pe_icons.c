@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB <acab@clamav.net>
@@ -110,7 +110,7 @@ static int icon_scan_cb(void *ptr, uint32_t type, uint32_t name, uint32_t lang, 
 int cli_scanicon(icon_groupset *set, cli_ctx *ctx, struct cli_exe_info *peinfo)
 {
     struct ICON_ENV icon_env;
-    fmap_t *map        = *ctx->fmap;
+    fmap_t *map        = ctx->fmap;
     uint32_t err_total = 0;
 
     icon_env.ctx    = ctx;
@@ -171,7 +171,7 @@ int cli_groupiconscan(struct ICON_ENV *icon_env, uint32_t rva)
     struct cli_exe_info *peinfo = icon_env->peinfo;
 
     int err            = 0;
-    fmap_t *map        = *ctx->fmap;
+    fmap_t *map        = ctx->fmap;
     const uint8_t *grp = fmap_need_off_once(map, cli_rawaddr(rva, peinfo->sections, peinfo->nsections, (unsigned int *)(&err), map->len, peinfo->hdr_size), 16);
 
     if (grp && !err) {
@@ -1368,14 +1368,14 @@ static int parseicon(struct ICON_ENV *icon_env, uint32_t rva)
 
     if (!ctx || !ctx->engine || !(matcher = ctx->engine->iconcheck))
         return CL_SUCCESS;
-    map   = *ctx->fmap;
+    map   = ctx->fmap;
     tempd = (cli_debug_flag && ctx->engine->keeptmp) ? (ctx->sub_tmpdir ? ctx->sub_tmpdir : cli_gettmpdir()) : NULL;
     icoff = cli_rawaddr(rva, peinfo->sections, peinfo->nsections, &err, map->len, peinfo->hdr_size);
 
     /* read the bitmap header */
     if (err || !(rawimage = fmap_need_off_once(map, icoff, 4))) {
         icon_env->err_oof++;
-        //cli_dbgmsg("parseicon: offset to icon is out of file\n");
+        // cli_dbgmsg("parseicon: offset to icon is out of file\n");
         return CL_SUCCESS;
     }
 
@@ -1383,13 +1383,13 @@ static int parseicon(struct ICON_ENV *icon_env, uint32_t rva)
     icoff = cli_rawaddr(rva, peinfo->sections, peinfo->nsections, &err, map->len, peinfo->hdr_size);
     if (err || fmap_readn(map, &bmphdr, icoff, sizeof(bmphdr)) != sizeof(bmphdr)) {
         icon_env->err_bhoof++;
-        //cli_dbgmsg("parseicon: bmp header is out of file\n");
+        // cli_dbgmsg("parseicon: bmp header is out of file\n");
         return CL_SUCCESS;
     }
 
     if ((size_t)READ32(bmphdr.sz) < sizeof(bmphdr)) {
         icon_env->err_bhts++;
-        //cli_dbgmsg("parseicon: BMP header too small\n");
+        // cli_dbgmsg("parseicon: BMP header too small\n");
         return CL_SUCCESS;
     }
 
@@ -1401,12 +1401,12 @@ static int parseicon(struct ICON_ENV *icon_env, uint32_t rva)
     depth  = READ16(bmphdr.depth);
     if (width > 256 || height > 256 || width < 16 || height < 16) {
         icon_env->err_tstl++;
-        //cli_dbgmsg("parseicon: Image too small or too big (%ux%u)\n", width, height);
+        // cli_dbgmsg("parseicon: Image too small or too big (%ux%u)\n", width, height);
         return CL_SUCCESS;
     }
     if (width < height * 3 / 4 || height < width * 3 / 4) {
         icon_env->err_insl++;
-        //cli_dbgmsg("parseicon: Image not square enough (%ux%u)\n", width, height);
+        // cli_dbgmsg("parseicon: Image not square enough (%ux%u)\n", width, height);
         return CL_SUCCESS;
     }
 

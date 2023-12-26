@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2020 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, Trog
@@ -55,18 +55,18 @@
 
 #include "clamav.h"
 #include "others.h"
+#include "str.h"
 #include "platform.h"
 #include "regex/regex.h"
-#include "ltdl.h"
 #include "matcher-ac.h"
+#include "str.h"
+#include "entconv.h"
+#include "clamav_rust.h"
 
 #define MSGBUFSIZ 8192
 
+static bool rand_seeded            = false;
 static unsigned char name_salt[16] = {16, 38, 97, 12, 8, 4, 72, 196, 217, 144, 33, 124, 18, 11, 17, 253};
-
-#ifdef CL_NOTHREADS
-#undef CL_THREAD_SAFE
-#endif
 
 #ifdef CL_THREAD_SAFE
 #include <pthread.h>
@@ -123,15 +123,15 @@ void cli_logg_unsetup(void)
 uint8_t cli_debug_flag              = 0;
 uint8_t cli_always_gen_section_hash = 0;
 
-static void fputs_callback(enum cl_msg severity, const char *fullmsg, const char *msg, void *context)
+static void clrs_eprint_callback(enum cl_msg severity, const char *fullmsg, const char *msg, void *context)
 {
     UNUSEDPARAM(severity);
     UNUSEDPARAM(msg);
     UNUSEDPARAM(context);
-    fputs(fullmsg, stderr);
+    clrs_eprint(fullmsg);
 }
 
-static clcb_msg msg_callback = fputs_callback;
+static clcb_msg msg_callback = clrs_eprint_callback;
 
 void cl_set_clcb_msg(clcb_msg callback)
 {
@@ -142,10 +142,9 @@ void cl_set_clcb_msg(clcb_msg callback)
     va_list args;                                         \
     size_t len = sizeof(x) - 1;                           \
     char buff[MSGBUFSIZ];                                 \
-    strncpy(buff, x, len);                                \
+    memcpy(buff, x, len);                                 \
     va_start(args, str);                                  \
     vsnprintf(buff + len, sizeof(buff) - len, str, args); \
-    buff[sizeof(buff) - 1] = '\0';                        \
     va_end(args)
 
 void cli_warnmsg(const char *str, ...)
@@ -166,10 +165,40 @@ void cli_infomsg(const cli_ctx *ctx, const char *str, ...)
     msg_callback(CL_MSG_INFO_VERBOSE, buff, buff + len, ctx ? ctx->cb_ctx : NULL);
 }
 
-void cli_dbgmsg_internal(const char *str, ...)
+/* intended for logging in rust modules */
+void cli_infomsg_simple(const char *str, ...)
 {
-    MSGCODE(buff, len, "LibClamAV debug: ");
-    fputs(buff, stderr);
+    MSGCODE(buff, len, "LibClamAV info: ");
+    msg_callback(CL_MSG_INFO_VERBOSE, buff, buff + len, NULL);
+}
+
+inline void cli_dbgmsg(const char *str, ...)
+{
+    if (UNLIKELY(cli_get_debug_flag())) {
+        MSGCODE(buff, len, "LibClamAV debug: ");
+        clrs_eprint(buff);
+    }
+}
+
+void cli_dbgmsg_no_inline(const char *str, ...)
+{
+    if (UNLIKELY(cli_get_debug_flag())) {
+        MSGCODE(buff, len, "LibClamAV debug: ");
+        clrs_eprint(buff);
+    }
+}
+
+size_t cli_eprintf(const char *str, ...)
+{
+    size_t bytes_written = 0;
+    va_list args;
+    char buff[MSGBUFSIZ];
+    va_start(args, str);
+    bytes_written = vsnprintf(buff, sizeof(buff), str, args);
+    va_end(args);
+    clrs_eprint(buff);
+
+    return bytes_written;
 }
 
 int cli_matchregex(const char *str, const char *regex)
@@ -192,7 +221,9 @@ void *cli_malloc(size_t size)
     void *alloc;
 
     if (!size || size > CLI_MAX_ALLOCATION) {
-        cli_errmsg("cli_malloc(): Attempt to allocate %lu bytes. Please report to https://bugzilla.clamav.net\n", (unsigned long int)size);
+        cli_warnmsg("cli_malloc(): File or section is too large to scan (%zu bytes). \
+                     For your safety, ClamAV limits how much memory an operation can allocate to %d bytes\n",
+                    size, CLI_MAX_ALLOCATION);
         return NULL;
     }
 
@@ -200,7 +231,7 @@ void *cli_malloc(size_t size)
 
     if (!alloc) {
         perror("malloc_problem");
-        cli_errmsg("cli_malloc(): Can't allocate memory (%lu bytes).\n", (unsigned long int)size);
+        cli_errmsg("cli_malloc(): Can't allocate memory (%zu bytes).\n", size);
         return NULL;
     } else
         return alloc;
@@ -211,7 +242,9 @@ void *cli_calloc(size_t nmemb, size_t size)
     void *alloc;
 
     if (!nmemb || !size || size > CLI_MAX_ALLOCATION || nmemb > CLI_MAX_ALLOCATION || (nmemb * size > CLI_MAX_ALLOCATION)) {
-        cli_errmsg("cli_calloc(): Attempt to allocate %lu bytes. Please report to https://bugzilla.clamav.net\n", (unsigned long int)nmemb * size);
+        cli_warnmsg("cli_calloc2(): File or section is too large to scan (%zu bytes). \
+                     For your safety, ClamAV limits how much memory an operation can allocate to %d bytes\n",
+                    size, CLI_MAX_ALLOCATION);
         return NULL;
     }
 
@@ -219,7 +252,7 @@ void *cli_calloc(size_t nmemb, size_t size)
 
     if (!alloc) {
         perror("calloc_problem");
-        cli_errmsg("cli_calloc(): Can't allocate memory (%lu bytes).\n", (unsigned long int)(nmemb * size));
+        cli_errmsg("cli_calloc(): Can't allocate memory (%zu bytes).\n", (nmemb * size));
         return NULL;
     } else
         return alloc;
@@ -230,7 +263,9 @@ void *cli_realloc(void *ptr, size_t size)
     void *alloc;
 
     if (!size || size > CLI_MAX_ALLOCATION) {
-        cli_errmsg("cli_realloc(): Attempt to allocate %lu bytes. Please report to https://bugzilla.clamav.net\n", (unsigned long int)size);
+        cli_warnmsg("cli_realloc(): File or section is too large to scan (%zu bytes). \
+                     For your safety, ClamAV limits how much memory an operation can allocate to %d bytes\n",
+                    size, CLI_MAX_ALLOCATION);
         return NULL;
     }
 
@@ -238,7 +273,7 @@ void *cli_realloc(void *ptr, size_t size)
 
     if (!alloc) {
         perror("realloc_problem");
-        cli_errmsg("cli_realloc(): Can't re-allocate memory to %lu bytes.\n", (unsigned long int)size);
+        cli_errmsg("cli_realloc(): Can't re-allocate memory to %zu bytes.\n", size);
         return NULL;
     } else
         return alloc;
@@ -249,7 +284,9 @@ void *cli_realloc2(void *ptr, size_t size)
     void *alloc;
 
     if (!size || size > CLI_MAX_ALLOCATION) {
-        cli_errmsg("cli_realloc2(): Attempt to allocate %lu bytes. Please report to https://bugzilla.clamav.net\n", (unsigned long int)size);
+        cli_warnmsg("cli_realloc2(): File or section is too large to scan (%zu bytes). \
+                     For your safety, ClamAV limits how much memory an operation can allocate to %d bytes\n",
+                    size, CLI_MAX_ALLOCATION);
         return NULL;
     }
 
@@ -257,7 +294,7 @@ void *cli_realloc2(void *ptr, size_t size)
 
     if (!alloc) {
         perror("realloc_problem");
-        cli_errmsg("cli_realloc2(): Can't re-allocate memory to %lu bytes.\n", (unsigned long int)size);
+        cli_errmsg("cli_realloc2(): Can't re-allocate memory to %zu bytes.\n", size);
         if (ptr)
             free(ptr);
         return NULL;
@@ -270,7 +307,7 @@ char *cli_strdup(const char *s)
     char *alloc;
 
     if (s == NULL) {
-        cli_errmsg("cli_strdup(): s == NULL. Please report to https://bugzilla.clamav.net\n");
+        cli_errmsg("cli_strdup(): passed reference is NULL, nothing to duplicate\n");
         return NULL;
     }
 
@@ -334,7 +371,7 @@ const char *cli_ctime(const time_t *timep, char *buf, const size_t bufsize)
 /**
  * @brief  Try hard to read the requested number of bytes
  *
- * @param fd        File desriptor to read from.
+ * @param fd        File descriptor to read from.
  * @param buff      Buffer to read data into.
  * @param count     # of bytes to read.
  * @return size_t   # of bytes read.
@@ -529,9 +566,9 @@ static int get_filetype(const char *fname, int flags, int need_stat,
 
         if ((flags & FOLLOW_SYMLINK_MASK) != FOLLOW_SYMLINK_MASK) {
             /* Following only one of directory/file symlinks, or none, may
-	     * need to lstat.
-	     * If we're following both file and directory symlinks, we don't need
-	     * to lstat(), we can just stat() directly.*/
+             * need to lstat.
+             * If we're following both file and directory symlinks, we don't need
+             * to lstat(), we can just stat() directly.*/
             if (*ft != ft_link) {
                 /* need to lstat to determine if it is a symlink */
                 if (LSTAT(fname, statbuf) == -1)
@@ -562,7 +599,7 @@ static int get_filetype(const char *fname, int flags, int need_stat,
         if (S_ISDIR(statbuf->st_mode) &&
             (*ft != ft_link || (flags & CLI_FTW_FOLLOW_DIR_SYMLINK))) {
             /* A directory, or (a symlink to a directory and we're following dir
-	     * symlinks) */
+             * symlinks) */
             *ft = ft_directory;
         } else if (S_ISREG(statbuf->st_mode) &&
                    (*ft != ft_link || (flags & CLI_FTW_FOLLOW_FILE_SYMLINK))) {
@@ -576,31 +613,63 @@ static int get_filetype(const char *fname, int flags, int need_stat,
     return stated;
 }
 
-static int handle_filetype(const char *fname, int flags,
-                           STATBUF *statbuf, int *stated, enum filetype *ft,
-                           cli_ftw_cb callback, struct cli_ftw_cbdata *data)
+/**
+ * @brief Determine the file type and pass the metadata to the callback as the "reason".
+ *
+ * The callback may end up doing something or doing nothing, depending on the reason.
+ *
+ * @param fname         The file path
+ * @param flags         CLI_FTW_* bitflag field
+ * @param[out] statbuf  the stat metadata for the file.
+ * @param[out] stated   1 if statbuf contains stat info, 0 if not. -1 if there was a stat error.
+ * @param[out] ft       will indicate if the file was skipped based on the file type.
+ * @param callback      the callback (E.g. function that may scan the file)
+ * @param data          callback data
+ * @return cl_error_t
+ */
+static cl_error_t handle_filetype(const char *fname, int flags,
+                                  STATBUF *statbuf, int *stated, enum filetype *ft,
+                                  cli_ftw_cb callback, struct cli_ftw_cbdata *data)
 {
-    int ret;
+    cl_error_t status = CL_EMEM;
 
     *stated = get_filetype(fname, flags, flags & CLI_FTW_NEED_STAT, statbuf, ft);
 
     if (*stated == -1) {
-        /*  we failed a stat() or lstat() */
-        ret = callback(NULL, NULL, fname, error_stat, data);
-        if (ret != CL_SUCCESS)
-            return ret;
+        /* we failed a stat() or lstat() */
+        char *fname_copy = cli_strdup(fname);
+        if (NULL == fname_copy) {
+            goto done;
+        }
+
+        status = callback(NULL, fname_copy, fname, error_stat, data);
+        if (status != CL_SUCCESS) {
+            goto done;
+        }
         *ft = ft_unknown;
     } else if (*ft == ft_skipped_link || *ft == ft_skipped_special) {
         /* skipped filetype */
-        ret = callback(stated ? statbuf : NULL, NULL, fname,
-                       *ft == ft_skipped_link ? warning_skipped_link : warning_skipped_special, data);
-        if (ret != CL_SUCCESS)
-            return ret;
+        char *fname_copy = cli_strdup(fname);
+        if (NULL == fname_copy) {
+            goto done;
+        }
+
+        status = callback(stated ? statbuf : NULL,
+                          fname_copy,
+                          fname,
+                          *ft == ft_skipped_link ? warning_skipped_link : warning_skipped_special,
+                          data);
+        if (status != CL_SUCCESS)
+            goto done;
     }
-    return CL_SUCCESS;
+
+    status = CL_SUCCESS;
+
+done:
+    return status;
 }
 
-static int cli_ftw_dir(const char *dirname, int flags, int maxdepth, cli_ftw_cb callback, struct cli_ftw_cbdata *data, cli_ftw_pathchk pathchk);
+static cl_error_t cli_ftw_dir(const char *dirname, int flags, int maxdepth, cli_ftw_cb callback, struct cli_ftw_cbdata *data, cli_ftw_pathchk pathchk);
 static int handle_entry(struct dirent_data *entry, int flags, int maxdepth, cli_ftw_cb callback, struct cli_ftw_cbdata *data, cli_ftw_pathchk pathchk)
 {
     if (!entry->is_dir) {
@@ -610,18 +679,20 @@ static int handle_entry(struct dirent_data *entry, int flags, int maxdepth, cli_
     }
 }
 
-int cli_ftw(char *path, int flags, int maxdepth, cli_ftw_cb callback, struct cli_ftw_cbdata *data, cli_ftw_pathchk pathchk)
+cl_error_t cli_ftw(char *path, int flags, int maxdepth, cli_ftw_cb callback, struct cli_ftw_cbdata *data, cli_ftw_pathchk pathchk)
 {
+    cl_error_t status = CL_EMEM;
     STATBUF statbuf;
-    enum filetype ft = ft_unknown;
-    struct dirent_data entry;
-    int stated = 0;
-    int ret;
+    enum filetype ft               = ft_unknown;
+    struct dirent_data entry       = {0};
+    int stated                     = 0;
+    char *filename_for_callback    = NULL;
+    char *filename_for_handleentry = NULL;
 
     if (((flags & CLI_FTW_TRIM_SLASHES) || pathchk) && path[0] && path[1]) {
         char *pathend;
         /* trim slashes so that dir and dir/ behave the same when
-	 * they are symlinks, and we are not following symlinks */
+         * they are symlinks, and we are not following symlinks */
 #ifndef _WIN32
         while (path[0] == *PATHSEP && path[1] == *PATHSEP) path++;
 #endif
@@ -629,31 +700,85 @@ int cli_ftw(char *path, int flags, int maxdepth, cli_ftw_cb callback, struct cli
         while (pathend > path && pathend[-1] == *PATHSEP) --pathend;
         *pathend = '\0';
     }
-    if (pathchk && pathchk(path, data) == 1)
-        return CL_SUCCESS;
-    ret = handle_filetype(path, flags, &statbuf, &stated, &ft, callback, data);
-    if (ret != CL_SUCCESS)
-        return ret;
-    if (ft_skipped(ft))
-        return CL_SUCCESS;
-    entry.statbuf  = stated ? &statbuf : NULL;
-    entry.is_dir   = ft == ft_directory;
-    entry.filename = entry.is_dir ? NULL : strdup(path);
-    entry.dirname  = entry.is_dir ? path : NULL;
-    if (entry.is_dir) {
-        ret = callback(entry.statbuf, NULL, path, visit_directory_toplev, data);
-        if (ret != CL_SUCCESS)
-            return ret;
+
+    if (pathchk && pathchk(path, data) == 1) {
+        status = CL_SUCCESS;
+        goto done;
     }
-    return handle_entry(&entry, flags, maxdepth, callback, data, pathchk);
+
+    /* Determine if the file should be skipped (special file or symlink).
+       This will also get the stat metadata. */
+    status = handle_filetype(path, flags, &statbuf, &stated, &ft, callback, data);
+    if (status != CL_SUCCESS) {
+        goto done;
+    }
+
+    /* Bail out if the file should be skipped. */
+    if (ft_skipped(ft)) {
+        status = CL_SUCCESS;
+        goto done;
+    }
+
+    entry.statbuf = stated ? &statbuf : NULL;
+    entry.is_dir  = ft == ft_directory;
+
+    /*
+     * handle_entry() doesn't call the callback for directories, so we'll call it now first.
+     */
+    if (entry.is_dir) {
+        /* Allocate the filename for the callback function. TODO: this FTW code is spaghetti, refactor. */
+        filename_for_callback = cli_strdup(path);
+        if (NULL == filename_for_callback) {
+            goto done;
+        }
+
+        status = callback(entry.statbuf, filename_for_callback, path, visit_directory_toplev, data);
+
+        filename_for_callback = NULL; // free'd by the callback
+
+        if (status != CL_SUCCESS) {
+            goto done;
+        }
+    }
+
+    /*
+     * Now call handle_entry() to either call the callback for files,
+     * or recurse deeper into the file tree walk.
+     * TODO: Recursion is bad, this whole thing should be iterative
+     */
+    if (entry.is_dir) {
+        entry.dirname = path;
+    } else {
+        /* Allocate the filename for the callback function within the handle_entry function. TODO: this FTW code is spaghetti, refactor. */
+        filename_for_handleentry = cli_strdup(path);
+        if (NULL == filename_for_handleentry) {
+            goto done;
+        }
+
+        entry.filename = filename_for_handleentry;
+    }
+    status = handle_entry(&entry, flags, maxdepth, callback, data, pathchk);
+
+    filename_for_handleentry = NULL; // free'd by the callback call in handle_entry()
+
+done:
+    if (NULL != filename_for_callback) {
+        /* Free-check just in case someone injects additional calls and error handling before callback(). */
+        free(filename_for_callback);
+    }
+    if (NULL != filename_for_handleentry) {
+        /* Free-check just in case someone injects additional calls and error handling before handle_entry(). */
+        free(filename_for_handleentry);
+    }
+    return status;
 }
 
-static int cli_ftw_dir(const char *dirname, int flags, int maxdepth, cli_ftw_cb callback, struct cli_ftw_cbdata *data, cli_ftw_pathchk pathchk)
+static cl_error_t cli_ftw_dir(const char *dirname, int flags, int maxdepth, cli_ftw_cb callback, struct cli_ftw_cbdata *data, cli_ftw_pathchk pathchk)
 {
     DIR *dd;
     struct dirent_data *entries = NULL;
     size_t i, entries_cnt = 0;
-    int ret;
+    cl_error_t ret;
 
     if (maxdepth < 0) {
         /* exceeded recursion limit */
@@ -682,7 +807,7 @@ static int cli_ftw_dir(const char *dirname, int flags, int maxdepth, cli_ftw_cb 
                 case DT_LNK:
                     if (!(flags & FOLLOW_SYMLINK_MASK)) {
                         /* we don't follow symlinks, don't bother
-			 * stating it */
+                         * stating it */
                         errno = 0;
                         continue;
                     }
@@ -781,8 +906,11 @@ static int cli_ftw_dir(const char *dirname, int flags, int maxdepth, cli_ftw_cb 
                     free(entry->filename);
                 if (entry->statbuf)
                     free(entry->statbuf);
-                if (ret != CL_SUCCESS)
+                if (ret != CL_SUCCESS) {
+                    /* Something went horribly wrong, Skip the rest of the files */
+                    cli_errmsg("File tree walk aborted.\n");
                     break;
+                }
             }
             for (i++; i < entries_cnt; i++) {
                 struct dirent_data *entry = &entries[i];
@@ -817,7 +945,7 @@ const char *cli_strerror(int errnum, char *buf, size_t len)
 
 static char *cli_md5buff(const unsigned char *buffer, unsigned int len, unsigned char *dig)
 {
-    unsigned char digest[16];
+    unsigned char digest[16] = {0};
     char *md5str, *pt;
     int i;
 
@@ -840,16 +968,17 @@ static char *cli_md5buff(const unsigned char *buffer, unsigned int len, unsigned
 
 unsigned int cli_rndnum(unsigned int max)
 {
-    if (name_salt[0] == 16) { /* minimizes re-seeding after the first call to cli_gentemp() */
+    if (!rand_seeded) { /* minimizes re-seeding after the first call to cli_gentemp() */
         struct timeval tv;
         gettimeofday(&tv, (struct timezone *)0);
         srand(tv.tv_usec + clock() + rand());
+        rand_seeded = true;
     }
 
     return 1 + (unsigned int)(max * (rand() / (1.0 + RAND_MAX)));
 }
 
-char *cli_sanitize_filepath(const char *filepath, size_t filepath_len)
+char *cli_sanitize_filepath(const char *filepath, size_t filepath_len, char **sanitized_filebase)
 {
     uint32_t depth           = 0;
     size_t index             = 0;
@@ -858,6 +987,10 @@ char *cli_sanitize_filepath(const char *filepath, size_t filepath_len)
 
     if ((NULL == filepath) || (0 == filepath_len) || (PATH_MAX < filepath_len)) {
         goto done;
+    }
+
+    if (NULL != sanitized_filebase) {
+        *sanitized_filebase = NULL;
     }
 
     sanitized_filepath = cli_calloc(filepath_len + 1, sizeof(unsigned char));
@@ -900,9 +1033,9 @@ char *cli_sanitize_filepath(const char *filepath, size_t filepath_len)
             }
 #ifdef _WIN32
             /*
-         * Windows' POSIX style API's accept both "/" and "\\" style path separators.
-         * The following checks using POSIX style path separators on Windows.
-         */
+             * Windows' POSIX style API's accept both "/" and "\\" style path separators.
+             * The following checks using POSIX style path separators on Windows.
+             */
         } else if (0 == strncmp(filepath + index, "/", strlen("/"))) {
             /*
              * Is "/".
@@ -931,17 +1064,39 @@ char *cli_sanitize_filepath(const char *filepath, size_t filepath_len)
                 sanitized_index += strlen("../");
                 index += strlen("../");
                 depth--;
+
+                /* Convert path separator to Windows separator */
+                sanitized_filepath[sanitized_index - 1] = '\\';
             }
 #endif
         } else {
             /*
              * Is not "/", "./", or "../".
              */
+
             /* Find the next path separator. */
-            next_pathsep = CLI_STRNSTR(filepath + index, PATHSEP, filepath_len - index);
+#ifdef _WIN32
+            char *next_windows_pathsep = NULL;
+#endif
+            next_pathsep = CLI_STRNSTR(filepath + index, "/", filepath_len - index);
+
+#ifdef _WIN32
+            /* Check for both types of separators. */
+            next_windows_pathsep = CLI_STRNSTR(filepath + index, "\\", filepath_len - index);
+            if (NULL != next_windows_pathsep) {
+                if ((NULL == next_pathsep) || (next_windows_pathsep < next_pathsep)) {
+                    next_pathsep = next_windows_pathsep;
+                }
+            }
+#endif
             if (NULL == next_pathsep) {
                 /* No more path separators, copy the rest (filename) into the sanitized path */
                 strncpy(sanitized_filepath + sanitized_index, filepath + index, filepath_len - index);
+
+                if (NULL != sanitized_filebase) {
+                    /* Set output variable to point to the file base name */
+                    *sanitized_filebase = sanitized_filepath + sanitized_index;
+                }
                 break;
             }
             next_pathsep += strlen(PATHSEP); /* Include the path separator in the copy */
@@ -951,6 +1106,11 @@ char *cli_sanitize_filepath(const char *filepath, size_t filepath_len)
             sanitized_index += next_pathsep - (filepath + index);
             index += next_pathsep - (filepath + index);
             depth++;
+
+#ifdef _WIN32
+            /* Convert path separator to Windows separator */
+            sanitized_filepath[sanitized_index - 1] = '\\';
+#endif
         }
     }
 
@@ -958,6 +1118,9 @@ done:
     if ((NULL != sanitized_filepath) && (0 == strlen(sanitized_filepath))) {
         free(sanitized_filepath);
         sanitized_filepath = NULL;
+        if (NULL != sanitized_filebase) {
+            *sanitized_filebase = NULL;
+        }
     }
 
     return sanitized_filepath;
@@ -966,23 +1129,29 @@ done:
 #define SHORT_HASH_LENGTH 10
 char *cli_genfname(const char *prefix)
 {
-    char *sanitized_prefix = NULL;
-    char *fname            = NULL;
+    char *sanitized_prefix      = NULL;
+    char *sanitized_prefix_base = NULL;
+    char *fname                 = NULL;
     unsigned char salt[16 + 32];
     char *tmp;
     int i;
     size_t len;
 
     if (prefix && (strlen(prefix) > 0)) {
-        sanitized_prefix = cli_sanitize_filepath(prefix, strlen(prefix));
-        len              = strlen(sanitized_prefix) + strlen(".") + SHORT_HASH_LENGTH + 1; /* {prefix}.{SHORT_HASH_LENGTH}\0 */
+        sanitized_prefix = cli_sanitize_filepath(prefix, strlen(prefix), &sanitized_prefix_base);
+    }
+    if (NULL != sanitized_prefix_base) {
+        len = strlen(sanitized_prefix_base) + strlen(".") + SHORT_HASH_LENGTH + 1; /* {prefix}.{SHORT_HASH_LENGTH}\0 */
     } else {
         len = strlen("clamav-") + 48 + strlen(".tmp") + 1; /* clamav-{48}.tmp\0 */
     }
 
     fname = (char *)cli_calloc(len, sizeof(char));
     if (!fname) {
-        cli_dbgmsg("cli_genfname: out of memory\n");
+        cli_dbgmsg("cli_genfname: no memory left for fname\n");
+        if (NULL != sanitized_prefix) {
+            free(sanitized_prefix);
+        }
         return NULL;
     }
 
@@ -1001,21 +1170,24 @@ char *cli_genfname(const char *prefix)
     pthread_mutex_unlock(&cli_gentemp_mutex);
 #endif
 
-    if (!tmp) {
+    if (NULL == tmp) {
         free(fname);
-        cli_dbgmsg("cli_genfname: out of memory\n");
+        if (NULL != sanitized_prefix) {
+            free(sanitized_prefix);
+        }
+        cli_dbgmsg("cli_genfname: no memory left for cli_md5buff output\n");
         return NULL;
     }
 
-    if (sanitized_prefix) {
-        if (strlen(sanitized_prefix) > 0) {
-            snprintf(fname, len, "%s.%.*s", sanitized_prefix, SHORT_HASH_LENGTH, tmp);
-        }
-        free(sanitized_prefix);
+    if (NULL != sanitized_prefix_base) {
+        snprintf(fname, len, "%s.%.*s", sanitized_prefix_base, SHORT_HASH_LENGTH, tmp);
     } else {
         snprintf(fname, len, "clamav-%s.tmp", tmp);
     }
 
+    if (NULL != sanitized_prefix) {
+        free(sanitized_prefix);
+    }
     free(tmp);
 
     return (fname);
@@ -1029,14 +1201,14 @@ char *cli_newfilepath(const char *dir, const char *fname)
 
     mdir = dir ? dir : cli_gettmpdir();
 
-    if (!fname) {
-        cli_dbgmsg("cli_newfilepath('%s'): out of memory\n", mdir);
+    if (NULL == fname) {
+        cli_dbgmsg("cli_newfilepath('%s'): fname argument must not be NULL\n", mdir);
         return NULL;
     }
 
     len      = strlen(mdir) + strlen(PATHSEP) + strlen(fname) + 1; /* mdir/fname\0 */
     fullpath = (char *)cli_calloc(len, sizeof(char));
-    if (!fullpath) {
+    if (NULL == fullpath) {
         cli_dbgmsg("cli_newfilepath('%s'): out of memory\n", mdir);
         return NULL;
     }
@@ -1048,9 +1220,16 @@ char *cli_newfilepath(const char *dir, const char *fname)
 
 cl_error_t cli_newfilepathfd(const char *dir, char *fname, char **name, int *fd)
 {
+    if (NULL == name || NULL == fname || NULL == fd) {
+        cli_dbgmsg("cli_newfilepathfd('%s'): invalid NULL arguments\n", dir);
+        return CL_EARG;
+    }
+
     *name = cli_newfilepath(dir, fname);
-    if (!*name)
+    if (!*name) {
+        cli_dbgmsg("cli_newfilepathfd('%s'): out of memory\n", dir);
         return CL_EMEM;
+    }
 
     *fd = open(*name, O_RDWR | O_CREAT | O_TRUNC | O_BINARY | O_EXCL, S_IRUSR | S_IWUSR);
     /*
@@ -1106,7 +1285,7 @@ cl_error_t cli_gentempfd(const char *dir, char **name, int *fd)
     return cli_gentempfd_with_prefix(dir, NULL, name, fd);
 }
 
-cl_error_t cli_gentempfd_with_prefix(const char *dir, char *prefix, char **name, int *fd)
+cl_error_t cli_gentempfd_with_prefix(const char *dir, const char *prefix, char **name, int *fd)
 {
     *name = cli_gentemp_with_prefix(dir, prefix);
     if (!*name)
@@ -1151,6 +1330,81 @@ int cli_regcomp(regex_t *preg, const char *pattern, int cflags)
     return cli_regcomp_real(preg, pattern, cflags);
 }
 
+#ifdef _WIN32
+cl_error_t cli_get_filepath_from_handle(HANDLE hFile, char **filepath)
+{
+    cl_error_t status               = CL_EARG;
+    char *evaluated_filepath        = NULL;
+    DWORD dwRet                     = 0;
+    WCHAR *long_evaluated_filepathW = NULL;
+    char *long_evaluated_filepathA  = NULL;
+    size_t evaluated_filepath_len   = 0;
+    cl_error_t conv_result;
+
+    if (NULL == filepath) {
+        cli_errmsg("cli_get_filepath_from_handle: Invalid args.\n");
+        goto done;
+    }
+
+    dwRet = GetFinalPathNameByHandleW((HANDLE)hFile, NULL, 0, VOLUME_NAME_DOS);
+    if (dwRet == 0) {
+        cli_dbgmsg("cli_get_filepath_from_handle: Failed to resolve handle\n");
+        status = CL_EOPEN;
+        goto done;
+    }
+
+    long_evaluated_filepathW = calloc(dwRet + 1, sizeof(WCHAR));
+    if (NULL == long_evaluated_filepathW) {
+        cli_errmsg("cli_get_filepath_from_filedesc: Failed to allocate %u bytes to store filename\n", dwRet + 1);
+        status = CL_EMEM;
+        goto done;
+    }
+
+    dwRet = GetFinalPathNameByHandleW((HANDLE)hFile, long_evaluated_filepathW, dwRet + 1, VOLUME_NAME_DOS);
+    if (dwRet == 0) {
+        cli_dbgmsg("cli_get_filepath_from_handle: Failed to resolve handle\n");
+        status = CL_EOPEN;
+        goto done;
+    }
+
+    if (0 == wcsncmp(L"\\\\?\\UNC", long_evaluated_filepathW, wcslen(L"\\\\?\\UNC"))) {
+        conv_result = cli_codepage_to_utf8(
+            (char *)long_evaluated_filepathW,
+            (wcslen(long_evaluated_filepathW)) * sizeof(WCHAR),
+            CODEPAGE_UTF16_LE,
+            &evaluated_filepath,
+            &evaluated_filepath_len);
+        if (CL_SUCCESS != conv_result) {
+            cli_errmsg("cli_get_filepath_from_handle: Failed to convert UTF16_LE filename to UTF8\n", dwRet + 1);
+            status = CL_EOPEN;
+            goto done;
+        }
+    } else {
+        conv_result = cli_codepage_to_utf8(
+            (char *)long_evaluated_filepathW + wcslen(L"\\\\?\\") * sizeof(WCHAR),
+            (wcslen(long_evaluated_filepathW) - wcslen(L"\\\\?\\")) * sizeof(WCHAR),
+            CODEPAGE_UTF16_LE,
+            &evaluated_filepath,
+            &evaluated_filepath_len);
+        if (CL_SUCCESS != conv_result) {
+            cli_errmsg("cli_get_filepath_from_handle: Failed to convert UTF16_LE filename to UTF8\n", dwRet + 1);
+            status = CL_EOPEN;
+            goto done;
+        }
+    }
+
+    cli_dbgmsg("cli_get_filepath_from_handle: File path for handle %p is: %s\n", (void *)hFile, evaluated_filepath);
+    status    = CL_SUCCESS;
+    *filepath = evaluated_filepath;
+
+done:
+    if (NULL != long_evaluated_filepathW) {
+        free(long_evaluated_filepathW);
+    }
+    return status;
+}
+#endif
+
 cl_error_t cli_get_filepath_from_filedesc(int desc, char **filepath)
 {
     cl_error_t status        = CL_EARG;
@@ -1173,7 +1427,7 @@ cl_error_t cli_get_filepath_from_filedesc(int desc, char **filepath)
     link[sizeof(link) - 1] = '\0';
 
     if (-1 == (linksz = readlink(link, fname, PATH_MAX - 1))) {
-        cli_errmsg("cli_get_filepath_from_filedesc: Failed to resolve filename for descriptor %d (%s)\n", desc, link);
+        cli_dbgmsg("cli_get_filepath_from_filedesc: Failed to resolve filename for descriptor %d (%s)\n", desc, link);
         status = CL_EOPEN;
         goto done;
     }
@@ -1188,7 +1442,8 @@ cl_error_t cli_get_filepath_from_filedesc(int desc, char **filepath)
         goto done;
     }
 
-#elif __APPLE__
+#elif C_DARWIN
+
     char fname[PATH_MAX];
     memset(&fname, 0, PATH_MAX);
 
@@ -1198,7 +1453,7 @@ cl_error_t cli_get_filepath_from_filedesc(int desc, char **filepath)
     }
 
     if (fcntl(desc, F_GETPATH, &fname) < 0) {
-        printf("cli_get_filepath_from_filedesc: Failed to resolve filename for descriptor %d\n", desc);
+        cli_dbgmsg("cli_get_filepath_from_filedesc: Failed to resolve filename for descriptor %d\n", desc);
         status = CL_EOPEN;
         goto done;
     }
@@ -1211,47 +1466,20 @@ cl_error_t cli_get_filepath_from_filedesc(int desc, char **filepath)
     }
 
 #elif _WIN32
-    DWORD dwRet                   = 0;
-    intptr_t hFile                = _get_osfhandle(desc);
-    char *long_evaluated_filepath = NULL;
+    intptr_t hFile = _get_osfhandle(desc);
+    cl_error_t handle_result;
 
     if (NULL == filepath) {
         cli_errmsg("cli_get_filepath_from_filedesc: Invalid args.\n");
         goto done;
     }
 
-    dwRet = GetFinalPathNameByHandleA((HANDLE)hFile, NULL, 0, VOLUME_NAME_DOS);
-    if (dwRet == 0) {
-        cli_errmsg("cli_get_filepath_from_filedesc: Failed to resolve filename for descriptor %d\n", desc);
+    handle_result = cli_get_filepath_from_handle((HANDLE)hFile, &evaluated_filepath);
+    if (CL_SUCCESS != handle_result) {
+        cli_errmsg("cli_get_filepath_from_filedesc: Failed to get file path from handle\n");
         status = CL_EOPEN;
         goto done;
     }
-
-    long_evaluated_filepath = calloc(dwRet + 1, 1);
-    if (NULL == long_evaluated_filepath) {
-        cli_errmsg("cli_get_filepath_from_filedesc: Failed to allocate %u bytes to store filename\n", dwRet + 1);
-        status = CL_EMEM;
-        goto done;
-    }
-
-    dwRet = GetFinalPathNameByHandleA((HANDLE)hFile, long_evaluated_filepath, dwRet + 1, VOLUME_NAME_DOS);
-    if (dwRet == 0) {
-        cli_errmsg("cli_get_filepath_from_filedesc: Failed to resolve filename for descriptor %d\n", desc);
-        free(long_evaluated_filepath);
-        long_evaluated_filepath = NULL;
-        status                  = CL_EOPEN;
-        goto done;
-    }
-
-    evaluated_filepath = calloc(strlen(long_evaluated_filepath) - strlen("\\\\?\\") + 1, 1);
-    if (NULL == evaluated_filepath) {
-        cli_errmsg("cli_get_filepath_from_filedesc: Failed to allocate %u bytes to store filename\n", dwRet + 1);
-        status = CL_EMEM;
-        goto done;
-    }
-    memcpy(evaluated_filepath,
-           long_evaluated_filepath + strlen("\\\\?\\"),
-           strlen(long_evaluated_filepath) - strlen("\\\\?\\"));
 
 #else
 
@@ -1261,17 +1489,11 @@ cl_error_t cli_get_filepath_from_filedesc(int desc, char **filepath)
 
 #endif
 
-    cli_dbgmsg("cli_get_filepath_from_filedesc: File path for fd [%d] is: %s\n", desc, *filepath);
+    cli_dbgmsg("cli_get_filepath_from_filedesc: File path for fd [%d] is: %s\n", desc, evaluated_filepath);
     status    = CL_SUCCESS;
     *filepath = evaluated_filepath;
 
 done:
-
-#ifdef _WIN32
-    if (NULL != long_evaluated_filepath) {
-        free(long_evaluated_filepath);
-    }
-#endif
     return status;
 }
 
@@ -1280,7 +1502,12 @@ cl_error_t cli_realpath(const char *file_name, char **real_filename)
     char *real_file_path = NULL;
     cl_error_t status    = CL_EARG;
 #ifdef _WIN32
-    int desc = -1;
+    HANDLE hFile   = INVALID_HANDLE_VALUE;
+    wchar_t *wpath = NULL;
+    WIN32_FILE_ATTRIBUTE_DATA attrs;
+
+#elif C_DARWIN
+    int fd = -1;
 #endif
 
     cli_dbgmsg("Checking realpath of %s\n", file_name);
@@ -1290,7 +1517,53 @@ cl_error_t cli_realpath(const char *file_name, char **real_filename)
         goto done;
     }
 
-#ifndef _WIN32
+#ifdef _WIN32
+
+    wpath = uncpath(file_name);
+    if (!wpath) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    hFile = CreateFileW(wpath,                      // file to open
+                        GENERIC_READ,               // open for reading
+                        FILE_SHARE_READ,            // share for reading
+                        NULL,                       // default security
+                        OPEN_EXISTING,              // existing file only
+                        FILE_FLAG_BACKUP_SEMANTICS, // may be a directory
+                        NULL);                      // no attr. template
+    if (hFile == INVALID_HANDLE_VALUE) {
+        cli_warnmsg("Can't open file %s: %d\n", file_name, GetLastError());
+        status = CL_EOPEN;
+        goto done;
+    }
+
+    status = cli_get_filepath_from_handle(hFile, &real_file_path);
+
+#elif C_DARWIN
+
+    /* Using the filepath from filedesc method on macOS because
+       realpath will fail to check the realpath of a symbolic link if
+       the link doesn't point to anything.
+       Plus, we probably don't wan tot follow the link in this case anyways,
+       so this will check the realpath of the link, and not of the thing the
+       link points to. */
+    fd = open(file_name, O_RDONLY | O_SYMLINK);
+    if (fd == -1) {
+        char err[128];
+        cli_strerror(errno, err, sizeof(err));
+        if (errno == EACCES) {
+            status = CL_EACCES;
+        } else {
+            status = CL_EOPEN;
+        }
+        cli_dbgmsg("Can't open file %s: %s\n", file_name, err);
+        goto done;
+    }
+
+    status = cli_get_filepath_from_filedesc(fd, &real_file_path);
+
+#else
 
     real_file_path = realpath(file_name, NULL);
     if (NULL == real_file_path) {
@@ -1300,16 +1573,6 @@ cl_error_t cli_realpath(const char *file_name, char **real_filename)
 
     status = CL_SUCCESS;
 
-#else
-
-    if ((desc = safe_open(file_name, O_RDONLY | O_BINARY)) == -1) {
-        cli_warnmsg("Can't open file %s: %s\n", file_name, strerror(errno));
-        status = CL_EOPEN;
-        goto done;
-    }
-
-    status = cli_get_filepath_from_filedesc(desc, &real_file_path);
-
 #endif
 
     *real_filename = real_file_path;
@@ -1317,8 +1580,15 @@ cl_error_t cli_realpath(const char *file_name, char **real_filename)
 done:
 
 #ifdef _WIN32
-    if (-1 != desc) {
-        close(desc);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        CloseHandle(hFile);
+    }
+    if (NULL != wpath) {
+        free(wpath);
+    }
+#elif C_DARWIN
+    if (fd != -1) {
+        close(fd);
     }
 #endif
 
