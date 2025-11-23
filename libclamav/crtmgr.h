@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2011-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB
@@ -66,8 +66,8 @@ typedef struct cli_crt_t {
     BIGNUM *n;
     BIGNUM *e;
     BIGNUM *sig;
-    time_t not_before;
-    time_t not_after;
+    int64_t not_before;
+    int64_t not_after;
     cli_crt_hashtype hashtype;
     int certSign;
     int codeSign;

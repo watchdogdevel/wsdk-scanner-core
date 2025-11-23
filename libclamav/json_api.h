@@ -1,7 +1,7 @@
 /*
  * JSON Object API
  *
- * Copyright (C) 2014-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ * Copyright (C) 2014-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  * Authors: Kevin Lin
  *
@@ -26,14 +26,11 @@
 #include "clamav-config.h"
 #endif
 
-#if HAVE_JSON
 #include "json.h"
-#endif
 
 #include "clamav-types.h"
 #include "others.h"
 
-#if HAVE_JSON
 #define JSON_TIMEOUT_SKIP_CYCLES 3
 
 cl_error_t cli_json_timeout_cycle_check(cli_ctx *ctx, int *toval);
@@ -44,19 +41,15 @@ cl_error_t cli_jsonstr(json_object *obj, const char *key, const char *s);
 cl_error_t cli_jsonstrlen(json_object *obj, const char *key, const char *s, int len);
 cl_error_t cli_jsonint(json_object *obj, const char *key, int32_t i);
 cl_error_t cli_jsonint64(json_object *obj, const char *key, int64_t i);
+cl_error_t cli_jsonuint64(json_object *obj, const char *key, uint64_t i);
 cl_error_t cli_jsonbool(json_object *obj, const char *key, int i);
 cl_error_t cli_jsondouble(json_object *obj, const char *key, double d);
 
 json_object *cli_jsonarray(json_object *obj, const char *key);
 cl_error_t cli_jsonint_array(json_object *obj, int32_t val);
 json_object *cli_jsonobj(json_object *obj, const char *key);
-cl_error_t cli_json_addowner(json_object *owner, json_object *child, const char *key, int idx);
 cl_error_t cli_json_delowner(json_object *owner, const char *key, int idx);
 #define cli_json_delobj(obj) json_object_put(obj)
-
-#if HAVE_DEPRECATED_JSON
-int json_object_object_get_ex(struct json_object *obj, const char *key, struct json_object **value);
-#endif
 
 #define JSON_KEY_FILETYPE "FileType"
 #define JSON_KEY_FILESIZE "FileSize"
@@ -65,36 +58,5 @@ int json_object_object_get_ex(struct json_object *obj, const char *key, struct j
 #define JSON_VALUE_FILETYPE_PPT "CL_TYPE_MSPPT"
 #define JSON_VALUE_FILETYPE_WORD "CL_TYPE_WORD"
 #define JSON_VALUE_FILETYPE_EXCEL "CL_TYPE_MSXLS"
-
-#else
-#define nojson_func cli_dbgmsg
-
-/* internal functions */
-cl_error_t cli_json_nojson(void);
-
-cl_error_t cli_jsonnull_nojson(const char* key);
-cl_error_t cli_jsonstr_nojson(const char* key, const char* s);
-cl_error_t cli_jsonstrlen_nojson(const char* key, const char* s, int len);
-cl_error_t cli_jsonint_nojson(const char* key, int32_t i);
-cl_error_t cli_jsonint64_nojson(const char* key, int64_t i);
-cl_error_t cli_jsonbool_nojson(const char* key, int i);
-cl_error_t cli_jsondouble_nojson(const char* key, double d);
-void* cli_jsonarray_nojson(const char* key);
-cl_error_t cli_jsonint_array_nojson(int32_t val);
-
-#define cli_jsonnull(o, n) cli_jsonnull_nojson(n)
-#define cli_jsonstr(o, n, s) cli_jsonstr_nojson(n, s)
-#define cli_jsonstrlen(o, n, s, len) cli_jsonstrlen_nojson(n, s, len)
-#define cli_jsonint(o, n, i) cli_jsonint_nojson(n, i)
-#define cli_jsonint64(o, n, i) cli_jsonint64_nojson(n, i)
-#define cli_jsonbool(o, n, b) cli_jsonbool_nojson(n, b)
-#define cli_jsondouble(o, n, d) cli_jsondouble_nojson(n, d)
-#define cli_jsonarray(o, k) cli_jsonarray_nojson(k)
-#define cli_jsonint_array(o, v) cli_jsonint_array_nojson(v)
-#define cli_json_addowner(o, c, k, i) cli_json_nojson()
-#define cli_json_delowner(o, k, i) cli_json_nojson()
-#define cli_json_delobj(o) cli_json_nojson()
-
-#endif
 
 #endif /*__JSON_C_H__*/

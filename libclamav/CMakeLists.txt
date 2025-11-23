@@ -1,4 +1,4 @@
-# Copyright (C) 2020-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+# Copyright (C) 2020-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 
 include_directories(
     ${LIBXML2_INCLUDE_DIR}
@@ -233,6 +233,7 @@ set(LIBCLAMAV_SOURCES
     mpool.c             mpool.h
     others.c
     perflogging.c       perflogging.h
+    scan_layer.c        scan_layer.h
     scanners.c          scanners.h
     textdet.c           textdet.h
     version.c
@@ -377,7 +378,7 @@ set(LIBCLAMAV_SOURCES
     egg.c               egg.h
     # Master Boot Record partition
     mbr.c               mbr.h
-    # GUID Parition Table partition
+    # GUID Partition Table partition
     gpt.c               gpt.h
     # Apple Partition Map partition
     apm.c               apm.h
@@ -404,7 +405,8 @@ if(ENABLE_SHARED_LIB)
     add_library( clamav SHARED )
     set_target_properties( clamav PROPERTIES
         VERSION ${LIBCLAMAV_VERSION}
-        SOVERSION ${LIBCLAMAV_SOVERSION} )
+        SOVERSION ${LIBCLAMAV_SOVERSION}
+        LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/libclamav.map)
     target_sources( clamav
         PRIVATE
             ${LIBCLAMAV_SOURCES}
@@ -450,6 +452,13 @@ if(ENABLE_SHARED_LIB)
                 ${CMAKE_DL_LIBS}
                 m )
     endif()
+
+    if(APPLE)
+        target_link_libraries( clamav
+            PUBLIC
+                ${APPLE_CORE_FOUNDATION} )
+    endif()
+
     set_target_properties( clamav PROPERTIES
         COMPILE_FLAGS "${WARNCFLAGS}"
         VERSION ${LIBCLAMAV_VERSION} SOVERSION ${LIBCLAMAV_SOVERSION} )
@@ -466,8 +475,12 @@ if(ENABLE_SHARED_LIB)
     else()
         target_link_libraries( clamav PUBLIC Iconv::Iconv )
     endif()
-    if(UNIX AND NOT APPLE)
+    if(UNIX AND NOT APPLE AND NOT AIX)
         target_link_options( clamav PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/libclamav.map")
+        if(${CMAKE_SYSTEM_NAME} MATCHES "SunOS")
+            # Solaris 11.4 linker supports a subset of GNU ld version scripts, but requires a special option to enable
+            target_link_options( clamav PRIVATE "-Wl,-z,gnu-version-script-compat")
+        endif()
     endif()
     if(WIN32)
         install( TARGETS clamav DESTINATION . COMPONENT libraries )
@@ -487,6 +500,8 @@ if(ENABLE_SHARED_LIB)
                     $<TARGET_FILE_DIR:PCRE2::pcre2>
                     $<TARGET_FILE_DIR:LibXml2::LibXml2>
                     $<TARGET_FILE_DIR:JSONC::jsonc>
+                POST_EXCLUDE_REGEXES
+                    "[cC]:[\\/][wW][iI][nN][dD][oO][wW][sS]"
             )
             foreach(_file ${_r_deps})
                 string(TOLOWER ${_file} _file_lower)
@@ -549,6 +564,7 @@ if(ENABLE_STATIC_LIB)
         if (ENABLE_UNRAR)
             target_link_libraries( clamav_static PUBLIC ClamAV::libunrar_iface_static ClamAV::libunrar_iface_iface)
         endif()
+
     if (WIN32)
         target_link_libraries( clamav_static
             PUBLIC
@@ -563,6 +579,13 @@ if(ENABLE_STATIC_LIB)
                 ${CMAKE_DL_LIBS}
                 m )
     endif()
+
+    if(APPLE)
+        target_link_libraries( clamav_static
+            PUBLIC
+                ${APPLE_CORE_FOUNDATION} )
+    endif()
+
     set_target_properties( clamav_static PROPERTIES
         ARCHIVE_OUTPUT_NAME clamav_static
         COMPILE_FLAGS       "${WARNCFLAGS}"

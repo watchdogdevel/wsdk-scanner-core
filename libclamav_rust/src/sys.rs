@@ -6,7 +6,6 @@ pub type __off_t = ::std::os::raw::c_long;
 pub type __time_t = ::std::os::raw::c_long;
 pub type __suseconds_t = ::std::os::raw::c_long;
 pub type off_t = __off_t;
-pub type time_t = __time_t;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct timeval {
@@ -19,6 +18,16 @@ pub struct bignum_st {
     _unused: [u8; 0],
 }
 pub type BIGNUM = bignum_st;
+#[doc = "< No alerting signatures matched."]
+pub const cl_verdict_t_CL_VERDICT_NOTHING_FOUND: cl_verdict_t = 0;
+#[doc = "< The scan target has been deemed trusted (e.g. by FP signature or Authenticode)."]
+pub const cl_verdict_t_CL_VERDICT_TRUSTED: cl_verdict_t = 1;
+#[doc = "< One or more strong indicator signatures matched."]
+pub const cl_verdict_t_CL_VERDICT_STRONG_INDICATOR: cl_verdict_t = 2;
+#[doc = "< One or more potentially unwanted signatures matched."]
+pub const cl_verdict_t_CL_VERDICT_POTENTIALLY_UNWANTED: cl_verdict_t = 3;
+#[doc = " @brief Scan verdicts for cl_scanmap_ex(), cl_scanfile_ex(), and cl_scandesc_ex()."]
+pub type cl_verdict_t = ::std::os::raw::c_uint;
 pub const cl_error_t_CL_CLEAN: cl_error_t = 0;
 pub const cl_error_t_CL_SUCCESS: cl_error_t = 0;
 pub const cl_error_t_CL_VIRUS: cl_error_t = 1;
@@ -49,13 +58,21 @@ pub const cl_error_t_CL_EMAXFILES: cl_error_t = 25;
 pub const cl_error_t_CL_EFORMAT: cl_error_t = 26;
 pub const cl_error_t_CL_EPARSE: cl_error_t = 27;
 pub const cl_error_t_CL_EBYTECODE: cl_error_t = 28;
+#[doc = " may be reported in testmode"]
 pub const cl_error_t_CL_EBYTECODE_TESTFAIL: cl_error_t = 29;
+#[doc = " may be reported in testmode"]
 pub const cl_error_t_CL_ELOCK: cl_error_t = 30;
+#[doc = " may be reported in testmode"]
 pub const cl_error_t_CL_EBUSY: cl_error_t = 31;
+#[doc = " may be reported in testmode"]
 pub const cl_error_t_CL_ESTATE: cl_error_t = 32;
+#[doc = " may be reported in testmode"]
 pub const cl_error_t_CL_VERIFIED: cl_error_t = 33;
+#[doc = " The scan target has been deemed trusted"]
 pub const cl_error_t_CL_ERROR: cl_error_t = 34;
+#[doc = " Unspecified / generic error"]
 pub const cl_error_t_CL_ELAST_ERROR: cl_error_t = 35;
+#[doc = " @brief Return codes used by libclamav functions."]
 pub type cl_error_t = ::std::os::raw::c_uint;
 #[doc = " scan options"]
 #[repr(C)]
@@ -68,13 +85,19 @@ pub struct cl_scan_options {
     pub dev: u32,
 }
 pub const bytecode_security_CL_BYTECODE_TRUST_ALL: bytecode_security = 0;
+#[doc = " @deprecated obsolete"]
 pub const bytecode_security_CL_BYTECODE_TRUST_SIGNED: bytecode_security = 1;
+#[doc = " default"]
 pub const bytecode_security_CL_BYTECODE_TRUST_NOTHING: bytecode_security = 2;
 pub type bytecode_security = ::std::os::raw::c_uint;
 pub const bytecode_mode_CL_BYTECODE_MODE_AUTO: bytecode_mode = 0;
+#[doc = " JIT if possible, fallback to interpreter"]
 pub const bytecode_mode_CL_BYTECODE_MODE_JIT: bytecode_mode = 1;
+#[doc = " force JIT"]
 pub const bytecode_mode_CL_BYTECODE_MODE_INTERPRETER: bytecode_mode = 2;
+#[doc = " force interpreter"]
 pub const bytecode_mode_CL_BYTECODE_MODE_TEST: bytecode_mode = 3;
+#[doc = " both JIT and interpreter, compare results, all failures are fatal"]
 pub const bytecode_mode_CL_BYTECODE_MODE_OFF: bytecode_mode = 4;
 pub type bytecode_mode = ::std::os::raw::c_uint;
 #[repr(C)]
@@ -90,7 +113,30 @@ pub struct cli_stats_sections {
     pub sections: *mut cli_section_hash,
 }
 pub type stats_section_t = cli_stats_sections;
-#[doc = " @brief Pre-cache callback.\n\n Called for each processed file (both the entry level - AKA 'outer' - file and\n inner files - those generated when processing archive and container files), before\n the actual scanning takes place.\n\n @param fd        File descriptor which is about to be scanned.\n @param type      File type detected via magic - i.e. NOT on the fly - (e.g. \"CL_TYPE_MSEXE\").\n @param context   Opaque application provided data.\n @return          CL_CLEAN = File is scanned.\n @return          CL_BREAK = Allowed by callback - file is skipped and marked as clean.\n @return          CL_VIRUS = Blocked by callback - file is skipped and marked as infected."]
+pub type cl_fmap_t = cl_fmap;
+#[doc = " @brief Read callback function type.\n\n A callback function pointer type for reading data from a cl_fmap_t that uses\n reads data from a handle interface.\n\n Read 'count' bytes starting at 'offset' into the buffer 'buf'\n\n Thread safety: It is guaranteed that only one callback is executing for a\n specific handle at any time, but there might be multiple callbacks executing\n for different handle at the same time.\n\n @param handle    The handle passed to cl_fmap_open_handle, its meaning is up\n                  to the callback's implementation\n @param buf       A buffer to read data into, must be at least offset + count\n                  bytes in size.\n @param count     The number of bytes to read.\n @param offset    The offset into buf to read the data to. If successful,\n                  the number of bytes actually read is returned. Upon reading\n                  end-of-file, zero is returned. Otherwise, a -1 is returned\n                  and the global variable errno is set to indicate the error."]
+pub type clcb_pread = ::std::option::Option<
+    unsafe extern "C" fn(
+        handle: *mut ::std::os::raw::c_void,
+        buf: *mut ::std::os::raw::c_void,
+        count: usize,
+        offset: off_t,
+    ) -> off_t,
+>;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cl_scan_layer {
+    _unused: [u8; 0],
+}
+pub type cl_scan_layer_t = cl_scan_layer;
+#[doc = " @brief Callback interface to get access to the current layer using the scan-\n layer abstraction. This grants access to file content and attributes as well\n as those of each ancestor layers (if any).\n\n Called for each processed file including both the top level file (i.e. the\n zeroeth layer) and all contained files (recursively).\n\n @param layer          Scan layer (abstraction) for the current layer being scanned.\n                       Use the `cl_scan_layer_*` functions to access layer data and metadata.\n                       You may want to use `cl_scan_layer_get_fmap()` to get the file map for the current layer.\n                       You may also use it to access ancestor layers using `cl_scan_layer_get_parent_layer()`.\n\n @param context        The application context pointer passed in to the `cl_scan*()` function.\n\n @return CL_BREAK\n\n         Scan aborted by callback (the rest of the scan is skipped).\n         This does not mark the file as clean or infected, it just skips the rest of the scan.\n\n @return CL_SUCCESS\n\n         File scan will continue.\n\n         For CL_SCAN_CALLBACK_ALERT: Means you want to ignore this specific alert and keep scanning.\n         This is different than CL_VERIFIED because it does not affect prior or future alerts.\n         Return CL_VERIFIED instead if you want to remove prior alerts for this layer and skip\n         the rest of the scan for this layer.\n\n @return CL_VIRUS\n\n         This will mark the file as infected. A new alert will be added.\n\n         For CL_SCAN_CALLBACK_ALERT: Means you agree with the alert (no extra alert needed).\n                                     Remember that CL_SUCCESS means you want to ignore the alert.\n\n @return CL_VERIFIED\n\n         Layer explicitly trusted by the callback and previous alerts removed FOR THIS layer.\n         You might want to do this if you trust the hash or verified a digital signature.\n         The rest of the scan will be skipped FOR THIS layer.\n         For contained files, this does NOT mean that the parent or adjacent layers are trusted."]
+pub type clcb_scan = ::std::option::Option<
+    unsafe extern "C" fn(
+        layer: *mut cl_scan_layer_t,
+        context: *mut ::std::os::raw::c_void,
+    ) -> cl_error_t,
+>;
+#[doc = " @brief Pre-cache callback.\n\n @deprecated This function is deprecated and will be removed in a future release.\n Use `CL_SCAN_CALLBACK_PRE_HASH` with `cl_engine_set_scan_callback()` instead.\n\n Called for each processed file (both the entry level - AKA 'outer' - file and\n inner files - those generated when processing archive and container files), before\n the actual scanning takes place.\n\n @param fd        File descriptor which is about to be scanned.\n @param type      File type detected via magic - i.e. NOT on the fly - (e.g. \"CL_TYPE_MSEXE\").\n @param context   Opaque application provided data.\n @return          CL_SUCCESS = File is scanned.\n @return          CL_BREAK = Allowed by callback - file is skipped and marked as clean.\n @return          CL_VIRUS = Blocked by callback - file is skipped and marked as infected."]
 pub type clcb_pre_cache = ::std::option::Option<
     unsafe extern "C" fn(
         fd: ::std::os::raw::c_int,
@@ -98,7 +144,7 @@ pub type clcb_pre_cache = ::std::option::Option<
         context: *mut ::std::os::raw::c_void,
     ) -> cl_error_t,
 >;
-#[doc = " @brief File inspection callback.\n\n DISCLAIMER: This interface is to be considered unstable while we continue to evaluate it.\n We may change this interface in the future.\n\n Called for each NEW file (inner and outer).\n Provides capability to record embedded file information during a scan.\n\n @param fd                  Current file descriptor which is about to be scanned.\n @param type                Current file type detected via magic - i.e. NOT on the fly - (e.g. \"CL_TYPE_MSEXE\").\n @param ancestors           An array of ancestors filenames of size `recursion_level`. filenames may be NULL.\n @param parent_file_size    Parent file size.\n @param file_name           Current file name, or NULL if the file does not have a name or ClamAV failed to record the name.\n @param file_size           Current file size.\n @param file_buffer         Current file buffer pointer.\n @param recursion_level     Recursion level / depth of the current file.\n @param layer_attributes    See LAYER_ATTRIBUTES_* flags.\n @param context             Opaque application provided data.\n @return                    CL_CLEAN = File is scanned.\n @return                    CL_BREAK = Whitelisted by callback - file is skipped and marked as clean.\n @return                    CL_VIRUS = Blacklisted by callback - file is skipped and marked as infected."]
+#[doc = " @brief File inspection callback.\n\n @deprecated This function is deprecated and will be removed in a future release.\n Use `CL_SCAN_CALLBACK_PRE_SCAN` with `cl_engine_set_scan_callback()` instead.\n\n You can use the `cl_fmap_*` functions to access the file map, file name, file size, file contents,\n and those of each ancestor layers (if any).\n\n Called for each NEW file (inner and outer).\n Provides capability to record embedded file information during a scan.\n\n @param fd                  Current file descriptor which is about to be scanned.\n @param type                Current file type detected via magic - i.e. NOT on the fly - (e.g. \"CL_TYPE_MSEXE\").\n @param ancestors           An array of ancestors filenames of size `recursion_level`. filenames may be NULL.\n @param parent_file_size    Parent file size.\n @param file_name           Current file name, or NULL if the file does not have a name or ClamAV failed to record the name.\n @param file_size           Current file size.\n @param file_buffer         Current file buffer pointer.\n @param recursion_level     Recursion level / depth of the current file.\n @param layer_attributes    See LAYER_ATTRIBUTES_* flags.\n @param context             Opaque application provided data.\n @return                    CL_SUCCESS = File is scanned.\n @return                    CL_BREAK = Whitelisted by callback - file is skipped and marked as clean.\n @return                    CL_VIRUS = Blacklisted by callback - file is skipped and marked as infected."]
 pub type clcb_file_inspection = ::std::option::Option<
     unsafe extern "C" fn(
         fd: ::std::os::raw::c_int,
@@ -113,7 +159,7 @@ pub type clcb_file_inspection = ::std::option::Option<
         context: *mut ::std::os::raw::c_void,
     ) -> cl_error_t,
 >;
-#[doc = " @brief Pre-scan callback.\n\n Called for each NEW file (inner and outer) before the scanning takes place. This is\n roughly the the same as clcb_before_cache, but it is affected by clean file caching.\n This means that it won't be called if a clean cached file (inner or outer) is\n scanned a second time.\n\n @param fd        File descriptor which is about to be scanned.\n @param type      File type detected via magic - i.e. NOT on the fly - (e.g. \"CL_TYPE_MSEXE\").\n @param context   Opaque application provided data.\n @return          CL_CLEAN = File is scanned.\n @return          CL_BREAK = Allowed by callback - file is skipped and marked as clean.\n @return          CL_VIRUS = Blocked by callback - file is skipped and marked as infected."]
+#[doc = " @brief Pre-scan callback.\n\n @deprecated This function is deprecated and will be removed in a future release.\n\n Called for each NEW file (inner and outer) before the scanning takes place. This is\n roughly the same as clcb_before_cache, but it is affected by clean file caching.\n This means that it won't be called if a clean cached file (inner or outer) is\n scanned a second time.\n\n @param fd        File descriptor which is about to be scanned.\n @param type      File type detected via magic - i.e. NOT on the fly - (e.g. \"CL_TYPE_MSEXE\").\n @param context   Opaque application provided data.\n @return          CL_SUCCESS = File is scanned.\n @return          CL_BREAK = Allowed by callback - file is skipped and marked as clean.\n @return          CL_VIRUS = Blocked by callback - file is skipped and marked as infected."]
 pub type clcb_pre_scan = ::std::option::Option<
     unsafe extern "C" fn(
         fd: ::std::os::raw::c_int,
@@ -121,7 +167,7 @@ pub type clcb_pre_scan = ::std::option::Option<
         context: *mut ::std::os::raw::c_void,
     ) -> cl_error_t,
 >;
-#[doc = " @brief Post-scan callback.\n\n Called for each processed file (inner and outer), after the scanning is complete.\n In all-match mode, the virname will be one of the matches, but there is no\n guarantee in which order the matches will occur, thus the final virname may\n be any one of the matches.\n\n @param fd        File descriptor which was scanned.\n @param result    The scan result for the file.\n @param virname   A signature name if there was one or more matches.\n @param context   Opaque application provided data.\n @return          Scan result is not overridden.\n @return          CL_BREAK = Allowed by callback - scan result is set to CL_CLEAN.\n @return          Blocked by callback - scan result is set to CL_VIRUS."]
+#[doc = " @brief Post-scan callback.\n\n @deprecated This function is deprecated and will be removed in a future release.\n Use `CL_SCAN_CALLBACK_PRE_SCAN` with `cl_engine_set_scan_callback()` instead.\n\n Called for each processed file (inner and outer), after the scanning is complete.\n In all-match mode, the virname will be one of the matches, but there is no\n guarantee in which order the matches will occur, thus the final virname may\n be any one of the matches.\n\n @param fd        File descriptor which was scanned.\n @param result    The scan result for the file.\n @param virname   A signature name if there was one or more matches.\n @param context   Opaque application provided data.\n @return          CL_SUCCESS = File is scanned.\n @return          CL_BREAK = Allowed by callback - file is skipped and marked as clean.\n @return          CL_VIRUS = Blocked by callback - file is skipped and marked as infected."]
 pub type clcb_post_scan = ::std::option::Option<
     unsafe extern "C" fn(
         fd: ::std::os::raw::c_int,
@@ -130,7 +176,7 @@ pub type clcb_post_scan = ::std::option::Option<
         context: *mut ::std::os::raw::c_void,
     ) -> cl_error_t,
 >;
-#[doc = " @brief Virus-found callback.\n\n Called for each signature match.\n If all-match is enabled, clcb_virus_found() may be called multiple times per\n scan.\n\n In addition, clcb_virus_found() does not have a return value and thus.\n can not be used to ignore the match.\n\n @param fd        File descriptor which was scanned.\n @param virname   Virus name.\n @param context   Opaque application provided data."]
+#[doc = " @brief Virus-found callback.\n\n @deprecated This function is deprecated and will be removed in a future release.\n Use `CL_SCAN_CALLBACK_ALERT` with `cl_engine_set_scan_callback()` instead.\n\n Called for each signature match.\n If all-match is enabled, clcb_virus_found() may be called multiple times per\n scan.\n\n In addition, clcb_virus_found() does not have a return value and thus.\n can not be used to ignore the match.\n\n @param fd        File descriptor which was scanned.\n @param virname   Virus name.\n @param context   Opaque application provided data."]
 pub type clcb_virus_found = ::std::option::Option<
     unsafe extern "C" fn(
         fd: ::std::os::raw::c_int,
@@ -155,17 +201,17 @@ pub type clcb_progress = ::std::option::Option<
         context: *mut ::std::os::raw::c_void,
     ) -> cl_error_t,
 >;
-#[doc = " @brief LibClamAV hash stats callback.\n\n Callback that provides the hash of a scanned sample if a signature alerted.\n Provides a mechanism to record detection statistics.\n\n @param fd        File descriptor if available, else -1.\n @param size      Sample size\n @param md5       Sample md5 hash\n @param virname   Signature name that the sample matched against\n @param context   Opaque application provided data"]
+#[doc = " @brief LibClamAV hash stats callback.\n\n @deprecated This function is deprecated and will be removed in a future release.\n Use `CL_SCAN_CALLBACK_ALERT` with `cl_engine_set_scan_callback()` instead.\n Then use the `cl_scan_layer_get_fmap()` and `cl_fmap_get_hash()` functions.\n\n Callback that provides the hash of a scanned sample if a signature alerted.\n Provides a mechanism to record detection statistics.\n\n @param fd        File descriptor if available, else -1.\n @param size      Sample size\n @param md5       Sample md5 hash (string)\n @param virname   Signature name that the sample matched against\n @param context   Opaque application provided data"]
 pub type clcb_hash = ::std::option::Option<
     unsafe extern "C" fn(
         fd: ::std::os::raw::c_int,
         size: ::std::os::raw::c_ulonglong,
-        md5: *const ::std::os::raw::c_uchar,
+        md5: *const ::std::os::raw::c_char,
         virname: *const ::std::os::raw::c_char,
         context: *mut ::std::os::raw::c_void,
     ),
 >;
-#[doc = " @brief Archive meta matching callback function.\n\n May be used to block archive/container samples based on archive metadata.\n Function is invoked multiple times per archive. Typically once per contained file.\n\n Note: Used by the --archive-verbose clamscan option. Overriding this will alter\n the output from --archive-verbose.\n\n @param container_type    String name of type (CL_TYPE).\n @param fsize_container   Sample size\n @param filename          Filename associated with the data in archive.\n @param fsize_real        Size of file after decompression (according to the archive).\n @param is_encrypted      Boolean non-zero if the contained file is encrypted.\n @param filepos_container File index in container.\n @param context           Opaque application provided data.\n @return                  CL_VIRUS to block (alert on)\n @return                  CL_CLEAN to continue scanning"]
+#[doc = " @brief Archive meta matching callback function.\n\n May be used to block archive/container samples based on archive metadata.\n Function is invoked multiple times per archive. Typically once per contained file.\n\n Note: Used by the --archive-verbose clamscan option. Overriding this will alter\n the output from --archive-verbose.\n\n @param container_type    String name of type (CL_TYPE).\n @param fsize_container   Sample size\n @param filename          Filename associated with the data in archive.\n @param fsize_real        Size of file after decompression (according to the archive).\n @param is_encrypted      Boolean non-zero if the contained file is encrypted.\n @param filepos_container File index in container.\n @param context           Opaque application provided data.\n @return                  CL_VIRUS to block (alert on)\n @return                  CL_SUCCESS to continue scanning"]
 pub type clcb_meta = ::std::option::Option<
     unsafe extern "C" fn(
         container_type: *const ::std::os::raw::c_char,
@@ -251,75 +297,19 @@ pub struct cl_cvd {
     pub builder: *mut ::std::os::raw::c_char,
     pub stime: ::std::os::raw::c_uint,
 }
-pub type cl_fmap_t = cl_fmap;
-#[doc = " @brief Read callback function type.\n\n A callback function pointer type for reading data from a cl_fmap_t that uses\n reads data from a handle interface.\n\n Read 'count' bytes starting at 'offset' into the buffer 'buf'\n\n Thread safety: It is guaranteed that only one callback is executing for a\n specific handle at any time, but there might be multiple callbacks executing\n for different handle at the same time.\n\n @param handle    The handle passed to cl_fmap_open_handle, its meaning is up\n                  to the callback's implementation\n @param buf       A buffer to read data into, must be at least offset + count\n                  bytes in size.\n @param count     The number of bytes to read.\n @param offset    The the offset into buf to read the data to. If successful,\n                  the number of bytes actually read is returned. Upon reading\n                  end-of-file, zero is returned. Otherwise, a -1 is returned\n                  and the global variable errno is set to indicate the error."]
-pub type clcb_pread = ::std::option::Option<
-    unsafe extern "C" fn(
-        handle: *mut ::std::os::raw::c_void,
-        buf: *mut ::std::os::raw::c_void,
-        count: usize,
-        offset: off_t,
-    ) -> off_t,
->;
-pub type fmap_t = cl_fmap_t;
+extern "C" {
+    #[doc = " @brief Get the Functionality Level (FLEVEL).\n\n @return unsigned int The FLEVEL."]
+    pub fn cl_retflevel() -> ::std::os::raw::c_uint;
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct cl_fmap {
-    pub handle: *mut ::std::os::raw::c_void,
-    pub pread_cb: clcb_pread,
-    pub data: *const ::std::os::raw::c_void,
-    pub mtime: time_t,
-    pub pages: u64,
-    pub pgsz: u64,
-    pub paged: u64,
-    pub aging: u16,
-    pub dont_cache_flag: bool,
-    #[doc = " indicates if we should not cache scan results for this fmap. Used if limits exceeded"]
-    pub handle_is_fd: u16,
-    #[doc = " non-zero if map->handle is an fd."]
-    pub offset: usize,
-    #[doc = " file offset representing start of original fmap, if the fmap created reading from a file starting at offset other than 0"]
-    pub nested_offset: usize,
-    #[doc = " offset from start of original fmap (data) for nested scan. 0 for orig fmap."]
-    pub real_len: usize,
-    #[doc = " len from start of original fmap (data) to end of current (possibly nested) map."]
-    pub len: usize,
-    #[doc = " length of data from nested_offset, accessible via current fmap"]
-    pub unmap: ::std::option::Option<unsafe extern "C" fn(arg1: *mut fmap_t)>,
-    pub need: ::std::option::Option<
-        unsafe extern "C" fn(
-            arg1: *mut fmap_t,
-            at: usize,
-            len: usize,
-            lock: ::std::os::raw::c_int,
-        ) -> *const ::std::os::raw::c_void,
-    >,
-    pub need_offstr: ::std::option::Option<
-        unsafe extern "C" fn(
-            arg1: *mut fmap_t,
-            at: usize,
-            len_hint: usize,
-        ) -> *const ::std::os::raw::c_void,
-    >,
-    pub gets: ::std::option::Option<
-        unsafe extern "C" fn(
-            arg1: *mut fmap_t,
-            dst: *mut ::std::os::raw::c_char,
-            at: *mut usize,
-            max_len: usize,
-        ) -> *const ::std::os::raw::c_void,
-    >,
-    pub unneed_off:
-        ::std::option::Option<unsafe extern "C" fn(arg1: *mut fmap_t, at: usize, len: usize)>,
-    pub have_md5: bool,
-    pub md5: [::std::os::raw::c_uchar; 16usize],
-    pub have_sha1: bool,
-    pub sha1: [::std::os::raw::c_uchar; 20usize],
-    pub have_sha256: bool,
-    pub sha256: [::std::os::raw::c_uchar; 32usize],
-    pub bitmap: *mut u64,
-    pub name: *mut ::std::os::raw::c_char,
+pub struct image_fuzzy_hash {
+    pub hash: [u8; 8usize],
 }
+pub type image_fuzzy_hash_t = image_fuzzy_hash;
+pub type evidence_t = *mut ::std::os::raw::c_void;
+pub type onedump_t = *mut ::std::os::raw::c_void;
+pub type cvd_t = *mut ::std::os::raw::c_void;
 pub const cli_file_CL_TYPE_ANY: cli_file = 0;
 pub const cli_file_CL_TYPE_TEXT_ASCII: cli_file = 500;
 pub const cli_file_CL_TYPE_TEXT_UTF8: cli_file = 501;
@@ -375,34 +365,40 @@ pub const cli_file_CL_TYPE_HWP3: cli_file = 550;
 pub const cli_file_CL_TYPE_OOXML_HWP: cli_file = 551;
 pub const cli_file_CL_TYPE_PS: cli_file = 552;
 pub const cli_file_CL_TYPE_EGG: cli_file = 553;
-pub const cli_file_CL_TYPE_PART_ANY: cli_file = 554;
-pub const cli_file_CL_TYPE_PART_HFSPLUS: cli_file = 555;
-pub const cli_file_CL_TYPE_MBR: cli_file = 556;
-pub const cli_file_CL_TYPE_HTML: cli_file = 557;
-pub const cli_file_CL_TYPE_MAIL: cli_file = 558;
-pub const cli_file_CL_TYPE_SFX: cli_file = 559;
-pub const cli_file_CL_TYPE_ZIPSFX: cli_file = 560;
-pub const cli_file_CL_TYPE_RARSFX: cli_file = 561;
-pub const cli_file_CL_TYPE_7ZSFX: cli_file = 562;
-pub const cli_file_CL_TYPE_CABSFX: cli_file = 563;
-pub const cli_file_CL_TYPE_ARJSFX: cli_file = 564;
-pub const cli_file_CL_TYPE_EGGSFX: cli_file = 565;
-pub const cli_file_CL_TYPE_NULSFT: cli_file = 566;
-pub const cli_file_CL_TYPE_AUTOIT: cli_file = 567;
-pub const cli_file_CL_TYPE_ISHIELD_MSI: cli_file = 568;
-pub const cli_file_CL_TYPE_ISO9660: cli_file = 569;
-pub const cli_file_CL_TYPE_DMG: cli_file = 570;
-pub const cli_file_CL_TYPE_GPT: cli_file = 571;
-pub const cli_file_CL_TYPE_APM: cli_file = 572;
-pub const cli_file_CL_TYPE_XDP: cli_file = 573;
-pub const cli_file_CL_TYPE_XML_WORD: cli_file = 574;
-pub const cli_file_CL_TYPE_XML_XL: cli_file = 575;
-pub const cli_file_CL_TYPE_XML_HWP: cli_file = 576;
-pub const cli_file_CL_TYPE_HWPOLE2: cli_file = 577;
-pub const cli_file_CL_TYPE_MHTML: cli_file = 578;
-pub const cli_file_CL_TYPE_LNK: cli_file = 579;
-pub const cli_file_CL_TYPE_OTHER: cli_file = 580;
-pub const cli_file_CL_TYPE_IGNORED: cli_file = 581;
+pub const cli_file_CL_TYPE_ONENOTE: cli_file = 554;
+pub const cli_file_CL_TYPE_PYTHON_COMPILED: cli_file = 555;
+pub const cli_file_CL_TYPE_LHA_LZH: cli_file = 556;
+pub const cli_file_CL_TYPE_AI_MODEL: cli_file = 557;
+pub const cli_file_CL_TYPE_PART_ANY: cli_file = 558;
+pub const cli_file_CL_TYPE_PART_HFSPLUS: cli_file = 559;
+pub const cli_file_CL_TYPE_MBR: cli_file = 560;
+pub const cli_file_CL_TYPE_HTML: cli_file = 561;
+pub const cli_file_CL_TYPE_MAIL: cli_file = 562;
+pub const cli_file_CL_TYPE_SFX: cli_file = 563;
+pub const cli_file_CL_TYPE_ZIPSFX: cli_file = 564;
+pub const cli_file_CL_TYPE_RARSFX: cli_file = 565;
+pub const cli_file_CL_TYPE_7ZSFX: cli_file = 566;
+pub const cli_file_CL_TYPE_CABSFX: cli_file = 567;
+pub const cli_file_CL_TYPE_ARJSFX: cli_file = 568;
+pub const cli_file_CL_TYPE_EGGSFX: cli_file = 569;
+pub const cli_file_CL_TYPE_NULSFT: cli_file = 570;
+pub const cli_file_CL_TYPE_AUTOIT: cli_file = 571;
+pub const cli_file_CL_TYPE_ISHIELD_MSI: cli_file = 572;
+pub const cli_file_CL_TYPE_ISO9660: cli_file = 573;
+pub const cli_file_CL_TYPE_DMG: cli_file = 574;
+pub const cli_file_CL_TYPE_GPT: cli_file = 575;
+pub const cli_file_CL_TYPE_APM: cli_file = 576;
+pub const cli_file_CL_TYPE_XDP: cli_file = 577;
+pub const cli_file_CL_TYPE_XML_WORD: cli_file = 578;
+pub const cli_file_CL_TYPE_XML_XL: cli_file = 579;
+pub const cli_file_CL_TYPE_XML_HWP: cli_file = 580;
+pub const cli_file_CL_TYPE_HWPOLE2: cli_file = 581;
+pub const cli_file_CL_TYPE_MHTML: cli_file = 582;
+pub const cli_file_CL_TYPE_LNK: cli_file = 583;
+pub const cli_file_CL_TYPE_UDF: cli_file = 584;
+pub const cli_file_CL_TYPE_ALZ: cli_file = 585;
+pub const cli_file_CL_TYPE_OTHER: cli_file = 586;
+pub const cli_file_CL_TYPE_IGNORED: cli_file = 587;
 pub type cli_file = ::std::os::raw::c_uint;
 pub use self::cli_file as cli_file_t;
 #[repr(C)]
@@ -414,6 +410,12 @@ pub struct cli_ftype {
     pub tname: *mut ::std::os::raw::c_char,
     pub next: *mut cli_ftype,
     pub length: u16,
+}
+#[doc = " forward declaration of json-c's JSON value instance structure"]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct json_object {
+    _unused: [u8; 0],
 }
 pub type mpool_t = ::std::os::raw::c_void;
 #[repr(C)]
@@ -430,6 +432,66 @@ pub struct cli_dconf {
     pub bytecode: u32,
     pub stats: u32,
     pub pcre: u32,
+}
+pub type fmap_t = cl_fmap_t;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cl_fmap {
+    pub handle: *mut ::std::os::raw::c_void,
+    pub pread_cb: clcb_pread,
+    pub data: *const ::std::os::raw::c_void,
+    pub mtime: u64,
+    pub pages: u64,
+    pub pgsz: u64,
+    pub paged: u64,
+    pub aging: bool,
+    #[doc = " Indicates if we should age off memory mapped pages"]
+    pub dont_cache_flag: bool,
+    #[doc = " Indicates if we should not cache scan results for this fmap. Used if limits exceeded"]
+    pub handle_is_fd: bool,
+    #[doc = " Non-zero if `map->handle` is an fd. This is needed so that `fmap_fd()` knows if it can\nreturn a file descriptor. If it's some other kind of handle, then `fmap_fd()` has to return -1."]
+    pub offset: usize,
+    #[doc = " File offset representing start of original fmap, if the fmap created reading from a file starting at offset other than 0.\n`offset` & `len` are critical information for anyone using the file descriptor/handle"]
+    pub nested_offset: usize,
+    #[doc = " Offset from start of original fmap (data) for nested scan. 0 for orig fmap."]
+    pub real_len: usize,
+    #[doc = " Length from start of original fmap (data) to end of current (possibly nested) map.\n`real_len == nested_offset + len`.\n`real_len` is needed for nested maps because we only reference the original mapping data.\nWe convert caller's fmap offsets & lengths to real data offsets using `nested_offset` & `real_len`."]
+    pub len: usize,
+    #[doc = " Length of data from nested_offset, accessible via current fmap"]
+    pub unmap: ::std::option::Option<unsafe extern "C" fn(arg1: *mut fmap_t)>,
+    pub need: ::std::option::Option<
+        unsafe extern "C" fn(
+            arg1: *mut fmap_t,
+            at: usize,
+            len: usize,
+            lock: ::std::os::raw::c_int,
+        ) -> *const ::std::os::raw::c_void,
+    >,
+    pub need_offstr: ::std::option::Option<
+        unsafe extern "C" fn(
+            arg1: *mut fmap_t,
+            at: usize,
+            len_hint: usize,
+        ) -> *const ::std::os::raw::c_void,
+    >,
+    pub gets: ::std::option::Option<
+        unsafe extern "C" fn(
+            arg1: *mut fmap_t,
+            dst: *mut ::std::os::raw::c_char,
+            at: *mut usize,
+            max_len: usize,
+        ) -> *const ::std::os::raw::c_void,
+    >,
+    pub unneed_off:
+        ::std::option::Option<unsafe extern "C" fn(arg1: *mut fmap_t, at: usize, len: usize)>,
+    pub windows_file_handle: *mut ::std::os::raw::c_void,
+    pub windows_map_handle: *mut ::std::os::raw::c_void,
+    pub will_need_hash: [bool; 3usize],
+    pub have_hash: [bool; 3usize],
+    pub hash: [[u8; 32usize]; 3usize],
+    pub bitmap: *mut u64,
+    pub name: *mut ::std::os::raw::c_char,
+    pub path: *mut ::std::os::raw::c_char,
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -568,8 +630,8 @@ pub struct cli_crt_t {
     pub n: *mut BIGNUM,
     pub e: *mut BIGNUM,
     pub sig: *mut BIGNUM,
-    pub not_before: time_t,
-    pub not_after: time_t,
+    pub not_before: i64,
+    pub not_after: i64,
     pub hashtype: cli_crt_hashtype,
     pub certSign: ::std::os::raw::c_int,
     pub codeSign: ::std::os::raw::c_int,
@@ -587,6 +649,26 @@ pub struct crtmgr {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct cli_scan_layer {
+    pub type_: cli_file_t,
+    pub size: usize,
+    pub fmap: *mut cl_fmap_t,
+    pub recursion_level: u32,
+    pub recursion_level_buffer: u32,
+    pub recursion_level_buffer_fmap: u32,
+    pub attributes: u32,
+    pub image_fuzzy_hash: image_fuzzy_hash_t,
+    pub calculated_image_fuzzy_hash: bool,
+    pub object_id: usize,
+    pub metadata_json: *mut json_object,
+    pub evidence: evidence_t,
+    pub verdict: cl_verdict_t,
+    pub tmpdir: *mut ::std::os::raw::c_char,
+    pub parent: *mut cli_scan_layer,
+}
+pub type cli_scan_layer_t = cli_scan_layer;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct bitset_tag {
     pub bitset: *mut ::std::os::raw::c_uchar,
     pub length: ::std::os::raw::c_ulong,
@@ -594,47 +676,28 @@ pub struct bitset_tag {
 pub type bitset_t = bitset_tag;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct image_fuzzy_hash {
-    pub hash: [u8; 8usize],
-}
-pub type image_fuzzy_hash_t = image_fuzzy_hash;
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct recursion_level_tag {
-    pub type_: cli_file_t,
-    pub size: usize,
-    pub fmap: *mut cl_fmap_t,
-    pub recursion_level_buffer: u32,
-    pub recursion_level_buffer_fmap: u32,
-    pub attributes: u32,
-    pub image_fuzzy_hash: image_fuzzy_hash_t,
-    pub calculated_image_fuzzy_hash: bool,
-}
-pub type recursion_level_t = recursion_level_tag;
-pub type evidence_t = *mut ::std::os::raw::c_void;
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct cli_ctx_tag {
     pub target_filepath: *mut ::std::os::raw::c_char,
-    pub sub_filepath: *const ::std::os::raw::c_char,
-    pub sub_tmpdir: *mut ::std::os::raw::c_char,
-    pub evidence: evidence_t,
-    pub scanned: *mut ::std::os::raw::c_ulong,
+    pub this_layer_tmpdir: *mut ::std::os::raw::c_char,
+    pub scanned: *mut u64,
     pub root: *const cli_matcher,
     pub engine: *const cl_engine,
     pub scansize: u64,
     pub options: *mut cl_scan_options,
-    pub scannedfiles: ::std::os::raw::c_uint,
+    pub scannedfiles: u32,
     pub corrupted_input: ::std::os::raw::c_uint,
-    pub recursion_stack: *mut recursion_level_t,
+    pub recursion_stack: *mut cli_scan_layer_t,
     pub recursion_stack_size: u32,
     pub recursion_level: u32,
+    pub this_layer_evidence: evidence_t,
     pub fmap: *mut fmap_t,
-    pub handlertype_hash: [::std::os::raw::c_uchar; 16usize],
+    pub object_count: usize,
     pub dconf: *mut cli_dconf,
     pub hook_lsig_matches: *mut bitset_t,
     pub cb_ctx: *mut ::std::os::raw::c_void,
     pub perf: *mut cli_events_t,
+    pub metadata_json: *mut json_object,
+    pub this_layer_metadata_json: *mut json_object,
     pub time_limit: timeval,
     pub limit_exceeded: bool,
     pub abort_scan: bool,
@@ -672,9 +735,9 @@ pub struct icomtr {
 #[derive(Debug, Copy, Clone)]
 pub struct icon_matcher {
     pub group_names: [*mut *mut ::std::os::raw::c_char; 2usize],
-    pub group_counts: [::std::os::raw::c_uint; 2usize],
+    pub group_counts: [u32; 2usize],
     pub icons: [*mut icomtr; 3usize],
-    pub icon_counts: [::std::os::raw::c_uint; 3usize],
+    pub icon_counts: [u32; 3usize],
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -704,8 +767,10 @@ pub struct cl_engine {
     pub ac_mindepth: u32,
     pub ac_maxdepth: u32,
     pub tmpdir: *mut ::std::os::raw::c_char,
+    pub certs_directory: *mut ::std::os::raw::c_char,
     pub keeptmp: u32,
     pub engine_options: u64,
+    pub cache_size: u32,
     pub maxscantime: u32,
     pub maxscansize: u64,
     pub maxfilesize: u64,
@@ -735,8 +800,13 @@ pub struct cl_engine {
     pub num_total_signatures: usize,
     pub mempool: *mut mpool_t,
     pub cmgr: crtmgr,
-    pub cb_file_inspection: clcb_file_inspection,
+    pub cb_scan_pre_hash: clcb_scan,
+    pub cb_scan_pre_scan: clcb_scan,
+    pub cb_scan_post_scan: clcb_scan,
+    pub cb_scan_alert: clcb_scan,
+    pub cb_scan_file_type: clcb_scan,
     pub cb_pre_cache: clcb_pre_cache,
+    pub cb_file_inspection: clcb_file_inspection,
     pub cb_pre_scan: clcb_pre_scan,
     pub cb_post_scan: clcb_post_scan,
     pub cb_virus_found: clcb_virus_found,
@@ -798,6 +868,15 @@ extern "C" {
 }
 extern "C" {
     pub fn cli_dbgmsg_no_inline(str_: *const ::std::os::raw::c_char, ...);
+}
+extern "C" {
+    pub fn cli_checklimits(
+        who: *const ::std::os::raw::c_char,
+        ctx: *mut cli_ctx,
+        need1: u64,
+        need2: u64,
+        need3: u64,
+    ) -> cl_error_t;
 }
 extern "C" {
     #[doc = " @brief   Get the libclamav debug flag (e.g. if debug logging is enabled)\n\n This is required for unit tests to be able to link with clamav.dll and not\n directly manipulate libclamav global variables."]
@@ -1151,12 +1230,29 @@ pub struct cli_cdb {
     pub next: *mut cli_cdb,
 }
 extern "C" {
+    pub fn cli_matchmeta(
+        ctx: *mut cli_ctx,
+        fname: *const ::std::os::raw::c_char,
+        fsizec: usize,
+        fsizer: usize,
+        encrypted: ::std::os::raw::c_int,
+        filepos: ::std::os::raw::c_uint,
+        res1: ::std::os::raw::c_int,
+    ) -> cl_error_t;
+}
+extern "C" {
+    pub fn cli_versig(
+        md5: *const ::std::os::raw::c_char,
+        dsig: *const ::std::os::raw::c_char,
+    ) -> cl_error_t;
+}
+extern "C" {
     pub fn cli_versig2(
-        sha256: *const ::std::os::raw::c_uchar,
+        sha2_256: *const ::std::os::raw::c_uchar,
         dsig_str: *const ::std::os::raw::c_char,
         n_str: *const ::std::os::raw::c_char,
         e_str: *const ::std::os::raw::c_char,
-    ) -> ::std::os::raw::c_int;
+    ) -> cl_error_t;
 }
 extern "C" {
     #[doc = " @brief Connect to a signing server, send the data to be signed, and return the digital signature.\n\n Caller is responsible for freeing the returned dsig.\n\n @param host\n @param user\n @param data\n @param datalen\n @param mode\n @return char*"]
@@ -1168,8 +1264,16 @@ extern "C" {
         mode: ::std::os::raw::c_ushort,
     ) -> *mut ::std::os::raw::c_char;
 }
-pub type css_image_extractor_t = *mut ::std::os::raw::c_void;
-pub type css_image_handle_t = *mut ::std::os::raw::c_void;
+extern "C" {
+    #[doc = " @brief   Convenience wrapper for cli_magic_scan_nested_fmap_type().\n\n Creates an fmap and calls cli_magic_scan_nested_fmap_type() for you, with type CL_TYPE_ANY.\n\n @param buffer        Pointer to the buffer to be scanned.\n @param length        Size in bytes of the buffer being scanned.\n @param ctx           Scanning context structure.\n @param name          (optional) Original name of the file (to set fmap name metadata)\n @param attributes    Layer attributes of the file being scanned (is it normalized, decrypted, etc)\n @return int          CL_SUCCESS, or an error code."]
+    pub fn cli_magic_scan_buff(
+        buffer: *const ::std::os::raw::c_void,
+        length: usize,
+        ctx: *mut cli_ctx,
+        name: *const ::std::os::raw::c_char,
+        attributes: u32,
+    ) -> cl_error_t;
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct re_guts {

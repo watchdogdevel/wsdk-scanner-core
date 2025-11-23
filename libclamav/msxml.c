@@ -1,7 +1,7 @@
 /*
  * Extract component parts of MS XML files (e.g. MS Office 2003 XML Documents)
  *
- * Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ * Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  * Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  * Authors: Kevin Lin
@@ -35,7 +35,6 @@
 #include "msxml.h"
 #include "msxml_parser.h"
 
-#if HAVE_LIBXML2
 #include <libxml/xmlreader.h>
 
 #define MSXML_VERBIOSE 0
@@ -223,11 +222,9 @@ int msxml_read_cb(void *ctx, char *buffer, int buffer_len)
     cbdata->winpos = cbdata->winsize - rbytes;
     return (int)wbytes;
 }
-#endif
 
 cl_error_t cli_scanmsxml(cli_ctx *ctx)
 {
-#if HAVE_LIBXML2
     struct msxml_cbdata cbdata;
     xmlTextReaderPtr reader = NULL;
     cl_error_t ret          = CL_SUCCESS;
@@ -244,9 +241,8 @@ cl_error_t cli_scanmsxml(cli_ctx *ctx)
     if (!reader) {
         cli_dbgmsg("cli_scanmsxml: cannot initialize xmlReader\n");
 
-#if HAVE_JSON
-        ret = cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_XML_READER_IO");
-#endif
+        ret = cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_XML_READER_IO");
+
         return ret; // libxml2 failed!
     }
 
@@ -255,11 +251,4 @@ cl_error_t cli_scanmsxml(cli_ctx *ctx)
     xmlTextReaderClose(reader);
     xmlFreeTextReader(reader);
     return ret;
-#else
-    UNUSEDPARAM(ctx);
-    cli_dbgmsg("in cli_scanmsxml()\n");
-    cli_dbgmsg("cli_scanmsxml: scanning msxml documents requires libxml2!\n");
-
-    return CL_SUCCESS;
-#endif
 }

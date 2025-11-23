@@ -9,8 +9,24 @@ Example
 
 # Path to the database directory.
 # WARNING: It must match clamd.conf's directive!
+# WARNING: It must already exist, be an absolute path, be writeable by
+# freshclam, and be readable by clamd/clamscan.
 # Default: hardcoded (depends on installation options)
 #DatabaseDirectory "C:\Program Files\ClamAV\database"
+
+# Path to the ClamAV CA certificates directory for verifying CVD signature
+# archive digital signatures.
+# WARNING: It must match clamd.conf's directive!
+# WARNING: It must already exist, be an absolute path, be readable by
+# freshclam, clamd, clamscan and sigtool.
+# Default: "certs"
+#CVDCertsDirectory "C:\Program Files\ClamAV\certs"
+
+# Enforce FIPS-like limits on using hash algorithms for cryptographic purposes.
+# Will disable MD5 & SHA1 FP sigs and will require '.sign' files to verify
+# CVD authenticity.
+# Default: no
+#FIPSCryptoHashLimits yes
 
 # Path to the log file (make sure it has proper permissions)
 # Default: disabled

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Author: aCaB, Micah Snyder
@@ -113,9 +113,9 @@ typedef void (*PRIUS)(
     PCWSTR SourceString);
 
 /**
- * @brief A openat equivalent for Win32 with a check to NOFOLLOW soft-links.
+ * @brief An openat equivalent for Win32 with a check to NOFOLLOW soft-links.
  *
- * The caller is resposible for closing the HANDLE.
+ * The caller is responsible for closing the HANDLE.
  *
  * For the desiredAccess, fileAttributes, createOptions, and shareAccess parameters
  * see https://docs.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile
@@ -344,7 +344,7 @@ static int traverse_to(const char *directory, bool want_directory_handle, HANDLE
                 /* Change createfile options for our target file instead of an intermediate directory. */
                 desiredAccess  = FILE_GENERIC_READ | DELETE;
                 fileAttributes = FILE_ATTRIBUTE_NORMAL;
-                createOptions  = FILE_NON_DIRECTORY_FILE;
+                createOptions  = FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT;
                 shareAccess    = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
             }
         }
@@ -408,7 +408,7 @@ done:
  * @brief Rename (move) a file from Source to Destination without following symlinks.
  *
  * This approach mitigates the possibility that one of the directories
- * in the path has been replaces with a malicious symlink.
+ * in the path has been replaced with a malicious symlink.
  *
  * @param source        Source pathname.
  * @param destination   Destination pathname (including file name)
@@ -452,7 +452,7 @@ static int traverse_rename(const char *source, const char *destination)
 #endif
 
 #ifndef _WIN32
-    ret = cli_basename(source, strlen(source), &source_basename);
+    ret = cli_basename(source, strlen(source), &source_basename, false /* posix_support_backslash_pathsep */);
     if (CL_SUCCESS != ret) {
         logg(LOGG_INFO, "traverse_rename: Failed to get basename of source path:%s\n\tError: %d\n", source, (int)ret);
         goto done;
@@ -530,7 +530,7 @@ done:
  * @brief Unlink (delete) a target file without following symlinks.
  *
  * This approach mitigates the possibility that one of the directories
- * in the path has been replaces with a malicious symlink.
+ * in the path has been replaced with a malicious symlink.
  *
  * @param target    A file to be deleted.
  * @return 0        Unlink succeeded.
@@ -564,7 +564,7 @@ static int traverse_unlink(const char *target)
         goto done;
     }
 
-    ret = cli_basename(target, strlen(target), &target_basename);
+    ret = cli_basename(target, strlen(target), &target_basename, false /* posix_support_backslash_pathsep */);
     if (CL_SUCCESS != ret) {
         logg(LOGG_INFO, "traverse_unlink: Failed to get basename of target path: %s\n\tError: %d\n", target, (int)ret);
         goto done;

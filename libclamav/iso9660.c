@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2011-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB <acab@clamav.net>
@@ -60,7 +60,7 @@ static cl_error_t iso_scan_file(const iso9660_t *iso, unsigned int block, unsign
     int fd         = -1;
     cl_error_t ret = CL_SUCCESS;
 
-    if (cli_gentempfd(iso->ctx->sub_tmpdir, &tmpf, &fd) != CL_SUCCESS) {
+    if (cli_gentempfd(iso->ctx->this_layer_tmpdir, &tmpf, &fd) != CL_SUCCESS) {
         return CL_ETMPFILE;
     }
 
@@ -191,7 +191,7 @@ static cl_error_t iso_parse_dir(iso9660_t *iso, unsigned int block, unsigned int
             filesz = cli_readint32(dir + 10);
 
             cli_dbgmsg("iso_parse_dir: %s '%s': off %x - size %x - flags %x - unit size %x - gap size %x - volume %u\n", (dir[25] & 2) ? "Directory" : "File", iso->buf, fileoff, filesz, dir[25], dir[26], dir[27], cli_readint32(&dir[28]) & 0xffff);
-            ret = cli_matchmeta(ctx, iso->buf, filesz, filesz, 0, 0, 0, NULL);
+            ret = cli_matchmeta(ctx, iso->buf, filesz, filesz, 0, 0, 0);
             if (ret != CL_SUCCESS) {
                 break;
             }

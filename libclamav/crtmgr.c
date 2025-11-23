@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2011-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB
@@ -229,7 +229,7 @@ bool crtmgr_add(crtmgr *m, cli_crt *x509)
         }
     }
 
-    i = cli_malloc(sizeof(*i));
+    i = malloc(sizeof(*i));
     if (i == NULL) {
         goto done;
     }
@@ -398,7 +398,7 @@ static cl_error_t crtmgr_get_recov_data(BIGNUM *sig, cli_crt *x509,
     int pad_size;
     int keylen;
     uint8_t *d = NULL;
-    BIGNUM *x = NULL;
+    BIGNUM *x  = NULL;
     cl_error_t ret;
 
     *buffer      = NULL;
@@ -415,7 +415,7 @@ static cl_error_t crtmgr_get_recov_data(BIGNUM *sig, cli_crt *x509,
     if (!x)
         goto done;
 
-    MALLOC(d, keylen);
+    CLI_MALLOC_OR_GOTO_DONE(d, keylen);
 
     if (!BN_mod_exp(x, sig, x509->e, x509->n, bnctx)) {
         cli_warnmsg("crtmgr_rsa_verify: verification failed: BN_mod_exp failed.\n");
@@ -522,21 +522,21 @@ static int crtmgr_rsa_verify(cli_crt *x509, BIGNUM *sig, cli_crt_hashtype hashty
             if (hashtype == CLI_SHA256RSA) {
                 // Check for OID type indicating a length of 9, OID_sha256, and the NULL type/value
                 if (0 != memcmp(&d[j], "\x06\x09" OID_sha256 "\x05\x00", 13)) {
-                    cli_dbgmsg("crtmgr_rsa_verify: invalid AlgorithmIdentifier block for SHA256 hash\n");
+                    cli_dbgmsg("crtmgr_rsa_verify: invalid AlgorithmIdentifier block for SHA2-256 hash\n");
                     break;
                 }
 
             } else if (hashtype == CLI_SHA384RSA) {
                 // Check for OID type indicating a length of 9, OID_sha384, and the NULL type/value
                 if (0 != memcmp(&d[j], "\x06\x09" OID_sha384 "\x05\x00", 13)) {
-                    cli_dbgmsg("crtmgr_rsa_verify: invalid AlgorithmIdentifier block for SHA384 hash\n");
+                    cli_dbgmsg("crtmgr_rsa_verify: invalid AlgorithmIdentifier block for SHA2-384 hash\n");
                     break;
                 }
 
             } else if (hashtype == CLI_SHA512RSA) {
                 // Check for OID type indicating a length of 9, OID_sha512, and the NULL type/value
                 if (0 != memcmp(&d[j], "\x06\x09" OID_sha512 "\x05\x00", 13)) {
-                    cli_dbgmsg("crtmgr_rsa_verify: invalid AlgorithmIdentifier block for SHA512 hash\n");
+                    cli_dbgmsg("crtmgr_rsa_verify: invalid AlgorithmIdentifier block for SHA2-512 hash\n");
                     break;
                 }
 
@@ -581,7 +581,7 @@ static int crtmgr_rsa_verify(cli_crt *x509, BIGNUM *sig, cli_crt_hashtype hashty
 }
 
 /* For a given cli_crt, returns a pointer to the signer x509 certificate if
- * one is found in the crtmgr and it's signature can be validated (NULL is
+ * one is found in the crtmgr and its signature can be validated (NULL is
  * returned otherwise.) */
 cli_crt *crtmgr_verify_crt(crtmgr *m, cli_crt *x509)
 {

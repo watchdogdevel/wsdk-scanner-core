@@ -1,7 +1,7 @@
 /*
  *  Unit tests for bytecode functions.
  *
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -78,13 +78,11 @@ static void runtest(const char *file, uint64_t expected, int fail, int nojit,
     rc = cl_engine_compile(engine);
     ck_assert_msg(!rc, "cannot compile engine");
 
-    cctx.evidence = evidence_new();
-
     cctx.dconf = cctx.engine->dconf;
 
     cctx.recursion_stack_size = cctx.engine->max_recursion_level;
-    cctx.recursion_stack      = cli_calloc(sizeof(recursion_level_t), cctx.recursion_stack_size);
-    ck_assert_msg(!!cctx.recursion_stack, "cli_calloc() for recursion_stack failed");
+    cctx.recursion_stack      = calloc(sizeof(cli_scan_layer_t), cctx.recursion_stack_size);
+    ck_assert_msg(!!cctx.recursion_stack, "calloc() for recursion_stack failed");
 
     // ctx was memset, so recursion_level starts at 0.
     cctx.recursion_stack[cctx.recursion_level].fmap = NULL;
@@ -132,7 +130,7 @@ static void runtest(const char *file, uint64_t expected, int fail, int nojit,
         if (fdin < 0 && errno == ENOENT)
             fdin = open_testfile(infile, O_RDONLY | O_BINARY);
         ck_assert_msg(fdin >= 0, "failed to open infile");
-        map = fmap(fdin, 0, 0, filestr);
+        map = fmap_new(fdin, 0, 0, filestr, NULL);
         ck_assert_msg(!!map, "unable to fmap infile");
         if (pedata)
             ctx->hooks.pedata = pedata;
@@ -157,12 +155,14 @@ static void runtest(const char *file, uint64_t expected, int fail, int nojit,
     }
     cli_bytecode_context_destroy(ctx);
     if (map)
-        funmap(map);
+        fmap_free(map);
     cli_bytecode_destroy(&bc);
     cli_bytecode_done(&bcs);
+    if (cctx.recursion_stack[cctx.recursion_level].evidence) {
+        evidence_free(cctx.recursion_stack[cctx.recursion_level].evidence);
+    }
     free(cctx.recursion_stack);
     cl_engine_free(engine);
-    evidence_free(cctx.evidence);
     if (fdin >= 0)
         close(fdin);
 }
@@ -501,17 +501,13 @@ END_TEST
 
 static void runload(const char *dbname, struct cl_engine *engine, unsigned signoexp)
 {
-    const char *srcdir = getenv("srcdir");
     char *str;
     unsigned signo = 0;
     int rc;
-    if (!srcdir) {
-        /* when run from automake srcdir is set, but if run manually then not */
-        srcdir = SRCDIR;
-    }
-    str = cli_malloc(strlen(srcdir) + 1 + strlen(dbname) + 1);
-    ck_assert_msg(!!str, "cli_malloc");
-    sprintf(str, "%s" PATHSEP "%s", srcdir, dbname);
+
+    str = malloc(strlen(SRCDIR) + 1 + strlen(dbname) + 1);
+    ck_assert_msg(!!str, "malloc");
+    sprintf(str, "%s" PATHSEP "%s", SRCDIR, dbname);
 
     rc = cl_load(str, engine, &signo, CL_DB_STDOPT);
     ck_assert_msg(rc == CL_SUCCESS, "failed to load %s: %s\n",

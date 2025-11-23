@@ -62,9 +62,19 @@ Write the daemon's pid to the specified file.
 Default: disabled
 .TP
 \fBDatabaseDirectory STRING\fR
-Path to a directory containing database files.
+Path to a directory containing database files.  This directory must already exist, be an absolute path, be writeable by freshclam and readable by clamd/clamscan.
 .br
 Default: @DATADIR@
+.TP
+\fBCVDCertsDirectory STRING\fR
+Path to a directory containing ClamAV CA certificate files used to verify signed database archives (e.g. CVD files).  This directory must already exist, be an absolute path, be readable by freshclam, clamd, clamscan, and sigtool.
+.br
+Default: @CERTSDIR@
+.TP
+\fBFIPSCryptoHashLimits BOOL\fR
+Enforce FIPS\-like limits on using hash algorithms for cryptographic purposes. Will disable MD5 & SHA1 FP sigs and will require '.sign' files to verify CVD authenticity.
+.br
+Default: no
 .TP
 \fBForeground BOOL\fR
 Don't fork into background.

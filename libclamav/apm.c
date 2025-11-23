@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2014-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2014-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Kevin Lin <kevlin2@cisco.com>
  *
@@ -37,7 +37,7 @@
 #include "scanners.h"
 #include "dconf.h"
 
-//#define DEBUG_APM_PARSE
+// #define DEBUG_APM_PARSE
 
 #ifdef DEBUG_APM_PARSE
 #define apm_parsemsg(...) cli_dbgmsg(__VA_ARGS__)
@@ -191,7 +191,7 @@ cl_error_t cli_scanapm(cli_ctx *ctx)
             goto done;
         }
 
-        /* check if a out-of-order partition map */
+        /* check if an out-of-order partition map */
         if (!strncmp((char *)apentry.type, "Apple_Partition_Map", 32) ||
             !strncmp((char *)apentry.type, "Apple_partition_map", 32) ||
             !strncmp((char *)apentry.type, "Apple_patition_map", 32)) {

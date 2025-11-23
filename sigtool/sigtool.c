@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *  Copyright (C) 2002-2007 Tomasz Kojm <tkojm@clamav.net>
  *
@@ -69,6 +69,9 @@
 #include "vba.h"
 
 #define MAX_DEL_LOOKAHEAD 5000
+
+// global variable for the absolute path of the --cvdcertsdir option
+char *g_cvdcertsdir = NULL;
 
 // struct s_info info;
 short recursion = 0, bell = 0;
@@ -159,7 +162,7 @@ static int hexdump(void)
     return 0;
 }
 
-static int hashpe(const char *filename, unsigned int class, int type)
+static int hashpe(const char *filename, unsigned int class, cli_hash_type_t type)
 {
     int status = -1;
     STATBUF sb;
@@ -181,7 +184,7 @@ static int hashpe(const char *filename, unsigned int class, int type)
     lseek(fd, 0, SEEK_SET);
     FSTAT(fd, &sb);
 
-    new_map = fmap(fd, 0, sb.st_size, filename);
+    new_map = fmap_new(fd, 0, sb.st_size, filename, filename);
     if (NULL == new_map) {
         mprintf(LOGG_ERROR, "hashpe: Can't create fmap for open file\n");
         goto done;
@@ -212,14 +215,12 @@ static int hashpe(const char *filename, unsigned int class, int type)
     /* prepare context */
     ctx.engine = engine;
 
-    ctx.evidence = evidence_new();
-
     ctx.options        = &options;
     ctx.options->parse = ~0;
     ctx.dconf          = (struct cli_dconf *)engine->dconf;
 
     ctx.recursion_stack_size = ctx.engine->max_recursion_level;
-    ctx.recursion_stack      = cli_calloc(sizeof(recursion_level_t), ctx.recursion_stack_size);
+    ctx.recursion_stack      = calloc(sizeof(cli_scan_layer_t), ctx.recursion_stack_size);
     if (!ctx.recursion_stack) {
         goto done;
     }
@@ -275,13 +276,13 @@ static int hashpe(const char *filename, unsigned int class, int type)
 done:
     /* Cleanup */
     if (NULL != new_map) {
-        funmap(new_map);
+        fmap_free(new_map);
     }
     if (NULL != ctx.recursion_stack) {
+        if (ctx.recursion_stack[ctx.recursion_level].evidence) {
+            evidence_free(ctx.recursion_stack[ctx.recursion_level].evidence);
+        }
         free(ctx.recursion_stack);
-    }
-    if (NULL != ctx.evidence) {
-        evidence_free(ctx.evidence);
     }
     if (NULL != engine) {
         cl_engine_free(engine);
@@ -292,7 +293,7 @@ done:
     return status;
 }
 
-static int hashsig(const struct optstruct *opts, unsigned int class, int type)
+static int hashsig(const struct optstruct *opts, unsigned int class, cli_hash_type_t type)
 {
     char *hash;
     unsigned int i;
@@ -306,7 +307,7 @@ static int hashsig(const struct optstruct *opts, unsigned int class, int type)
                 return -1;
             } else {
                 if ((sb.st_mode & S_IFMT) == S_IFREG) {
-                    if ((class == 0) && (hash = cli_hashfile(opts->filename[i], type))) {
+                    if ((class == 0) && (hash = cli_hashfile(opts->filename[i], NULL, type))) {
                         mprintf(LOGG_INFO, "%s:%u:%s\n", hash, (unsigned int)sb.st_size, basename(opts->filename[i]));
                         free(hash);
                     } else if ((class > 0) && (hashpe(opts->filename[i], class, type) == 0)) {
@@ -434,7 +435,7 @@ done:
     return status;
 }
 
-static cli_ctx *convenience_ctx(int fd)
+static cli_ctx *convenience_ctx(int fd, const char *filepath)
 {
     cl_error_t status        = CL_EMEM;
     cli_ctx *ctx             = NULL;
@@ -466,14 +467,14 @@ static cli_ctx *convenience_ctx(int fd)
     }
 
     /* fake input fmap */
-    new_map = fmap(fd, 0, 0, NULL);
+    new_map = fmap_new(fd, 0, 0, NULL, filepath);
     if (NULL == new_map) {
         printf("convenience_ctx: fmap failed\n");
         goto done;
     }
 
     /* prepare context */
-    ctx = cli_calloc(1, sizeof(cli_ctx));
+    ctx = calloc(1, sizeof(cli_ctx));
     if (!ctx) {
         printf("convenience_ctx: ctx allocation failed\n");
         goto done;
@@ -481,12 +482,10 @@ static cli_ctx *convenience_ctx(int fd)
 
     ctx->engine = (const struct cl_engine *)engine;
 
-    ctx->evidence = evidence_new();
-
     ctx->dconf = (struct cli_dconf *)engine->dconf;
 
     ctx->recursion_stack_size = ctx->engine->max_recursion_level;
-    ctx->recursion_stack      = cli_calloc(sizeof(recursion_level_t), ctx->recursion_stack_size);
+    ctx->recursion_stack      = calloc(sizeof(cli_scan_layer_t), ctx->recursion_stack_size);
     if (!ctx->recursion_stack) {
         status = CL_EMEM;
         goto done;
@@ -499,7 +498,7 @@ static cli_ctx *convenience_ctx(int fd)
 
     ctx->fmap = ctx->recursion_stack[ctx->recursion_level].fmap;
 
-    ctx->options = cli_calloc(1, sizeof(struct cl_scan_options));
+    ctx->options = calloc(1, sizeof(struct cl_scan_options));
     if (!ctx->options) {
         printf("convenience_ctx: scan options allocation failed\n");
         goto done;
@@ -512,13 +511,16 @@ static cli_ctx *convenience_ctx(int fd)
 done:
     if (CL_SUCCESS != status) {
         if (NULL != new_map) {
-            funmap(new_map);
+            fmap_free(new_map);
         }
         if (NULL != ctx) {
             if (NULL != ctx->options) {
                 free(ctx->options);
             }
             if (NULL != ctx->recursion_stack) {
+                if (ctx->recursion_stack[ctx->recursion_level].evidence) {
+                    evidence_free(ctx->recursion_stack[ctx->recursion_level].evidence);
+                }
                 free(ctx->recursion_stack);
             }
             free(ctx);
@@ -539,14 +541,20 @@ static void destroy_ctx(cli_ctx *ctx)
             /* Clean up any fmaps */
             while (ctx->recursion_level > 0) {
                 if (NULL != ctx->recursion_stack[ctx->recursion_level].fmap) {
-                    funmap(ctx->recursion_stack[ctx->recursion_level].fmap);
+                    fmap_free(ctx->recursion_stack[ctx->recursion_level].fmap);
                     ctx->recursion_stack[ctx->recursion_level].fmap = NULL;
                 }
                 ctx->recursion_level -= 1;
             }
+
             if (NULL != ctx->recursion_stack[0].fmap) {
-                funmap(ctx->recursion_stack[0].fmap);
+                fmap_free(ctx->recursion_stack[0].fmap);
                 ctx->recursion_stack[0].fmap = NULL;
+            }
+
+            if (NULL != ctx->recursion_stack[0].evidence) {
+                evidence_free(ctx->recursion_stack[0].evidence);
+                ctx->recursion_stack[0].evidence = NULL;
             }
 
             free(ctx->recursion_stack);
@@ -563,10 +571,6 @@ static void destroy_ctx(cli_ctx *ctx)
             ctx->options = NULL;
         }
 
-        if (NULL != ctx->evidence) {
-            evidence_free(ctx->evidence);
-        }
-
         free(ctx);
     }
 }
@@ -581,11 +585,11 @@ static int htmlnorm(const struct optstruct *opts)
         return -1;
     }
 
-    if (NULL != (ctx = convenience_ctx(fd))) {
+    if (NULL != (ctx = convenience_ctx(fd, optget(opts, "html-normalise")->strarg))) {
         html_normalise_map(ctx, ctx->fmap, ".", NULL, NULL);
-        funmap(ctx->fmap);
-    } else
+    } else {
         mprintf(LOGG_ERROR, "fmap failed\n");
+    }
 
     close(fd);
 
@@ -617,7 +621,7 @@ static int asciinorm(const struct optstruct *opts)
         return -1;
     }
 
-    if (!(map = fmap(fd, 0, 0, fname))) {
+    if (!(map = fmap_new(fd, 0, 0, fname, fname))) {
         mprintf(LOGG_ERROR, "fmap: Could not map fd %d\n", fd);
         close(fd);
         free(norm_buff);
@@ -628,7 +632,7 @@ static int asciinorm(const struct optstruct *opts)
         mprintf(LOGG_ERROR, "asciinorm: File size of %zu too large\n", map->len);
         close(fd);
         free(norm_buff);
-        funmap(map);
+        fmap_free(map);
         return -1;
     }
 
@@ -637,7 +641,7 @@ static int asciinorm(const struct optstruct *opts)
         mprintf(LOGG_ERROR, "asciinorm: Can't open file ./normalised_text\n");
         close(fd);
         free(norm_buff);
-        funmap(map);
+        fmap_free(map);
         return -1;
     }
 
@@ -654,7 +658,7 @@ static int asciinorm(const struct optstruct *opts)
             close(fd);
             close(ofd);
             free(norm_buff);
-            funmap(map);
+            fmap_free(map);
             return -1;
         }
         text_normalize_reset(&state);
@@ -663,7 +667,7 @@ static int asciinorm(const struct optstruct *opts)
     close(fd);
     close(ofd);
     free(norm_buff);
-    funmap(map);
+    fmap_free(map);
     return 0;
 }
 
@@ -717,7 +721,7 @@ static int utf16decode(const struct optstruct *opts)
     return 0;
 }
 
-static char *sha256file(const char *file, unsigned int *size)
+static char *sha2_256_file(const char *file, unsigned int *size)
 {
     FILE *fh;
     unsigned int i, bytes;
@@ -725,12 +729,12 @@ static char *sha256file(const char *file, unsigned int *size)
     char *sha;
     void *ctx;
 
-    ctx = cl_hash_init("sha256");
+    ctx = cl_hash_init("sha2-256");
     if (!(ctx))
         return NULL;
 
     if (!(fh = fopen(file, "rb"))) {
-        mprintf(LOGG_ERROR, "sha256file: Can't open file %s\n", file);
+        mprintf(LOGG_ERROR, "sha2_256_file: Can't open file %s\n", file);
         cl_hash_destroy(ctx);
         return NULL;
     }
@@ -783,8 +787,8 @@ static int writeinfo(const char *dbname, const char *builder, const char *header
 
     if (dblist2cnt) {
         for (i = 0; i < dblist2cnt; i++) {
-            if (!(pt = sha256file(dblist2[i], &bytes))) {
-                mprintf(LOGG_ERROR, "writeinfo: Can't generate SHA256 for %s\n", file);
+            if (!(pt = sha2_256_file(dblist2[i], &bytes))) {
+                mprintf(LOGG_ERROR, "writeinfo: Can't generate SHA2-256 for %s\n", file);
                 fclose(fh);
                 return -1;
             }
@@ -801,8 +805,8 @@ static int writeinfo(const char *dbname, const char *builder, const char *header
         for (i = 0; dblist[i].ext; i++) {
             snprintf(dbfile, sizeof(dbfile), "%s.%s", dbname, dblist[i].ext);
             if (strcmp(dblist[i].ext, "info") && !access(dbfile, R_OK)) {
-                if (!(pt = sha256file(dbfile, &bytes))) {
-                    mprintf(LOGG_ERROR, "writeinfo: Can't generate SHA256 for %s\n", file);
+                if (!(pt = sha2_256_file(dbfile, &bytes))) {
+                    mprintf(LOGG_ERROR, "writeinfo: Can't generate SHA2-256 for %s\n", file);
                     fclose(fh);
                     return -1;
                 }
@@ -818,7 +822,7 @@ static int writeinfo(const char *dbname, const char *builder, const char *header
     }
     if (!optget(opts, "unsigned")->enabled) {
         rewind(fh);
-        ctx = cl_hash_init("sha256");
+        ctx = cl_hash_init("sha2-256");
         if (!(ctx)) {
             fclose(fh);
             return -1;
@@ -855,6 +859,282 @@ void removeTempDir(const struct optstruct *opts, char *dir)
     }
 }
 
+/**
+ * @brief Determine the name of the sign file based on the target file name.
+ *
+ * If the target file name ends with '.cvd', '.cud', or '.cld' then the sign file name will be
+ * 'name-version.cvd.sign', 'name-version.cud.sign', or 'name-version.cld.sign' respectively.
+ *
+ * If the target file name does not end with '.cvd', '.cud', or '.cld' then the sign file name will be
+ * 'target.sign'.
+ *
+ * The sign file name will be placed in the same directory as the target file.
+ *
+ * If the target file is a CVD file, the version number will be extracted from the CVD file.
+ *
+ * The caller is responsible for freeing the memory allocated for the sign file name.
+ *
+ * @param target  The target file name.
+ * @return char*
+ */
+static char *get_sign_file_name(char *target)
+{
+    char *sign_file_name     = NULL;
+    char *dir                = NULL;
+    FFIError *cvd_open_error = NULL;
+    uint32_t cvd_version     = 0;
+    char *cvd_name           = NULL;
+    cvd_t *cvd               = NULL;
+    char *target_dup         = NULL;
+
+    cvd_type cvd_type         = CVD_TYPE_UNKNOWN;
+    const char *cvd_extension = NULL;
+
+    // If the target filename ends with '.cvd',
+    // the sign file name will be 'name-version.cvd.sign'
+    if (cli_strbcasestr(target, ".cvd")) {
+        cvd_type      = CVD_TYPE_CVD;
+        cvd_extension = "cvd";
+    } else if (cli_strbcasestr(target, ".cld")) {
+        cvd_type      = CVD_TYPE_CLD;
+        cvd_extension = "cld";
+    } else if (cli_strbcasestr(target, ".cud")) {
+        cvd_type      = CVD_TYPE_CUD;
+        cvd_extension = "cud";
+    }
+
+    if (cvd_type != CVD_TYPE_UNKNOWN) {
+        // Signing a signature archive.  We need to open the CVD file to get the version to use in the .sign file name.
+        cvd = cvd_open(target, &cvd_open_error);
+        if (NULL == cvd) {
+            mprintf(LOGG_ERROR, "get_sign_file_name: Failed to open CVD file '%s': %s\n", target, ffierror_fmt(cvd_open_error));
+            goto done;
+        }
+
+        cvd_version = cvd_get_version(cvd);
+        cvd_name    = cvd_get_name(cvd);
+
+        // get the directory from the target filename
+        target_dup = strdup(target);
+        if (NULL == target_dup) {
+            mprintf(LOGG_ERROR, "get_sign_file_name: Failed to duplicate target filepath.\n");
+            goto done;
+        }
+        dir = dirname(target_dup);
+        if (NULL == dir) {
+            mprintf(LOGG_ERROR, "get_sign_file_name: Failed to get directory from target filename.\n");
+            goto done;
+        }
+
+        sign_file_name = calloc(1, strlen(dir) + 1 + strlen(cvd_name) + 1 + (3 * sizeof(uint32_t) + 2) + 1 + strlen(cvd_extension) + strlen(".sign") + 1);
+        if (NULL == sign_file_name) {
+            mprintf(LOGG_ERROR, "get_sign_file_name: Memory allocation error.\n");
+            goto done;
+        }
+
+        sprintf(sign_file_name, "%s/%s-%u.%s.sign", dir, cvd_name, cvd_version, cvd_extension);
+    } else {
+        // sign file name will just be the target filename with an added '.sign' extension
+        sign_file_name = malloc(strlen(target) + strlen(".sign") + 1);
+        if (NULL == sign_file_name) {
+            mprintf(LOGG_ERROR, "get_sign_file_name: Memory allocation error.\n");
+            goto done;
+        }
+        strcpy(sign_file_name, target);
+        strcat(sign_file_name, ".sign");
+    }
+
+done:
+
+    if (NULL != cvd_name) {
+        ffi_cstring_free(cvd_name);
+    }
+    if (NULL != cvd) {
+        cvd_free(cvd);
+    }
+    if (NULL != target_dup) {
+        free(target_dup);
+    }
+    if (NULL != cvd_open_error) {
+        ffierror_free(cvd_open_error);
+    }
+
+    return sign_file_name;
+}
+
+static int sign(const struct optstruct *opts)
+{
+    int ret = -1;
+    const struct optstruct *opt;
+
+    char *target         = NULL;
+    char *sign_file_name = NULL;
+
+    char *signing_key = NULL;
+
+    char **certs       = NULL;
+    size_t certs_count = 0;
+
+    bool sign_result          = false;
+    FFIError *sign_file_error = NULL;
+
+    bool append = false;
+
+    target = optget(opts, "sign")->strarg;
+    if (NULL == target) {
+        mprintf(LOGG_ERROR, "sign: No target file specified.\n");
+        mprintf(LOGG_ERROR, "To sign a file with sigtool, you must specify a target file and use the --key and --cert options.\n");
+        mprintf(LOGG_ERROR, "For example:  sigtool --sign myfile.cvd --key /path/to/private.key --cert /path/to/public.crt --cert /path/to/intermediate.crt --cert /path/to/root-ca.crt\n");
+        goto done;
+    }
+
+    sign_file_name = get_sign_file_name(target);
+    if (NULL == sign_file_name) {
+        mprintf(LOGG_ERROR, "sign: Failed to determine sign file name from target: %s\n", target);
+        goto done;
+    }
+
+    signing_key = optget(opts, "key")->strarg;
+    if (NULL == target) {
+        mprintf(LOGG_ERROR, "sign: No private key specified.\n");
+        mprintf(LOGG_ERROR, "To sign a file with sigtool, you must specify a target file and use the --key and --cert options.\n");
+        mprintf(LOGG_ERROR, "For example:  sigtool --sign myfile.cvd --key /path/to/private.key --cert /path/to/public.crt --cert /path/to/intermediate.crt --cert /path/to/root-ca.crt\n");
+        goto done;
+    }
+
+    opt = optget(opts, "cert");
+    if (NULL == opt) {
+        mprintf(LOGG_ERROR, "sign: No signing or intermediate certificates specified.\n");
+        mprintf(LOGG_ERROR, "To sign a file with sigtool, you must specify a target file and use the --key and --cert options.\n");
+        mprintf(LOGG_ERROR, "For example:  sigtool --sign myfile.cvd --key /path/to/private.key --cert /path/to/public.crt --cert /path/to/intermediate.crt --cert /path/to/root-ca.crt\n");
+        goto done;
+    }
+
+    while (opt) {
+        if (!opt->strarg) {
+            mprintf(LOGG_ERROR, "sign: The --cert option requires a path value to a signing or intermediate certificate.\n");
+            mprintf(LOGG_ERROR, "To sign a file with sigtool, you must specify a target file and use the --key and --cert options.\n");
+            mprintf(LOGG_ERROR, "For example:  sigtool --sign myfile.cvd --key /path/to/private.key --cert /path/to/public.crt --cert /path/to/intermediate.crt --cert /path/to/root-ca.crt\n");
+            goto done;
+        }
+
+        certs_count += 1;
+
+        certs = realloc(certs, certs_count * sizeof(char *));
+        if (NULL == certs) {
+            mprintf(LOGG_ERROR, "sign: Memory allocation error.\n");
+            goto done;
+        }
+
+        certs[certs_count - 1] = opt->strarg;
+
+        opt = opt->nextarg;
+    }
+
+    if (optget(opts, "append")->enabled) {
+        append = true;
+    }
+
+    sign_result = codesign_sign_file(
+        target,
+        sign_file_name,
+        signing_key,
+        (const char **)certs,
+        certs_count,
+        append,
+        &sign_file_error);
+
+    if (!sign_result) {
+        mprintf(LOGG_ERROR, "sign: Failed to sign file '%s': %s\n", target, ffierror_fmt(sign_file_error));
+        goto done;
+    }
+
+    mprintf(LOGG_INFO, "sign: Successfully signed file '%s', and placed the signature in '%s'\n", target, sign_file_name);
+    ret = 0;
+
+done:
+
+    if (NULL != sign_file_name) {
+        free(sign_file_name);
+    }
+    if (NULL != certs) {
+        free(certs);
+    }
+    if (NULL != sign_file_error) {
+        ffierror_free(sign_file_error);
+    }
+
+    return ret;
+}
+
+static int verify(const struct optstruct *opts)
+{
+    int ret              = -1;
+    char *target         = NULL;
+    char *sign_file_name = NULL;
+
+    char *signer_name           = NULL;
+    bool verify_result          = false;
+    FFIError *verify_file_error = NULL;
+
+    void *verifier               = NULL;
+    FFIError *new_verifier_error = NULL;
+
+    target = optget(opts, "verify")->strarg;
+    if (NULL == target) {
+        mprintf(LOGG_ERROR, "verify: No target file specified.\n");
+        mprintf(LOGG_ERROR, "To verify a file signed with sigtool, you must specify a target file. "
+                            "You may also override the default certificates directory using --cvdcertsdir. "
+                            "For example:  sigtool --verify myfile.cvd --cvdcertsdir /path/to/certs/\n");
+        goto done;
+    }
+
+    sign_file_name = get_sign_file_name(target);
+    if (NULL == sign_file_name) {
+        mprintf(LOGG_ERROR, "verify: Failed to determine sign file name.\n");
+        goto done;
+    }
+
+    if (!codesign_verifier_new(g_cvdcertsdir, &verifier, &new_verifier_error)) {
+        mprintf(LOGG_ERROR, "verify: Failed to create verifier: %s\n", ffierror_fmt(new_verifier_error));
+        goto done;
+    }
+
+    verify_result = codesign_verify_file(
+        target,
+        sign_file_name,
+        verifier,
+        &signer_name,
+        &verify_file_error);
+    if (!verify_result) {
+        mprintf(LOGG_ERROR, "verify: Failed to verify file '%s': %s\n", target, ffierror_fmt(verify_file_error));
+        goto done;
+    }
+
+    mprintf(LOGG_INFO, "verify: Successfully verified file '%s' with signature '%s', signed by '%s'\n", target, sign_file_name, signer_name);
+    ret = 0;
+
+done:
+
+    if (NULL != signer_name) {
+        ffi_cstring_free(signer_name);
+    }
+    if (NULL != sign_file_name) {
+        free(sign_file_name);
+    }
+    if (NULL != verify_file_error) {
+        ffierror_free(verify_file_error);
+    }
+    if (NULL != verifier) {
+        codesign_verifier_free(verifier);
+    }
+    if (NULL != new_verifier_error) {
+        ffierror_free(new_verifier_error);
+    }
+
+    return ret;
+}
+
 static int build(const struct optstruct *opts)
 {
     int ret, bc = 0, hy = 0;
@@ -875,6 +1155,7 @@ static int build(const struct optstruct *opts)
     unsigned int dblist2cnt = 0;
     DIR *dd;
     struct dirent *dent;
+    unsigned int dboptions = 0;
 
 #define FREE_LS(x)                   \
     for (i = 0; i < dblist2cnt; i++) \
@@ -906,7 +1187,21 @@ static int build(const struct optstruct *opts)
         return 50;
     }
 
-    if ((ret = cl_load(".", engine, &sigs, CL_DB_STDOPT | CL_DB_PUA | CL_DB_SIGNED))) {
+    if (NULL != g_cvdcertsdir) {
+        if ((ret = cl_engine_set_str(engine, CL_ENGINE_CVDCERTSDIR, g_cvdcertsdir))) {
+            logg(LOGG_ERROR, "cli_engine_set_str(CL_ENGINE_CVDCERTSDIR) failed: %s\n", cl_strerror(ret));
+            cl_engine_free(engine);
+            return -1;
+        }
+    }
+
+    dboptions = CL_DB_STDOPT | CL_DB_PUA | CL_DB_SIGNED;
+
+    if (optget(opts, "fips-limits")->enabled) {
+        dboptions |= CL_DB_FIPS_LIMITS;
+    }
+
+    if ((ret = cl_load(".", engine, &sigs, dboptions))) {
         mprintf(LOGG_ERROR, "build: Can't load database: %s\n", cl_strerror(ret));
         cl_engine_free(engine);
         return -1;
@@ -1148,13 +1443,27 @@ static int build(const struct optstruct *opts)
         return -1;
     }
 
-    if (!(pt = cli_hashstream(fh, buffer, 1))) {
+    if (!(pt = cli_hashstream(fh, buffer, CLI_HASH_MD5))) {
         mprintf(LOGG_ERROR, "build: Can't generate MD5 checksum for %s\n", tarfile);
         fclose(fh);
         unlink(tarfile);
         free(tarfile);
         return -1;
     }
+
+    // Check if the MD5 starts with 00. If it does, we'll return CL_ELAST_ERROR. The caller may try again for better luck.
+    // This is to avoid a bug in hash verification with ClamAV 1.1 -> 1.4. The bug was fixed in 1.5.0.
+    // TODO: Remove this workaround when no one is using those versions.
+    if (pt[0] == '0' && pt[1] == '0') {
+        // print out the pt hash
+        mprintf(LOGG_INFO, "The tar.gz MD5 starts with 00, which will fail to verify in ClamAV 1.1 -> 1.4: %s\n", pt);
+        fclose(fh);
+        unlink(tarfile);
+        free(tarfile);
+        free(pt);
+        return CL_ELAST_ERROR;
+    }
+
     rewind(fh);
     sprintf(header + strlen(header), "%s:", pt);
     free(pt);
@@ -1229,9 +1538,6 @@ static int build(const struct optstruct *opts)
 
     mprintf(LOGG_INFO, "Created %s\n", newcvd);
 
-    if (optget(opts, "unsigned")->enabled)
-        return 0;
-
     if (!oldcvd || optget(opts, "no-cdiff")->enabled) {
         mprintf(LOGG_INFO, "Skipping .cdiff creation\n");
         return 0;
@@ -1242,7 +1548,7 @@ static int build(const struct optstruct *opts)
         return -1;
     }
 
-    if (CL_SUCCESS != cl_cvdunpack(olddb, pt, true)) {
+    if (CL_SUCCESS != cl_cvdunpack_ex(olddb, pt, NULL, CL_DB_UNSIGNED)) {
         mprintf(LOGG_ERROR, "build: Can't unpack CVD file %s\n", olddb);
         removeTempDir(opts, pt);
         free(pt);
@@ -1257,7 +1563,7 @@ static int build(const struct optstruct *opts)
         return -1;
     }
 
-    if (CL_SUCCESS != cl_cvdunpack(newcvd, pt, true)) {
+    if (CL_SUCCESS != cl_cvdunpack_ex(newcvd, pt, NULL, CL_DB_UNSIGNED)) {
         mprintf(LOGG_ERROR, "build: Can't unpack CVD file %s\n", newcvd);
         removeTempDir(opts, pt);
         free(pt);
@@ -1288,12 +1594,16 @@ static int build(const struct optstruct *opts)
         } else {
             mprintf(LOGG_ERROR, "Generated file is incorrect, renamed to %s\n", broken);
         }
+        return ret;
+    }
+
+    if (optget(opts, "unsigned")->enabled)
+        return 0;
+
+    if (!script2cdiff(patch, builder, optget(opts, "server")->strarg)) {
+        ret = -1;
     } else {
-        if (!script2cdiff(patch, builder, optget(opts, "server")->strarg)) {
-            ret = -1;
-        } else {
-            ret = 0;
-        }
+        ret = 0;
     }
 
     return ret;
@@ -1302,7 +1612,9 @@ static int build(const struct optstruct *opts)
 static int unpack(const struct optstruct *opts)
 {
     char name[512], *dbdir;
-    const char *localdbdir = NULL;
+    const char *localdbdir      = NULL;
+    const char *certs_directory = NULL;
+    uint32_t dboptions          = 0;
 
     if (optget(opts, "datadir")->active)
         localdbdir = optget(opts, "datadir")->strarg;
@@ -1325,12 +1637,27 @@ static int unpack(const struct optstruct *opts)
         name[sizeof(name) - 1] = '\0';
     }
 
-    if (cl_cvdverify(name) != CL_SUCCESS) {
+    certs_directory = optget(opts, "cvdcertsdir")->strarg;
+    if (NULL == certs_directory) {
+        // Check if the CVD_CERTS_DIR environment variable is set
+        certs_directory = getenv("CVD_CERTS_DIR");
+
+        // If not, use the default value
+        if (NULL == certs_directory) {
+            certs_directory = OPT_CERTSDIR;
+        }
+    }
+
+    if (optget(opts, "fips-limits")->enabled) {
+        dboptions |= CL_DB_FIPS_LIMITS;
+    }
+
+    if (cl_cvdverify_ex(name, g_cvdcertsdir, dboptions) != CL_SUCCESS) {
         mprintf(LOGG_ERROR, "unpack: %s is not a valid CVD\n", name);
         return -1;
     }
 
-    if (CL_SUCCESS != cl_cvdunpack(name, ".", true)) {
+    if (CL_SUCCESS != cl_cvdunpack_ex(name, ".", NULL, CL_DB_UNSIGNED)) {
         mprintf(LOGG_ERROR, "unpack: Can't unpack file %s\n", name);
         return -1;
     }
@@ -1343,6 +1670,8 @@ static int cvdinfo(const struct optstruct *opts)
     struct cl_cvd *cvd;
     char *pt;
     int ret;
+    const char *certs_directory = NULL;
+    uint32_t dboptions          = 0;
 
     pt = optget(opts, "info")->strarg;
     if ((cvd = cl_cvdhead(pt)) == NULL) {
@@ -1369,13 +1698,32 @@ static int cvdinfo(const struct optstruct *opts)
         mprintf(LOGG_INFO, "Digital signature: %s\n", cvd->dsig);
     }
     cl_cvdfree(cvd);
-    if (cli_strbcasestr(pt, ".cud"))
+
+    certs_directory = optget(opts, "cvdcertsdir")->strarg;
+    if (NULL == certs_directory) {
+        // Check if the CVD_CERTS_DIR environment variable is set
+        certs_directory = getenv("CVD_CERTS_DIR");
+
+        // If not, use the default value
+        if (NULL == certs_directory) {
+            certs_directory = OPT_CERTSDIR;
+        }
+    }
+
+    if (optget(opts, "fips-limits")->enabled) {
+        dboptions |= CL_DB_FIPS_LIMITS;
+    }
+
+    if (cli_strbcasestr(pt, ".cud")) {
         mprintf(LOGG_INFO, "Verification: Unsigned container\n");
-    else if ((ret = cl_cvdverify(pt))) {
+
+    } else if ((ret = cl_cvdverify_ex(pt, certs_directory, dboptions))) {
         mprintf(LOGG_ERROR, "cvdinfo: Verification: %s\n", cl_strerror(ret));
         return -1;
-    } else
+
+    } else {
         mprintf(LOGG_INFO, "Verification OK.\n");
+    }
 
     return 0;
 }
@@ -1477,7 +1825,7 @@ static int listdb(const struct optstruct *opts, const char *filename, const rege
             return -1;
         }
 
-        if (CL_SUCCESS != cl_cvdunpack(filename, dir, true)) {
+        if (CL_SUCCESS != cl_cvdunpack_ex(filename, dir, NULL, CL_DB_UNSIGNED)) {
             mprintf(LOGG_ERROR, "listdb: Can't unpack CVD file %s\n", filename);
             removeTempDir(opts, dir);
             free(dir);
@@ -1662,7 +2010,7 @@ static int listsigs(const struct optstruct *opts, int mode)
 
         mprintf_stdout = 1;
         if (S_ISDIR(sb.st_mode)) {
-            if (!strcmp(name, DATADIR)) {
+            if (!strcmp(name, OPT_DATADIR)) {
                 dbdir = freshdbdir();
                 ret   = listdir(opts, localdbdir ? localdbdir : dbdir, NULL);
                 free(dbdir);
@@ -1815,7 +2163,7 @@ static int vbadump(const struct optstruct *opts)
 
     const char *filename = NULL;
 
-    /* Initalize scan options struct */
+    /* Initialize scan options struct */
     memset(&options, 0, sizeof(struct cl_scan_options));
 
     if ((ret = cl_init(CL_INIT_DEFAULT))) {
@@ -1856,13 +2204,15 @@ static int vbadump(const struct optstruct *opts)
 
     options.general |= CL_SCAN_GENERAL_COLLECT_METADATA;
 
-    /*Have the engine unpack everything so that we don't miss anything.  We'll clean it up later.*/
+    /* Have the engine unpack everything so that we don't miss anything.  We'll clean it up later. */
     options.parse = ~0;
 
-    /*Need to explicitly set this to always keep temps, since we are scanning extracted ooxml/ole2 files
-     * from our scan directory to print all the vba content.  Remove it later if leave-temps was not
-     * specified */
+    /*
+     * Need to explicitly set this to always keep temps, since we are scanning extracted ooxml/ole2 files
+     * from our scan directory to print all the vba content. Remove it later if leave-temps was not specified.
+     */
     cl_engine_set_num(engine, CL_ENGINE_KEEPTMP, 1);
+    cl_engine_set_num(engine, CL_ENGINE_TMPDIR_RECURSION, 1);
 
     filename = optget(opts, "vba")->strarg;
     if (NULL == filename) {
@@ -1928,8 +2278,8 @@ static int comparesha(const char *diff)
             ret = -1;
             break;
         }
-        if (!(sha = sha256file(tokens[0], NULL))) {
-            mprintf(LOGG_ERROR, "verifydiff: Can't generate SHA256 for %s\n", buff);
+        if (!(sha = sha2_256_file(tokens[0], NULL))) {
+            mprintf(LOGG_ERROR, "verifydiff: Can't generate SHA2-256 for %s\n", buff);
             ret = -1;
             break;
         }
@@ -1948,9 +2298,13 @@ static int comparesha(const char *diff)
 
 static int rundiff(const struct optstruct *opts)
 {
-    int fd, ret;
+    int ret;
     unsigned short mode;
     const char *diff;
+    FFIError *cdiff_apply_error = NULL;
+
+    void *verifier               = NULL;
+    FFIError *new_verifier_error = NULL;
 
     diff = optget(opts, "run-cdiff")->strarg;
     if (strstr(diff, ".cdiff")) {
@@ -1962,16 +2316,38 @@ static int rundiff(const struct optstruct *opts)
         return -1;
     }
 
-    if ((fd = open(diff, O_RDONLY | O_BINARY)) == -1) {
-        mprintf(LOGG_ERROR, "rundiff: Can't open file %s\n", diff);
-        return -1;
+    if (!codesign_verifier_new(g_cvdcertsdir, &verifier, &new_verifier_error)) {
+        cli_errmsg("rundiff: Failed to create a new code-signature verifier: %s\n", ffierror_fmt(new_verifier_error));
+        ret = -1;
+        goto done;
     }
 
-    ret = cdiff_apply(fd, mode);
-    close(fd);
+    if (!cdiff_apply(
+            diff,
+            verifier,
+            mode,
+            &cdiff_apply_error)) {
 
-    if (!ret)
-        ret = comparesha(diff);
+        mprintf(LOGG_ERROR, "rundiff: Error applying '%s': %s\n",
+                diff, ffierror_fmt(cdiff_apply_error));
+        ret = -1;
+        goto done;
+    }
+
+    // success. compare the SHA2-256 checksums of the files
+    ret = comparesha(diff);
+
+done:
+
+    if (NULL != verifier) {
+        codesign_verifier_free(verifier);
+    }
+    if (NULL != new_verifier_error) {
+        ffierror_free(new_verifier_error);
+    }
+    if (NULL != cdiff_apply_error) {
+        ffierror_free(cdiff_apply_error);
+    }
 
     return ret;
 }
@@ -2014,8 +2390,8 @@ static int compare(const char *oldpath, const char *newpath, FILE *diff)
     int l1 = 0, l2;
     long opos;
 
-    if (!access(oldpath, R_OK) && (omd5 = cli_hashfile(oldpath, 1))) {
-        if (!(nmd5 = cli_hashfile(newpath, 1))) {
+    if (!access(oldpath, R_OK) && (omd5 = cli_hashfile(oldpath, NULL, CLI_HASH_MD5))) {
+        if (!(nmd5 = cli_hashfile(newpath, NULL, CLI_HASH_MD5))) {
             mprintf(LOGG_ERROR, "compare: Can't get MD5 checksum of %s\n", newpath);
             free(omd5);
             return -1;
@@ -2221,9 +2597,20 @@ static int dircopy(const char *src, const char *dest)
 
 static int verifydiff(const struct optstruct *opts, const char *diff, const char *cvd, const char *incdir)
 {
-    char *tempdir, cwd[512];
-    int ret = 0, fd;
+    char *tempdir = NULL;
+    char cwd[512];
+    int ret = -1;
     unsigned short mode;
+    FFIError *cdiff_apply_error = NULL;
+
+    void *verifier               = NULL;
+    FFIError *new_verifier_error = NULL;
+
+    bool created_temp_dir = false;
+
+    cl_error_t cl_ret;
+
+    char *real_diff = NULL;
 
     if (strstr(diff, ".cdiff")) {
         mode = 1;
@@ -2231,74 +2618,94 @@ static int verifydiff(const struct optstruct *opts, const char *diff, const char
         mode = 0;
     } else {
         mprintf(LOGG_ERROR, "verifydiff: Incorrect file name (no .cdiff/.script extension)\n");
-        return -1;
+        goto done;
     }
 
     if (!(tempdir = createTempDir(opts))) {
-        return -1;
+        goto done;
     }
+    created_temp_dir = true;
 
     if (cvd) {
-        if (CL_SUCCESS != cl_cvdunpack(cvd, tempdir, true)) {
+        if (CL_SUCCESS != cl_cvdunpack_ex(cvd, tempdir, NULL, CL_DB_UNSIGNED)) {
             mprintf(LOGG_ERROR, "verifydiff: Can't unpack CVD file %s\n", cvd);
-            removeTempDir(opts, tempdir);
-            free(tempdir);
-            return -1;
+            goto done;
         }
     } else {
         if (dircopy(incdir, tempdir) == -1) {
             mprintf(LOGG_ERROR, "verifydiff: Can't copy dir %s to %s\n", incdir, tempdir);
-            removeTempDir(opts, tempdir);
-            free(tempdir);
-            return -1;
+            goto done;
         }
     }
 
     if (!getcwd(cwd, sizeof(cwd))) {
         mprintf(LOGG_ERROR, "verifydiff: getcwd() failed\n");
-        removeTempDir(opts, tempdir);
-        free(tempdir);
-        return -1;
+        goto done;
     }
 
-    if ((fd = open(diff, O_RDONLY | O_BINARY)) == -1) {
-        mprintf(LOGG_ERROR, "verifydiff: Can't open diff file %s\n", diff);
-        removeTempDir(opts, tempdir);
-        free(tempdir);
-        return -1;
+    cl_ret = cli_realpath((const char *)diff, &real_diff);
+    if (CL_SUCCESS != cl_ret) {
+        mprintf(LOGG_ERROR, "verifydiff: Failed to determine real filename of %s: %s\n", diff, cl_strerror(cl_ret));
+        goto done;
     }
+
+    diff = real_diff;
 
     if (chdir(tempdir) == -1) {
         mprintf(LOGG_ERROR, "verifydiff: Can't chdir to %s\n", tempdir);
-        removeTempDir(opts, tempdir);
-        free(tempdir);
-        close(fd);
-        return -1;
+        goto done;
     }
 
-    if (cdiff_apply(fd, mode) == -1) {
-        mprintf(LOGG_ERROR, "verifydiff: Can't apply %s\n", diff);
-        if (chdir(cwd) == -1)
-            mprintf(LOGG_WARNING, "verifydiff: Can't chdir to %s\n", cwd);
-        removeTempDir(opts, tempdir);
-        free(tempdir);
-        close(fd);
-        return -1;
+    if (!codesign_verifier_new(g_cvdcertsdir, &verifier, &new_verifier_error)) {
+        cli_errmsg("verifydiff: Failed to create a new code-signature verifier: %s\n", ffierror_fmt(new_verifier_error));
+        ret = -1;
+        goto done;
     }
-    close(fd);
+
+    if (!cdiff_apply(
+            diff,
+            verifier,
+            mode,
+            &cdiff_apply_error)) {
+        mprintf(LOGG_ERROR, "verifydiff: Can't apply %s: %s\n", diff, ffierror_fmt(cdiff_apply_error));
+        if (chdir(cwd) == -1) {
+            mprintf(LOGG_WARNING, "verifydiff: Can't chdir to %s\n", cwd);
+        }
+        goto done;
+    }
 
     ret = comparesha(diff);
 
-    if (chdir(cwd) == -1)
+    if (chdir(cwd) == -1) {
         mprintf(LOGG_WARNING, "verifydiff: Can't chdir to %s\n", cwd);
-    removeTempDir(opts, tempdir);
-    free(tempdir);
+    }
 
-    if (!ret) {
-        if (cvd)
+    if (0 == ret) {
+        if (cvd) {
             mprintf(LOGG_INFO, "Verification: %s correctly applies to %s\n", diff, cvd);
-        else
+        } else {
             mprintf(LOGG_INFO, "Verification: %s correctly applies to the previous version\n", diff);
+        }
+    }
+
+done:
+    if (created_temp_dir) {
+        removeTempDir(opts, tempdir);
+    }
+    if (NULL != tempdir) {
+        free(tempdir);
+    }
+    if (NULL != cdiff_apply_error) {
+        ffierror_free(cdiff_apply_error);
+    }
+    if (NULL != real_diff) {
+        free(real_diff);
+    }
+    if (NULL != verifier) {
+        codesign_verifier_free(verifier);
+    }
+    if (NULL != new_verifier_error) {
+        ffierror_free(new_verifier_error);
     }
 
     return ret;
@@ -2331,7 +2738,7 @@ static void matchsig(char *sig, const char *offset, int fd)
     lseek(fd, 0, SEEK_SET);
     FSTAT(fd, &sb);
 
-    new_map = fmap(fd, 0, sb.st_size, NULL);
+    new_map = fmap_new(fd, 0, sb.st_size, NULL, NULL);
     if (NULL == new_map) {
         goto done;
     }
@@ -2360,14 +2767,12 @@ static void matchsig(char *sig, const char *offset, int fd)
 
     ctx.engine = engine;
 
-    ctx.evidence = evidence_new();
-
     ctx.options        = &options;
     ctx.options->parse = ~0;
     ctx.dconf          = (struct cli_dconf *)engine->dconf;
 
     ctx.recursion_stack_size = ctx.engine->max_recursion_level;
-    ctx.recursion_stack      = cli_calloc(sizeof(recursion_level_t), ctx.recursion_stack_size);
+    ctx.recursion_stack      = calloc(sizeof(cli_scan_layer_t), ctx.recursion_stack_size);
     if (!ctx.recursion_stack) {
         goto done;
     }
@@ -2379,7 +2784,7 @@ static void matchsig(char *sig, const char *offset, int fd)
 
     ctx.fmap = ctx.recursion_stack[ctx.recursion_level].fmap;
 
-    (void)cli_scan_fmap(&ctx, CL_TYPE_ANY, false, NULL, AC_SCAN_VIR, &acres, NULL);
+    (void)cli_scan_fmap(&ctx, CL_TYPE_ANY, false, NULL, AC_SCAN_VIR, &acres);
 
     res = acres;
     while (res) {
@@ -2408,13 +2813,13 @@ done:
         free(res);
     }
     if (NULL != new_map) {
-        funmap(new_map);
+        fmap_free(new_map);
     }
     if (NULL != ctx.recursion_stack) {
+        if (ctx.recursion_stack[ctx.recursion_level].evidence) {
+            evidence_free(ctx.recursion_stack[ctx.recursion_level].evidence);
+        }
         free(ctx.recursion_stack);
-    }
-    if (NULL != ctx.evidence) {
-        evidence_free(ctx.evidence);
     }
     if (NULL != engine) {
         cl_engine_free(engine);
@@ -2753,7 +3158,7 @@ static int decodehex(const char *hexsig)
         clen = hexlen - tlen - rlen - 2; /* 2 from regex boundaries '/' */
 
         /* get the trigger statement */
-        trigger = cli_calloc(tlen + 1, sizeof(char));
+        trigger = calloc(tlen + 1, sizeof(char));
         if (!trigger) {
             mprintf(LOGG_ERROR, "cannot allocate memory for trigger string\n");
             return -1;
@@ -2762,7 +3167,7 @@ static int decodehex(const char *hexsig)
         trigger[tlen] = '\0';
 
         /* get the regex expression */
-        regex = cli_calloc(rlen + 1, sizeof(char));
+        regex = calloc(rlen + 1, sizeof(char));
         if (!regex) {
             mprintf(LOGG_ERROR, "cannot allocate memory for regex expression\n");
             free(trigger);
@@ -2773,7 +3178,7 @@ static int decodehex(const char *hexsig)
 
         /* get the compile flags */
         if (clen) {
-            cflags = cli_calloc(clen + 1, sizeof(char));
+            cflags = calloc(clen + 1, sizeof(char));
             if (!cflags) {
                 mprintf(LOGG_ERROR, "cannot allocate memory for compile flags\n");
                 free(trigger);
@@ -2795,12 +3200,8 @@ static int decodehex(const char *hexsig)
         free(regex);
         if (cflags)
             free(cflags);
-#if HAVE_PCRE
+
         return 0;
-#else
-        mprintf(LOGG_ERROR, "PCRE subsig cannot be loaded without PCRE support\n");
-        return -1;
-#endif
     } else if (strchr(hexsig, '{') || strchr(hexsig, '[')) {
         if (!(hexcpy = strdup(hexsig)))
             return -1;
@@ -3429,7 +3830,7 @@ static int diffdirs(const char *old, const char *new, const char *patch)
 
 static int makediff(const struct optstruct *opts)
 {
-    char *odir, *ndir, name[32], broken[39], dbname[32];
+    char *odir, *ndir, name[PATH_MAX], broken[PATH_MAX + 8], dbname[PATH_MAX];
     struct cl_cvd *cvd;
     unsigned int oldver, newver;
     int ret;
@@ -3444,14 +3845,14 @@ static int makediff(const struct optstruct *opts)
         return -1;
     }
     newver = cvd->version;
-    free(cvd);
+    cl_cvdfree(cvd);
 
     if (!(cvd = cl_cvdhead(optget(opts, "diff")->strarg))) {
         mprintf(LOGG_ERROR, "makediff: Can't read CVD header from %s\n", optget(opts, "diff")->strarg);
         return -1;
     }
     oldver = cvd->version;
-    free(cvd);
+    cl_cvdfree(cvd);
 
     if (oldver + 1 != newver) {
         mprintf(LOGG_ERROR, "makediff: The old CVD must be %u\n", newver - 1);
@@ -3462,7 +3863,7 @@ static int makediff(const struct optstruct *opts)
         return -1;
     }
 
-    if (CL_SUCCESS != cl_cvdunpack(optget(opts, "diff")->strarg, odir, true)) {
+    if (CL_SUCCESS != cl_cvdunpack_ex(optget(opts, "diff")->strarg, odir, NULL, CL_DB_UNSIGNED)) {
         mprintf(LOGG_ERROR, "makediff: Can't unpack CVD file %s\n", optget(opts, "diff")->strarg);
         removeTempDir(opts, odir);
         free(odir);
@@ -3473,7 +3874,7 @@ static int makediff(const struct optstruct *opts)
         return -1;
     }
 
-    if (CL_SUCCESS != cl_cvdunpack(opts->filename[0], ndir, true)) {
+    if (CL_SUCCESS != cl_cvdunpack_ex(opts->filename[0], ndir, NULL, CL_DB_UNSIGNED)) {
         mprintf(LOGG_ERROR, "makediff: Can't unpack CVD file %s\n", opts->filename[0]);
         removeTempDir(opts, odir);
         removeTempDir(opts, ndir);
@@ -3537,7 +3938,7 @@ static int dumpcerts(const struct optstruct *opts)
     lseek(fd, 0, SEEK_SET);
     FSTAT(fd, &sb);
 
-    new_map = fmap(fd, 0, sb.st_size, filename);
+    new_map = fmap_new(fd, 0, sb.st_size, filename, filename);
     if (NULL == new_map) {
         mprintf(LOGG_ERROR, "dumpcerts: Can't create fmap for open file\n");
         goto done;
@@ -3571,14 +3972,12 @@ static int dumpcerts(const struct optstruct *opts)
     /* prepare context */
     ctx.engine = engine;
 
-    ctx.evidence = evidence_new();
-
     ctx.options        = &options;
     ctx.options->parse = ~0;
     ctx.dconf          = (struct cli_dconf *)engine->dconf;
 
     ctx.recursion_stack_size = ctx.engine->max_recursion_level;
-    ctx.recursion_stack      = cli_calloc(sizeof(recursion_level_t), ctx.recursion_stack_size);
+    ctx.recursion_stack      = calloc(sizeof(cli_scan_layer_t), ctx.recursion_stack_size);
     if (!ctx.recursion_stack) {
         goto done;
     }
@@ -3617,13 +4016,13 @@ static int dumpcerts(const struct optstruct *opts)
 done:
     /* Cleanup */
     if (NULL != new_map) {
-        funmap(new_map);
+        fmap_free(new_map);
     }
     if (NULL != ctx.recursion_stack) {
+        if (ctx.recursion_stack[ctx.recursion_level].evidence) {
+            evidence_free(ctx.recursion_stack[ctx.recursion_level].evidence);
+        }
         free(ctx.recursion_stack);
-    }
-    if (NULL != ctx.evidence) {
-        evidence_free(ctx.evidence);
     }
     if (NULL != engine) {
         cl_engine_free(engine);
@@ -3639,7 +4038,7 @@ static void help(void)
     mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "                      Clam AntiVirus: Signature Tool %s\n", get_version());
     mprintf(LOGG_INFO, "           By The ClamAV Team: https://www.clamav.net/about.html#credits\n");
-    mprintf(LOGG_INFO, "           (C) 2023 Cisco Systems, Inc.\n");
+    mprintf(LOGG_INFO, "           (C) 2025 Cisco Systems, Inc.\n");
     mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "    sigtool [options]\n");
     mprintf(LOGG_INFO, "\n");
@@ -3648,22 +4047,50 @@ static void help(void)
     mprintf(LOGG_INFO, "    --quiet                                Be quiet, output only error messages\n");
     mprintf(LOGG_INFO, "    --debug                                Enable debug messages\n");
     mprintf(LOGG_INFO, "    --stdout                               Write to stdout instead of stderr. Does not affect 'debug' messages.\n");
-    mprintf(LOGG_INFO, "    --hex-dump                             Convert data from stdin to a hex\n");
-    mprintf(LOGG_INFO, "                                           string and print it on stdout\n");
-    mprintf(LOGG_INFO, "    --md5 [FILES]                          Generate MD5 checksum from stdin\n");
+    mprintf(LOGG_INFO, "    --tempdir=DIRECTORY                    Create temporary files in DIRECTORY\n");
+    mprintf(LOGG_INFO, "    --leave-temps[=yes/no(*)]              Do not remove temporary files\n");
+    mprintf(LOGG_INFO, "    --datadir=DIR                          Use DIR as default database directory\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Commands for working with signatures:\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --list-sigs[=FILE]     -l[FILE]        List signature names\n");
+    mprintf(LOGG_INFO, "    --find-sigs=REGEX      -fREGEX         Find signatures matching REGEX\n");
+    mprintf(LOGG_INFO, "    --decode-sigs                          Decode signatures from stdin\n");
+    mprintf(LOGG_INFO, "    --test-sigs=DATABASE TARGET_FILE       Test signatures from DATABASE against \n");
+    mprintf(LOGG_INFO, "                                           TARGET_FILE\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Commands to generate signatures:\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --md5 [FILES]                          Generate MD5 hash from stdin\n");
     mprintf(LOGG_INFO, "                                           or MD5 sigs for FILES\n");
-    mprintf(LOGG_INFO, "    --sha1 [FILES]                         Generate SHA1 checksum from stdin\n");
+    mprintf(LOGG_INFO, "    --sha1 [FILES]                         Generate SHA1 hash from stdin\n");
     mprintf(LOGG_INFO, "                                           or SHA1 sigs for FILES\n");
-    mprintf(LOGG_INFO, "    --sha256 [FILES]                       Generate SHA256 checksum from stdin\n");
-    mprintf(LOGG_INFO, "                                           or SHA256 sigs for FILES\n");
+    mprintf(LOGG_INFO, "    --sha2-256 [FILES]                     Generate SHA2-256 hash from stdin\n");
+    mprintf(LOGG_INFO, "                                           or SHA2-256 sigs for FILES\n");
     mprintf(LOGG_INFO, "    --mdb [FILES]                          Generate .mdb (section hash) sigs\n");
     mprintf(LOGG_INFO, "    --imp [FILES]                          Generate .imp (import table hash) sigs\n");
     mprintf(LOGG_INFO, "    --fuzzy-img FILE(S)                    Generate image fuzzy hash for each file\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Commands to normalize files, so you can write more generic signatures:\n");
+    mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "    --html-normalise=FILE                  Create normalised parts of HTML file\n");
     mprintf(LOGG_INFO, "    --ascii-normalise=FILE                 Create normalised text file from ascii source\n");
     mprintf(LOGG_INFO, "    --utf16-decode=FILE                    Decode UTF16 encoded files\n");
-    mprintf(LOGG_INFO, "    --info=FILE            -i FILE         Print database information\n");
-    mprintf(LOGG_INFO, "    --build=NAME [cvd] -b NAME             Build a CVD file\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Assorted commands to aid file analysis:\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --vba=FILE                             Extract VBA/Word6 macro code\n");
+    mprintf(LOGG_INFO, "    --vba-hex=FILE                         Extract Word6 macro code with hex values\n");
+    mprintf(LOGG_INFO, "    --print-certs=FILE                     Print Authenticode details from a PE\n");
+    mprintf(LOGG_INFO, "    --hex-dump                             Convert data from stdin to a hex\n");
+    mprintf(LOGG_INFO, "                                           string and print it on stdout\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Commands for working with CVD signature database archives:\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --info=FILE            -i FILE         Print CVD database archive information\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --build=NAME [cvd] -b NAME             Build a CVD file.\n");
+    mprintf(LOGG_INFO, "                                           The following options augment --build.\n");
     mprintf(LOGG_INFO, "    --max-bad-sigs=NUMBER                  Maximum number of mismatched signatures\n");
     mprintf(LOGG_INFO, "                                           When building a CVD. Default: 3000\n");
     mprintf(LOGG_INFO, "    --flevel=FLEVEL                        Specify a custom flevel.\n");
@@ -3677,28 +4104,69 @@ static void help(void)
     mprintf(LOGG_INFO, "                                           prompt.  NOTE: If a CVD is found in the\n");
     mprintf(LOGG_INFO, "                                           --datadir its version+1 is used and\n");
     mprintf(LOGG_INFO, "                                           this value is ignored.\n");
-    mprintf(LOGG_INFO, "    --no-cdiff                             Don't generate .cdiff file\n");
+    mprintf(LOGG_INFO, "    --no-cdiff                             Don't generate .cdiff file.\n");
+    mprintf(LOGG_INFO, "                                           If not specified, --build will try to\n");
+    mprintf(LOGG_INFO, "                                           create a cdiff by comparing with the\n");
+    mprintf(LOGG_INFO, "                                           current CVD in --datadir\n");
+    mprintf(LOGG_INFO, "                                           If no datafile is found the default\n");
+    mprintf(LOGG_INFO, "                                           behaviour is to skip making a CDIFF.\n");
+    mprintf(LOGG_INFO, "    --hybrid                               Create a hybrid (standard and bytecode)\n");
+    mprintf(LOGG_INFO, "                                           database file\n");
     mprintf(LOGG_INFO, "    --unsigned                             Create unsigned database file (.cud)\n");
-    mprintf(LOGG_INFO, "    --hybrid                               Create a hybrid (standard and bytecode) database file\n");
-    mprintf(LOGG_INFO, "    --print-certs=FILE                     Print Authenticode details from a PE\n");
     mprintf(LOGG_INFO, "    --server=ADDR                          ClamAV Signing Service address\n");
-    mprintf(LOGG_INFO, "    --datadir=DIR                          Use DIR as default database directory\n");
+    mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "    --unpack=FILE          -u FILE         Unpack a CVD/CLD file\n");
+    mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "    --unpack-current=SHORTNAME             Unpack local CVD/CLD into cwd\n");
-    mprintf(LOGG_INFO, "    --list-sigs[=FILE]     -l[FILE]        List signature names\n");
-    mprintf(LOGG_INFO, "    --find-sigs=REGEX      -fREGEX         Find signatures matching REGEX\n");
-    mprintf(LOGG_INFO, "    --decode-sigs                          Decode signatures from stdin\n");
-    mprintf(LOGG_INFO, "    --test-sigs=DATABASE TARGET_FILE       Test signatures from DATABASE against \n");
-    mprintf(LOGG_INFO, "                                           TARGET_FILE\n");
-    mprintf(LOGG_INFO, "    --vba=FILE                             Extract VBA/Word6 macro code\n");
-    mprintf(LOGG_INFO, "    --vba-hex=FILE                         Extract Word6 macro code with hex values\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --fips-limits                          Enforce FIPS-like limits on using hash algorithms for\n");
+    mprintf(LOGG_INFO, "                                           cryptographic purposes. Will disable MD5 & SHA1\n");
+    mprintf(LOGG_INFO, "                                           FP sigs and will require '.sign' files to verify CVD\n");
+    mprintf(LOGG_INFO, "                                           authenticity.\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Commands for working with CDIFF patch files:\n");
+    mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "    --diff=OLD NEW         -d OLD NEW      Create diff for OLD and NEW CVDs\n");
     mprintf(LOGG_INFO, "    --compare=OLD NEW      -c OLD NEW      Show diff between OLD and NEW files in\n");
     mprintf(LOGG_INFO, "                                           cdiff format\n");
     mprintf(LOGG_INFO, "    --run-cdiff=FILE       -r FILE         Execute update script FILE in cwd\n");
     mprintf(LOGG_INFO, "    --verify-cdiff=DIFF CVD/CLD            Verify DIFF against CVD/CLD\n");
-    mprintf(LOGG_INFO, "    --tempdir=DIRECTORY                    Create temporary files in DIRECTORY\n");
-    mprintf(LOGG_INFO, "    --leave-temps[=yes/no(*)]              Do not remove temporary files\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "  Commands creating and verifying .sign detached digital signatures:\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --sign FILE                            Sign a file.\n");
+    mprintf(LOGG_INFO, "                                           The resulting .sign file name will\n");
+    mprintf(LOGG_INFO, "                                           be in the form: dbname-version.cvd.sign\n");
+    mprintf(LOGG_INFO, "                                           or FILE.sign for non-CVD targets.\n");
+    mprintf(LOGG_INFO, "                                           It will be created next to the target file.\n");
+    mprintf(LOGG_INFO, "                                           If a .sign file already exists, then the\n");
+    mprintf(LOGG_INFO, "                                           new signature will be appended to file.\n");
+    mprintf(LOGG_INFO, "    --key /path/to/private.key             Specify a signing key.\n");
+    mprintf(LOGG_INFO, "    --cert /path/to/private.key            Specify a signing cert.\n");
+    mprintf(LOGG_INFO, "                                           May be used more than once to add\n");
+    mprintf(LOGG_INFO, "                                           intermediate and root certificates.\n");
+    mprintf(LOGG_INFO, "    --append                               Use to add a signature line to an existing .sign file.\n");
+    mprintf(LOGG_INFO, "                                           Otherwise an existing .sign file will be overwritten.\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    --verify FILE                          Find and verify a detached digital\n");
+    mprintf(LOGG_INFO, "                                           signature for the given file.\n");
+    mprintf(LOGG_INFO, "                                           The digital signature file name must\n");
+    mprintf(LOGG_INFO, "                                           be in the form: dbname-version.cvd.sign\n");
+    mprintf(LOGG_INFO, "                                           or FILE.sign for non-CVD targets.\n");
+    mprintf(LOGG_INFO, "                                           It must be found next to the target file.\n");
+    mprintf(LOGG_INFO, "    --cvdcertsdir DIRECTORY                Specify a directory containing the root\n");
+    mprintf(LOGG_INFO, "                                           CA cert needed to verify the signature.\n");
+    mprintf(LOGG_INFO, "                                           If not provided, then sigtool will look in the default directory.n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "Environment Variables:\n");
+    mprintf(LOGG_INFO, "\n");
+    mprintf(LOGG_INFO, "    SIGNDUSER                              The username to authenticate with the signing server when building a\n");
+    mprintf(LOGG_INFO, "                                           signed CVD database.\n");
+    mprintf(LOGG_INFO, "    SIGNDPASS                              The password to authenticate with the signing server when building a\n");
+    mprintf(LOGG_INFO, "                                           signed CVD database.\n");
+    mprintf(LOGG_INFO, "    CVD_CERTS_DIR                          Specify a directory containing the root CA cert needed\n");
+    mprintf(LOGG_INFO, "                                           to verify detached CVD digital signatures.\n");
+    mprintf(LOGG_INFO, "                                           If not provided, then sigtool will look in the default directory.\n");
     mprintf(LOGG_INFO, "\n");
 
     return;
@@ -3709,6 +4177,13 @@ int main(int argc, char **argv)
     int ret;
     struct optstruct *opts;
     STATBUF sb;
+
+    const char *cvdcertsdir = NULL;
+    STATBUF statbuf;
+
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+#endif
 
     if (check_flevel())
         exit(1);
@@ -3752,18 +4227,46 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    // Evaluate the absolute path for cvdcertsdir in case we change directories later.
+    cvdcertsdir = optget(opts, "cvdcertsdir")->strarg;
+    if (NULL == cvdcertsdir) {
+        // If not set, check the environment variable.
+        cvdcertsdir = getenv("CVD_CERTS_DIR");
+        if (NULL == cvdcertsdir) {
+            // If not set, use the default path.
+            cvdcertsdir = OPT_CERTSDIR;
+        }
+    }
+
+    // Command line option must override the engine defaults
+    // (which would've used the env var or hardcoded path)
+    if (LSTAT(cvdcertsdir, &statbuf) == -1) {
+        logg(LOGG_ERROR,
+             "ClamAV CA certificates directory is missing: %s"
+             " - It should have been provided as a part of installation.\n",
+             cvdcertsdir);
+        return -1;
+    }
+
+    // Convert certs dir to real path.
+    ret = cli_realpath((const char *)cvdcertsdir, &g_cvdcertsdir);
+    if (CL_SUCCESS != ret) {
+        logg(LOGG_ERROR, "Failed to determine absolute path of '%s' for the CVD certs directory.\n", cvdcertsdir);
+        return -1;
+    }
+
     if (optget(opts, "hex-dump")->enabled)
         ret = hexdump();
     else if (optget(opts, "md5")->enabled)
-        ret = hashsig(opts, 0, 1);
+        ret = hashsig(opts, 0, CLI_HASH_MD5);
     else if (optget(opts, "sha1")->enabled)
-        ret = hashsig(opts, 0, 2);
-    else if (optget(opts, "sha256")->enabled)
-        ret = hashsig(opts, 0, 3);
+        ret = hashsig(opts, 0, CLI_HASH_SHA1);
+    else if (optget(opts, "sha2-256")->enabled || optget(opts, "sha256")->enabled)
+        ret = hashsig(opts, 0, CLI_HASH_SHA2_256);
     else if (optget(opts, "mdb")->enabled)
-        ret = hashsig(opts, 1, 1);
+        ret = hashsig(opts, 1, CLI_HASH_MD5);
     else if (optget(opts, "imp")->enabled)
-        ret = hashsig(opts, 2, 1);
+        ret = hashsig(opts, 2, CLI_HASH_MD5);
     else if (optget(opts, "fuzzy-img")->enabled)
         ret = fuzzy_img(opts);
     else if (optget(opts, "html-normalise")->enabled)
@@ -3772,8 +4275,18 @@ int main(int argc, char **argv)
         ret = asciinorm(opts);
     else if (optget(opts, "utf16-decode")->enabled)
         ret = utf16decode(opts);
-    else if (optget(opts, "build")->enabled)
+    else if (optget(opts, "build")->enabled) {
         ret = build(opts);
+        if (ret == CL_ELAST_ERROR) {
+            // build() returns CL_ELAST_ERROR the hash starts with 00. This will fail to verify with ClamAV 1.1 -> 1.4.
+            // Retry the build again to get new hashes.
+            mprintf(LOGG_WARNING, "Retrying the build for a chance at a better hash.\n");
+            ret = build(opts);
+        }
+    } else if (optget(opts, "sign")->enabled)
+        ret = sign(opts);
+    else if (optget(opts, "verify")->enabled)
+        ret = verify(opts);
     else if (optget(opts, "unpack")->enabled)
         ret = unpack(opts);
     else if (optget(opts, "unpack-current")->enabled)

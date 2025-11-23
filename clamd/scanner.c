@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, Török Edvin
@@ -94,7 +94,7 @@ void msg_callback(enum cl_msg severity, const char *fullmsg, const char *msg, vo
     }
 }
 
-void hash_callback(int fd, unsigned long long size, const unsigned char *md5, const char *virname, void *ctx)
+void hash_callback(int fd, unsigned long long size, const char *md5, const char *virname, void *ctx)
 {
     struct cb_context *c = ctx;
     UNUSEDPARAM(fd);
@@ -103,8 +103,8 @@ void hash_callback(int fd, unsigned long long size, const unsigned char *md5, co
     if (!c)
         return;
     c->virsize = size;
-    strncpy(c->virhash, (const char *)md5, 32);
-    c->virhash[32] = '\0';
+    strncpy(c->virhash, md5, MD5_HASH_SIZE * 2);
+    c->virhash[MD5_HASH_SIZE * 2] = '\0';
 }
 
 void clamd_virus_found_cb(int fd, const char *virname, void *ctx)
@@ -414,7 +414,7 @@ cl_error_t scanfd(
         goto done;
     }
 
-    /* Try and get the real filename, for logging purposes */
+    /* Try to get the real filename, for logging purposes */
     if (!stream) {
         if (CL_SUCCESS != cli_get_filepath_from_filedesc(fd, &filepath)) {
             logg(LOGG_DEBUG, "%s: Unable to determine the filepath given the file descriptor.\n", fdstr);

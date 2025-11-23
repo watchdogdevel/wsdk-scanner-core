@@ -1,7 +1,7 @@
 /*
  *  Detect phishing, based on URL spoofing detection.
  *
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -92,7 +92,7 @@ The _domain_list_ is a list of pairs of realLink, displayedLink (any of which ca
 This is the list of domains we do phishing detection for (such as ebay,paypal,chase,....)
 We can't decide to stop processing here or not, so we just set a flag.
 
-Note(*!*): the flags are modified by the the domain list checker. If domain is found, then the flags associated with it filter the default compile-time flags.
+Note(*!*): the flags are modified by the domain list checker. If domain is found, then the flags associated with it filter the default compile-time flags.
 
 5. _Hostname_ is extracted from the _displayed URL_.
 It is checked against the _allow_list_, and _domain_list_.
@@ -260,7 +260,7 @@ static void string_init_c(struct string* dest, char* data)
 static int string_assign_concatenated(struct string* dest, const char* prefix, const char* begin, const char* end)
 {
     const size_t prefix_len = strlen(prefix);
-    char* ret               = cli_malloc(prefix_len + end - begin + 1);
+    char* ret               = cli_max_malloc(prefix_len + end - begin + 1);
     if (!ret) {
         cli_errmsg("Phishcheck: Unable to allocate memory for string_assign_concatenated\n");
         return CL_EMEM;
@@ -276,7 +276,7 @@ static int string_assign_concatenated(struct string* dest, const char* prefix, c
 /* make a copy of the string between start -> end*/
 static int string_assign_dup(struct string* dest, const char* start, const char* end)
 {
-    char* ret = cli_malloc(end - start + 1);
+    char* ret = cli_max_malloc(end - start + 1);
     if (!ret) {
         cli_errmsg("Phishcheck: Unable to allocate memory for string_assign_dup\n");
         return CL_EMEM;
@@ -324,7 +324,7 @@ static int build_regex(regex_t* preg, const char* regex, int nosub)
     if (rc) {
 
         size_t buflen = cli_regerror(rc, preg, NULL, 0);
-        char* errbuf  = cli_malloc(buflen);
+        char* errbuf  = malloc(buflen);
 
         if (errbuf) {
             cli_regerror(rc, preg, errbuf, buflen);
@@ -1168,37 +1168,37 @@ static cl_error_t hash_match(const struct regex_matcher* rlist,
 
     *phishing_verdict = CL_PHISH_NODECISION;
 
-    if (rlist->sha256_hashes.bm_patterns) {
+    if (rlist->sha2_256_hashes.bm_patterns) {
         const char hexchars[] = "0123456789ABCDEF";
         unsigned char h[65];
-        unsigned char sha256_dig[32];
+        unsigned char sha2_256_dig[32];
         unsigned i;
-        void* sha256;
+        void* sha2_256;
 
-        sha256 = cl_hash_init("sha256");
-        if (!(sha256))
+        sha2_256 = cl_hash_init("sha2-256");
+        if (!(sha2_256))
             return CL_EMEM;
 
-        cl_update_hash(sha256, (void*)host, hlen);
-        cl_update_hash(sha256, (void*)path, plen);
-        cl_finish_hash(sha256, sha256_dig);
+        cl_update_hash(sha2_256, (void*)host, hlen);
+        cl_update_hash(sha2_256, (void*)path, plen);
+        cl_finish_hash(sha2_256, sha2_256_dig);
 
         for (i = 0; i < 32; i++) {
-            h[2 * i]     = hexchars[sha256_dig[i] >> 4];
-            h[2 * i + 1] = hexchars[sha256_dig[i] & 0xf];
+            h[2 * i]     = hexchars[sha2_256_dig[i] >> 4];
+            h[2 * i + 1] = hexchars[sha2_256_dig[i] & 0xf];
         }
         h[64] = '\0';
         cli_dbgmsg("Looking up hash %s for %s(%u)%s(%u)\n", h, host, (unsigned)hlen, path, (unsigned)plen);
 #if 0
 	    if (prefix_matched) {
-		if (cli_bm_scanbuff(sha256_dig, 4, &virname, NULL, &rlist->hostkey_prefix,0,NULL,NULL,NULL) == CL_VIRUS) {
+		if (cli_bm_scanbuff(sha2_256_dig, 4, &virname, NULL, &rlist->hostkey_prefix,0,NULL,NULL,NULL) == CL_VIRUS) {
 		    cli_dbgmsg("prefix matched\n");
 		    *prefix_matched = 1;
 		} else
 		    return CL_SUCCESS;
 	    }
 #endif
-        if (cli_bm_scanbuff(sha256_dig, 32, &virname, NULL, &rlist->sha256_hashes, 0, NULL, NULL, NULL) == CL_VIRUS) {
+        if (cli_bm_scanbuff(sha2_256_dig, 32, &virname, NULL, &rlist->sha2_256_hashes, 0, NULL, NULL, NULL) == CL_VIRUS) {
             cli_dbgmsg("This hash matched: %s\n", h);
             switch (*virname) {
                 case 'W':
@@ -1347,7 +1347,7 @@ static cl_error_t url_hash_match(
     char urlbuff[URL_MAX_LEN + 3]; /* htmlnorm truncates at 1024 bytes + terminating null + slash + host end null */
     unsigned count;
 
-    if (!rlist || !rlist->sha256_hashes.bm_patterns) {
+    if (!rlist || !rlist->sha2_256_hashes.bm_patterns) {
         /* no hashes loaded -> don't waste time canonicalizing and
          * looking up */
         goto done;
@@ -1481,7 +1481,7 @@ static enum phish_status phishingCheck(cli_ctx* ctx, struct url_check* urls)
                                                urls->realLink.data,
                                                strlen(urls->realLink.data),
                                                &phishing_verdict))) {
-        cli_dbgmsg("Error occured in url_hash_match\n");
+        cli_dbgmsg("Error occurred in url_hash_match\n");
         goto done;
     } else if (phishing_verdict != CL_PHISH_NODECISION) {
         if (phishing_verdict == CL_PHISH_CLEAN) {
@@ -1535,15 +1535,15 @@ static enum phish_status phishingCheck(cli_ctx* ctx, struct url_check* urls)
      * Eg:
      *      R:.+\.malicious\.net([/?].*)?:.+\.benign\.com
      */
-    /* Provide copies of the oirinal URL's, because domain_list_match() may modify the buffer,
+    /* Provide copies of the original URL's, because domain_list_match() may modify the buffer,
        and we don't want that to happen in this case. */
-    realData = cli_strdup(urls->realLink.data);
+    realData = cli_safer_strdup(urls->realLink.data);
     if (!realData) {
         cli_errmsg("Phishcheck: Failed to allocate memory for temporary real link string.\n");
         phishing_verdict = CL_PHISH_CLEAN;
         goto done;
     }
-    displayData = cli_strdup(urls->displayLink.data);
+    displayData = cli_safer_strdup(urls->displayLink.data);
     if (!displayData) {
         cli_errmsg("Phishcheck: Failed to allocate memory for temporary display link string.\n");
         phishing_verdict = CL_PHISH_CLEAN;

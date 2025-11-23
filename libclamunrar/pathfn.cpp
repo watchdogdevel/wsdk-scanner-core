@@ -449,7 +449,7 @@ bool IsNameUsable(const wchar *Name)
      // It is for Windows shares in Unix. We can create such names in Windows.
 #ifdef _UNIX
     // No spaces or dots before the path separator are allowed in Windows
-    // shares. But they are allowed and automtically removed at the end of
+    // shares. But they are allowed and automatically removed at the end of
     // file or folder name, so it is useless to replace them here.
     // Since such files or folders are created successfully, a supposed
     // conversion here would never be invoked.
@@ -1007,7 +1007,7 @@ bool GetWinLongPath(const wchar *Src,wchar *Dest,size_t MaxSize)
 }
 
 
-// Convert Unix, OS X and Android decomposed chracters to Windows precomposed.
+// Convert Unix, OS X and Android decomposed characters to Windows precomposed.
 void ConvertToPrecomposed(wchar *Name,size_t NameSize)
 {
   wchar FileName[NM];

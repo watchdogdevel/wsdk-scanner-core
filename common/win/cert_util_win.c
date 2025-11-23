@@ -1,7 +1,7 @@
 /*
  *  OpenSSL certificate verification for Windows.
  *
- *  Copyright (C) 2019-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2019-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Micah Snyder
  *
@@ -49,7 +49,7 @@ cl_error_t cert_store_load(X509 **trusted_certs, size_t trusted_cert_count)
     cert_store_t *store = NULL;
     bool locked         = false;
 
-    hStore = CertOpenSystemStoreA(NULL, "ROOT");
+    hStore = CertOpenSystemStoreA(0, "ROOT");
     if (NULL == hStore) {
         mprintf(LOGG_ERROR, "Failed to open system certificate store.\n");
         goto done;

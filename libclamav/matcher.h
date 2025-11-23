@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -158,11 +158,9 @@ struct cli_matcher {
     uint8_t ac_only;
 
     /* Perl-Compiled Regular Expressions */
-#if HAVE_PCRE
     uint32_t pcre_metas;
     struct cli_pcre_meta **pcre_metatable;
     uint32_t pcre_reloff_num, pcre_absoff_num;
-#endif
 
     /* Byte Compare */
     uint32_t bcomp_metas;
@@ -292,7 +290,7 @@ static const struct cli_mtarget cli_mtargets[CLI_MTARGETS] = {
  * @param offset            Offset into the buffer from which to start matching.
  * @param ctx               The scanning context.
  * @param ftype             If specified, may limit signature matching trie by target type corresponding with the specified CL_TYPE
- * @param[in,out] acdata    (optional) A list of pattern maching data structs to contain match results, one for generic signatures and one for target-specific signatures.
+ * @param[in,out] acdata    (optional) A list of pattern matching data structs to contain match results, one for generic signatures and one for target-specific signatures.
  *                          If not provided, the matcher results are lost, outside of this function's return value.
  *                          Required if you want to evaluate logical expressions afterwards.
  * @return cl_error_t
@@ -324,7 +322,7 @@ cl_error_t cli_scan_buff(const unsigned char *buffer, uint32_t length, uint32_t 
  * @param attributes    Layer attributes for the thing to be scanned.
  * @return cl_error_t
  */
-cl_error_t cli_scan_desc(int desc, cli_ctx *ctx, cli_file_t ftype, bool filetype_only, struct cli_matched_type **ftoffset, unsigned int acmode, struct cli_ac_result **acres, const char *name, uint32_t attributes);
+cl_error_t cli_scan_desc(int desc, cli_ctx *ctx, cli_file_t ftype, bool filetype_only, struct cli_matched_type **ftoffset, unsigned int acmode, struct cli_ac_result **acres, const char *name, const char *path, uint32_t attributes);
 
 /**
  * @brief Non-magic scan matching of the current fmap in the scan context.  Newer API.
@@ -345,10 +343,9 @@ cl_error_t cli_scan_desc(int desc, cli_ctx *ctx, cli_file_t ftype, bool filetype
  * @param[out] ftoffset (optional) A list of file type signature matches with their corresponding offsets. If provided, will output the file type signature matches.
  * @param acmode        Use AC_SCAN_VIR and AC_SCAN_FT to set scanning modes.
  * @param[out] acres    A list of cli_ac_result AC pattern matching results.
- * @param refhash       MD5 hash of the current file, used to save time creating hashes and to limit scan recursion for the HandlerType logical signature FTM feature.
  * @return cl_error_t
  */
-cl_error_t cli_scan_fmap(cli_ctx *ctx, cli_file_t ftype, bool filetype_only, struct cli_matched_type **ftoffset, unsigned int acmode, struct cli_ac_result **acres, unsigned char *refhash);
+cl_error_t cli_scan_fmap(cli_ctx *ctx, cli_file_t ftype, bool filetype_only, struct cli_matched_type **ftoffset, unsigned int acmode, struct cli_ac_result **acres);
 
 /**
  * @brief Evaluate logical signatures and yara rules given the AC matching results
@@ -361,12 +358,12 @@ cl_error_t cli_scan_fmap(cli_ctx *ctx, cli_file_t ftype, bool filetype_only, str
  * @param hash          Reference hash of the current file, used to limit recursion for the HandlerType logical signature FTM feature.
  * @return cl_error_t
  */
-cl_error_t cli_exp_eval(cli_ctx *ctx, struct cli_matcher *root, struct cli_ac_data *acdata, struct cli_target_info *target_info, const char *hash);
+cl_error_t cli_exp_eval(cli_ctx *ctx, struct cli_matcher *root, struct cli_ac_data *acdata, struct cli_target_info *target_info);
 
-cl_error_t cli_caloff(const char *offstr, const struct cli_target_info *info, unsigned int target, uint32_t *offdata, uint32_t *offset_min, uint32_t *offset_max);
+cl_error_t cli_caloff(const char *offstr, const struct cli_target_info *info, cli_target_t target, uint32_t *offdata, uint32_t *offset_min, uint32_t *offset_max);
 
 /**
- * @brief Determine if an alert is a known false positive, using each fmap in the the ctx->container stack to check MD5, SHA1, and SHA256 hashes.
+ * @brief Determine if an alert is a known false positive, using each fmap in the ctx->container stack to check MD5, SHA1, and SHA2-256 hashes.
  *
  * @param ctx           The scanning context.
  * @param vname         (Optional) The name of the signature alert.
@@ -375,7 +372,7 @@ cl_error_t cli_caloff(const char *offstr, const struct cli_target_info *info, un
  */
 cl_error_t cli_check_fp(cli_ctx *ctx, const char *vname);
 
-cl_error_t cli_matchmeta(cli_ctx *ctx, const char *fname, size_t fsizec, size_t fsizer, int encrypted, unsigned int filepos, int res1, void *res2);
+cl_error_t cli_matchmeta(cli_ctx *ctx, const char *fname, size_t fsizec, size_t fsizer, int encrypted, unsigned int filepos, int res1);
 
 /** Parse the executable headers and, if successful, populate exeinfo
  *
@@ -393,6 +390,6 @@ cl_error_t cli_matchmeta(cli_ctx *ctx, const char *fname, size_t fsizec, size_t 
  *               - 9 - MachO
  * @param ctx The current scan context
  */
-void cli_targetinfo(struct cli_target_info *info, unsigned int target, cli_ctx *ctx);
+void cli_targetinfo(struct cli_target_info *info, cli_target_t target, cli_ctx *ctx);
 
 #endif

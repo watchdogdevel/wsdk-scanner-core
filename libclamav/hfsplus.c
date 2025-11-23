@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2013 Sourcefire, Inc.
  *
  *  Authors: David Raynor <draynor@sourcefire.com>
@@ -149,7 +149,7 @@ static cl_error_t hfsplus_volumeheader(cli_ctx *ctx, hfsPlusVolumeHeader **heade
         return CL_EMAP;
     }
 
-    volHeader = cli_malloc(sizeof(hfsPlusVolumeHeader));
+    volHeader = malloc(sizeof(hfsPlusVolumeHeader));
     if (!volHeader) {
         cli_errmsg("hfsplus_volumeheader: header malloc failed\n");
         return CL_EMEM;
@@ -312,7 +312,7 @@ static cl_error_t hfsplus_readheader(cli_ctx *ctx, hfsPlusVolumeHeader *volHeade
  * @param fork          Fork Data
  * @param dirname       Temp directory name
  * @param[out] filename (optional) temp file name
- * @param orig_filename (optiopnal) Original filename
+ * @param orig_filename (optional) Original filename
  * @return cl_error_t
  */
 static cl_error_t hfsplus_scanfile(cli_ctx *ctx, hfsPlusVolumeHeader *volHeader, hfsHeaderRecord *extHeader,
@@ -344,7 +344,7 @@ static cl_error_t hfsplus_scanfile(cli_ctx *ctx, hfsPlusVolumeHeader *volHeader,
         goto done;
     }
 #endif
-    status = cli_checklimits("hfsplus_scanfile", ctx, (unsigned long)targetSize, 0, 0);
+    status = cli_checklimits("hfsplus_scanfile", ctx, targetSize, 0, 0);
     if (status != CL_SUCCESS) {
         goto done;
     }
@@ -360,7 +360,7 @@ static cl_error_t hfsplus_scanfile(cli_ctx *ctx, hfsPlusVolumeHeader *volHeader,
     ext = 0;
     /* Dump file, extent by extent */
     do {
-        uint32_t currBlock, endBlock, outputSize = 0;
+        uint32_t currBlock, endBlock;
         if (targetSize == 0) {
             cli_dbgmsg("hfsplus_scanfile: output complete\n");
             break;
@@ -423,7 +423,6 @@ static cl_error_t hfsplus_scanfile(cli_ctx *ctx, hfsPlusVolumeHeader *volHeader,
             }
 
             targetSize -= to_write;
-            outputSize += to_write;
             currBlock++;
 
             if (targetSize == 0) {
@@ -523,7 +522,7 @@ static cl_error_t hfsplus_check_attribute(cli_ctx *ctx, hfsPlusVolumeHeader *vol
     nodeSize  = attrHeader->nodeSize;
 
     /* Need to buffer current node, map will keep moving */
-    nodeBuf = cli_malloc(nodeSize);
+    nodeBuf = cli_max_malloc(nodeSize);
     if (!nodeBuf) {
         cli_dbgmsg("hfsplus_check_attribute: failed to acquire node buffer, "
                    "size " STDu32 "\n",
@@ -894,7 +893,7 @@ static cl_error_t hfsplus_read_block_table(int fd, uint32_t *numBlocks, hfsPlusR
     }
 
     *numBlocks = le32_to_host(*numBlocks); // Let's do a little little endian just for fun, shall we?
-    *table     = cli_malloc(sizeof(hfsPlusResourceBlockTable) * *numBlocks);
+    *table     = cli_max_malloc(sizeof(hfsPlusResourceBlockTable) * *numBlocks);
     if (!*table) {
         cli_dbgmsg("hfsplus_read_block_table: Failed to allocate memory for block table\n");
         status = CL_EMEM;
@@ -948,7 +947,7 @@ static cl_error_t hfsplus_walk_catalog(cli_ctx *ctx, hfsPlusVolumeHeader *volHea
     nodeSize  = catHeader->nodeSize;
 
     /* Need to buffer current node, map will keep moving */
-    nodeBuf = cli_malloc(nodeSize);
+    nodeBuf = cli_max_malloc(nodeSize);
     if (!nodeBuf) {
         cli_dbgmsg("hfsplus_walk_catalog: failed to acquire node buffer, "
                    "size " STDu32 "\n",
@@ -1539,7 +1538,7 @@ cli_dbgmsg("sizeof(hfsNodeDescriptor) is %lu\n", sizeof(hfsNodeDescriptor));
     }
 
     /* Create temp folder for contents */
-    if (!(targetdir = cli_gentemp_with_prefix(ctx->sub_tmpdir, "hfsplus-tmp"))) {
+    if (!(targetdir = cli_gentemp_with_prefix(ctx->this_layer_tmpdir, "hfsplus-tmp"))) {
         cli_errmsg("cli_scanhfsplus: cli_gentemp failed\n");
         status = CL_ETMPDIR;
         goto done;

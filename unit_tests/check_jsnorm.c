@@ -1,7 +1,7 @@
 /*
  *  Unit tests for JS normalizer.
  *
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -114,7 +114,7 @@ END_TEST
 
 START_TEST(test_token_scope)
 {
-    struct scope *sc = (struct scope *)0xdeadbeef;
+    struct scope *sc = (struct scope *)(uint64_t)0xdeadbeef;
     yystype tok;
     memset(&tok, 0, sizeof(tok));
 

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Alberto Wu
@@ -187,7 +187,7 @@ static int pefromupx(const char *src, uint32_t ssize, char *dst, uint32_t *dsize
     if (!pehdr) {
         uint32_t rebsz = PESALIGN(dend, 0x1000);
         cli_dbgmsg("UPX: no luck - brutally crafting a reasonable PE\n");
-        if (!(newbuf = (char *)cli_calloc(rebsz + 0x200, sizeof(char)))) {
+        if (!(newbuf = (char *)cli_max_calloc(rebsz + 0x200, sizeof(char)))) {
             cli_dbgmsg("UPX: malloc failed - giving up rebuild\n");
             return 0;
         }
@@ -234,7 +234,7 @@ static int pefromupx(const char *src, uint32_t ssize, char *dst, uint32_t *dsize
     cli_writeint32(pehdr + 8, 0x4d414c43);
     cli_writeint32(pehdr + 0x3c, valign);
 
-    if (!(newbuf = (char *)cli_calloc(foffset, sizeof(char)))) {
+    if (!(newbuf = (char *)cli_max_calloc(foffset, sizeof(char)))) {
         cli_dbgmsg("UPX: malloc failed - giving up rebuild\n");
         return 0;
     }
@@ -360,7 +360,7 @@ int upx_inflate2b(const char *src, uint32_t ssize, char *dst, uint32_t *dsize, u
             } while ((oob = doubleebx(src, &myebx, &scur, ssize)) == 0);
             if (oob == -1)
                 return -1;
-            if (backsize + 2 > UINT32_MAX)
+            if (backsize > UINT32_MAX - 2)
                 return -1;
             backsize += 2;
         }
@@ -455,7 +455,7 @@ int upx_inflate2d(const char *src, uint32_t ssize, char *dst, uint32_t *dsize, u
             } while ((oob = doubleebx(src, &myebx, &scur, ssize)) == 0);
             if (oob == -1)
                 return -1;
-            if (backsize + 2 > UINT32_MAX)
+            if (backsize > UINT32_MAX - 2)
                 return -1;
             backsize += 2;
         }
@@ -554,7 +554,7 @@ int upx_inflate2e(const char *src, uint32_t ssize, char *dst, uint32_t *dsize, u
                 } while ((oob = doubleebx(src, &myebx, &scur, ssize)) == 0);
                 if (oob == -1)
                     return -1;
-                if (backsize + 2 > UINT32_MAX)
+                if (backsize > UINT32_MAX - 2)
                     return -1;
                 backsize += 2;
             }
@@ -563,7 +563,7 @@ int upx_inflate2e(const char *src, uint32_t ssize, char *dst, uint32_t *dsize, u
         if ((uint32_t)unp_offset < 0xfffffb00)
             backsize++;
 
-        if (backsize + 2 > UINT32_MAX)
+        if (backsize > UINT32_MAX - 2)
             return -1;
         backsize += 2;
 

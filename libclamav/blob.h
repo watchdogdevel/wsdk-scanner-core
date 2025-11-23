@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Nigel Horne
@@ -62,7 +62,7 @@ typedef struct fileblob {
                      */
     char *fullname; /* full pathname of the file */
     cli_ctx *ctx;   /* When set we can scan the blob, otherwise NULL */
-    unsigned long bytes_scanned;
+    uint64_t bytes_scanned;
     unsigned int isNotEmpty : 1;
     unsigned int isInfected : 1;
 } fileblob;

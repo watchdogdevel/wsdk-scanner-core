@@ -1,4 +1,4 @@
-# Copyright (C) 2020-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+# Copyright (C) 2020-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 
 if(WIN32)
     add_definitions(-DWIN32_LEAN_AND_MEAN)
@@ -48,7 +48,11 @@ if(ENABLE_SHARED_LIB)
                 resolv
                 ${APPLE_CORE_FOUNDATION}
                 ${APPLE_SECURITY} )
-    elseif(UNIX)
+    elseif(HAIKU)
+        target_link_libraries( freshclam
+            PUBLIC
+                network )
+    elseif(UNIX AND NOT AIX)
         if(HAVE_RESOLV_H AND NOT C_BSD) # BSD appears to have libresolv inside libc
             target_link_libraries( freshclam
                 PUBLIC
@@ -58,12 +62,17 @@ if(ENABLE_SHARED_LIB)
 
     if(WIN32)
         set_target_properties(freshclam PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-    elseif(UNIX AND NOT APPLE)
+    elseif(UNIX AND NOT APPLE AND NOT AIX)
         target_link_options(freshclam PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/libfreshclam.map")
+        if (${CMAKE_SYSTEM_NAME} MATCHES "SunOS")
+            # Solaris 11.4 linker supports a subset of GNU ld version scripts, but requires a special option to enable
+            target_link_options(freshclam PRIVATE "-Wl,-z,gnu-version-script-compat")
+        endif()
     endif()
     set_target_properties(freshclam PROPERTIES
         COMPILE_FLAGS "${WARNCFLAGS}"
-        VERSION ${LIBFRESHCLAM_VERSION} SOVERSION ${LIBFRESHCLAM_SOVERSION})
+        VERSION ${LIBFRESHCLAM_VERSION} SOVERSION ${LIBFRESHCLAM_SOVERSION}
+        LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/libfreshclam.map)
     if(WIN32)
         install(TARGETS freshclam DESTINATION . COMPONENT libraries)
         install(FILES $<TARGET_PDB_FILE:freshclam> DESTINATION . OPTIONAL COMPONENT libraries)
@@ -78,6 +87,8 @@ if(ENABLE_SHARED_LIB)
                     $<TARGET_FILE_DIR:CURL::libcurl>
                     $<TARGET_FILE_DIR:OpenSSL::SSL>
                     $<TARGET_FILE_DIR:OpenSSL::Crypto>
+                POST_EXCLUDE_REGEXES
+                   "[cC]:[\\/][wW][iI][nN][dD][oO][wW][sS]"
             )
             foreach(_file ${_r_deps})
                 string(TOLOWER ${_file} _file_lower)
@@ -128,6 +139,10 @@ if(ENABLE_STATIC_LIB)
                 resolv
                 ${APPLE_CORE_FOUNDATION}
                 ${APPLE_SECURITY} )
+    elseif(HAIKU)
+        target_link_libraries( freshclam_static
+            PUBLIC
+                network )
     elseif(UNIX)
         if(HAVE_RESOLV_H AND NOT C_BSD) # BSD appears to have libresolv inside libc
             target_link_libraries( freshclam_static

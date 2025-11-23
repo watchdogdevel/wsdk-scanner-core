@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -30,7 +30,7 @@
 #endif
 
 cl_error_t cli_versig(const char *md5, const char *dsig);
-int cli_versig2(const unsigned char *sha256, const char *dsig_str, const char *n_str, const char *e_str);
+cl_error_t cli_versig2(const unsigned char *sha2_256, const char *dsig_str, const char *n_str, const char *e_str);
 
 /**
  * @brief Connect to a signing server, send the data to be signed, and return the digital signature.

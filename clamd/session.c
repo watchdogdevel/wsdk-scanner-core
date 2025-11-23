@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, Török Edvin
@@ -551,17 +551,24 @@ int execute_or_dispatch_command(client_conn_t *conn, enum commands cmd, const ch
 
     switch (cmd) {
         case COMMAND_SHUTDOWN:
-            pthread_mutex_lock(&exit_mutex);
-            progexit = 1;
-            pthread_mutex_unlock(&exit_mutex);
+            if (optget(conn->opts, "EnableShutdownCommand")->enabled) {
+                pthread_mutex_lock(&exit_mutex);
+                progexit = 1;
+                pthread_mutex_unlock(&exit_mutex);
+            } else {
+                conn_reply_single(conn, NULL, "COMMAND UNAVAILABLE");
+            }
             return 1;
         case COMMAND_RELOAD:
-            pthread_mutex_lock(&reload_mutex);
-            reload = 1;
-            pthread_mutex_unlock(&reload_mutex);
-            mdprintf(desc, "RELOADING%c", term);
-            /* we set reload flag, and we'll reload before closing the
-             * connection */
+            if (optget(conn->opts, "EnableReloadCommand")->enabled) {
+                pthread_mutex_lock(&reload_mutex);
+                reload = 1;
+                pthread_mutex_unlock(&reload_mutex);
+                mdprintf(desc, "RELOADING%c", term);
+                /* we set reload flag, and we'll reload before closing the connection */
+            } else {
+                conn_reply_single(conn, NULL, "COMMAND UNAVAILABLE");
+            }
             return 1;
         case COMMAND_PING:
             if (conn->group)
@@ -570,10 +577,15 @@ int execute_or_dispatch_command(client_conn_t *conn, enum commands cmd, const ch
                 mdprintf(desc, "PONG%c", term);
             return conn->group ? 0 : 1;
         case COMMAND_VERSION: {
-            if (conn->group)
-                mdprintf(desc, "%u: ", conn->id);
-            print_ver(desc, conn->term, engine);
-            return conn->group ? 0 : 1;
+            if (optget(conn->opts, "EnableVersionCommand")->enabled) {
+                if (conn->group)
+                    mdprintf(desc, "%u: ", conn->id);
+                print_ver(desc, conn->term, engine);
+                return conn->group ? 0 : 1;
+            } else {
+                conn_reply_single(conn, NULL, "COMMAND UNAVAILABLE");
+                return 1;
+            }
         }
         case COMMAND_COMMANDS: {
             if (conn->group)
@@ -591,15 +603,23 @@ int execute_or_dispatch_command(client_conn_t *conn, enum commands cmd, const ch
         }
         case COMMAND_INSTREAM: {
             int rc = cli_gentempfd(optget(conn->opts, "TemporaryDirectory")->strarg, &conn->filename, &conn->scanfd);
-            if (rc != CL_SUCCESS)
-                return rc;
+            if (rc != CL_SUCCESS) {
+                return 1;
+            }
             conn->quota = optget(conn->opts, "StreamMaxLength")->numarg;
             conn->mode  = MODE_STREAM;
             return 0;
         }
+        case COMMAND_STATS: {
+            if (optget(conn->opts, "EnableStatsCommand")->enabled) {
+                return dispatch_command(conn, cmd, argument);
+            } else {
+                conn_reply_single(conn, NULL, "COMMAND UNAVAILABLE");
+                return 1;
+            }
+        }
         case COMMAND_MULTISCAN:
         case COMMAND_CONTSCAN:
-        case COMMAND_STATS:
         case COMMAND_FILDES:
         case COMMAND_SCAN:
         case COMMAND_INSTREAMSCAN:

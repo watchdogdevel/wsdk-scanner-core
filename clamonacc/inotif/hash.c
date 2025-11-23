@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2015-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2015-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Mickey Sola
  *
@@ -72,22 +72,22 @@ static struct onas_hnode *onas_hashnode_init(void);
 /**
  * The data structure described and implemented below is a hash table with elements that also act as relational nodes
  * in a tree. This allows for average case constant time retrieval of nodes, and recursive operation on a node and all
- * it's children and parents. The memory cost for this speed of relational retrieval is necessarily high, as every node
- * must also keep track of it's children in a key-accessible way. To cut down on memory costs, children of nodes are not
+ * its children and parents. The memory cost for this speed of relational retrieval is necessarily high, as every node
+ * must also keep track of its children in a key-accessible way. To cut down on memory costs, children of nodes are not
  * themselves key accessible, but must be combined with their parent in a constant-time operation to be retrieved from
  * the table.
  *
  * Further optimization to retrieval and space management may include storing direct address to given children nodes, but
- * such a design will create further complexitiy and time cost at insertion--which must also be as fast as possible in
- * order to accomadate the real-time nature of security event processing.
+ * such a design will create further complexity and time cost at insertion--which must also be as fast as possible in
+ * order to accommodate the real-time nature of security event processing.
  *
  * To date, the hashing function itself has not been well studied, and as such buckets were implemented from the start to
- * help account for any potential collission issues in its design, as a measure to help offset any major time sinks during
+ * help account for any potential collision issues in its design, as a measure to help offset any major time sinks during
  * insertion.
  *
  * One last important note about this hash table is that to avoid massive slowdowns, it does not grow, but instead relies on
  * buckets and a generous default size to distribute that load. Slight hit to retrieval time is a fair cost to pay to avoid
- * total loss of service in a real-time system. Future work here might include automatically confiuguring initial hashtable
+ * total loss of service in a real-time system. Future work here might include automatically configuring initial hashtable
  * size to align with the system being monitored, or max inotify watch points since that's our hard limit anyways.
  */
 
@@ -136,16 +136,18 @@ int onas_ht_init(struct onas_ht **ht, uint32_t size)
 
     if (size == 0 || (size & (~size + 1)) != size) return CL_EARG;
 
-    *ht = (struct onas_ht *)cli_malloc(sizeof(struct onas_ht));
+    *ht = (struct onas_ht *)malloc(sizeof(struct onas_ht));
     if (!(*ht)) return CL_EMEM;
 
     **ht = (struct onas_ht){
         .htable = NULL,
         .size   = size,
+        .head   = NULL,
+        .tail   = NULL,
         .nbckts = 0,
     };
 
-    if (!((*ht)->htable = (struct onas_bucket **)cli_calloc(size, sizeof(struct onas_bucket *)))) {
+    if (!((*ht)->htable = (struct onas_bucket **)calloc(size, sizeof(struct onas_bucket *)))) {
         onas_free_ht(*ht);
         return CL_EMEM;
     }
@@ -180,7 +182,7 @@ void onas_free_ht(struct onas_ht *ht)
 static struct onas_bucket *onas_bucket_init()
 {
 
-    struct onas_bucket *bckt = (struct onas_bucket *)cli_malloc(sizeof(struct onas_bucket));
+    struct onas_bucket *bckt = (struct onas_bucket *)malloc(sizeof(struct onas_bucket));
     if (!bckt) return NULL;
 
     *bckt = (struct onas_bucket){
@@ -216,7 +218,7 @@ static void onas_free_bucket(struct onas_bucket *bckt)
 struct onas_element *onas_element_init(struct onas_hnode *value, const char *key, size_t klen)
 {
 
-    struct onas_element *elem = (struct onas_element *)cli_malloc(sizeof(struct onas_element));
+    struct onas_element *elem = (struct onas_element *)malloc(sizeof(struct onas_element));
     if (!elem) return NULL;
 
     *elem = (struct onas_element){
@@ -257,9 +259,24 @@ int onas_ht_insert(struct onas_ht *ht, struct onas_element *elem)
 
     if (bckt == NULL) {
         ht->htable[idx] = onas_bucket_init();
-        bckt            = ht->htable[idx];
+        if (ht->htable[idx] == NULL) return CL_EMEM;
+
+        bckt = ht->htable[idx];
     }
 
+    /* Init activated buckets */
+    if (ht->nbckts == 0) {
+        ht->head   = bckt;
+        ht->tail   = bckt;
+        bckt->prev = NULL;
+        bckt->next = NULL;
+    } else {
+        struct onas_bucket *ht_tail = ht->tail;
+        ht_tail->next               = bckt;
+        bckt->prev                  = ht_tail;
+        bckt->next                  = NULL;
+        ht->tail                    = bckt;
+    }
     bsize = bckt->size;
     ret   = onas_bucket_insert(bckt, elem);
 
@@ -392,7 +409,7 @@ static int onas_bucket_remove(struct onas_bucket *bckt, struct onas_element *ele
 static struct onas_hnode *onas_hashnode_init(void)
 {
     struct onas_hnode *hnode = NULL;
-    if (!(hnode = (struct onas_hnode *)cli_malloc(sizeof(struct onas_hnode)))) {
+    if (!(hnode = (struct onas_hnode *)malloc(sizeof(struct onas_hnode)))) {
         return NULL;
     }
 
@@ -428,7 +445,7 @@ static struct onas_hnode *onas_hashnode_init(void)
 static struct onas_lnode *onas_listnode_init(void)
 {
     struct onas_lnode *lnode = NULL;
-    if (!(lnode = (struct onas_lnode *)cli_malloc(sizeof(struct onas_lnode)))) {
+    if (!(lnode = (struct onas_lnode *)malloc(sizeof(struct onas_lnode)))) {
         return NULL;
     }
 
@@ -794,7 +811,7 @@ int onas_ht_rm_hierarchy(struct onas_ht *ht, const char *pathname, size_t len, i
         curr = curr->next;
 
         size_t size      = len + strlen(curr->dirname) + 2;
-        char *child_path = (char *)cli_malloc(size);
+        char *child_path = (char *)malloc(size);
         if (child_path == NULL)
             return CL_EMEM;
         if (hnode->pathname[len - 1] == '/')

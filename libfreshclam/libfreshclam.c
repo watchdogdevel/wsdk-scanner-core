@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *  Copyright (C) 2002-2007 Tomasz Kojm <tkojm@clamav.net>
  *
@@ -85,11 +85,11 @@ const char *fc_strerror(fc_error_t fcerror)
         case FC_UPTODATE:
             return "Up-to-date";
         case FC_EINIT:
-            return "Failed to initalize";
+            return "Failed to initialize";
         case FC_EDIRECTORY:
-            return "Invalid, nonexistant, or inaccessible directory";
+            return "Invalid, nonexistent, or inaccessible directory";
         case FC_EFILE:
-            return "Invalid, nonexistant, or inaccessible file";
+            return "Invalid, nonexistent, or inaccessible file";
         case FC_ECONNECTION:
             return "Connection failed";
         case FC_EEMPTYFILE:
@@ -127,6 +127,8 @@ fc_error_t fc_initialize(fc_config *fcConfig)
 {
     fc_error_t status = FC_EARG;
     STATBUF statbuf;
+    char *certsDirectory         = NULL;
+    FFIError *new_verifier_error = NULL;
 
     if (NULL == fcConfig) {
         printf("fc_initialize: Invalid arguments.\n");
@@ -139,7 +141,7 @@ fc_error_t fc_initialize(fc_config *fcConfig)
                     Please submit an issue to https://github.com/Cisco-Talos/clamav");
     }
 
-    /* Initilize libcurl */
+    /* Initialize libcurl */
     curl_global_init(CURL_GLOBAL_ALL);
 
     /* Initialize mprintf options */
@@ -158,7 +160,7 @@ fc_error_t fc_initialize(fc_config *fcConfig)
     logg_size    = fcConfig->maxLogSize;
     /* Set a log file if requested, and is not already set */
     if ((NULL == logg_file) && (NULL != fcConfig->logFile)) {
-        logg_file = cli_strdup(fcConfig->logFile);
+        logg_file = cli_safer_strdup(fcConfig->logFile);
         if (0 != logg(LOGG_INFO_NF, "--------------------------------------\n")) {
             mprintf(LOGG_ERROR, "Problem with internal logger (UpdateLogFile = %s).\n", logg_file);
             status = FC_ELOGGING;
@@ -188,14 +190,14 @@ fc_error_t fc_initialize(fc_config *fcConfig)
         mprintf(LOGG_ERROR, "Your installation was built with libcurl version %u.%u.%u.\n", LIBCURL_VERSION_MAJOR, LIBCURL_VERSION_MINOR, LIBCURL_VERSION_PATCH);
         mprintf(LOGG_ERROR, "LocalIP requires libcurl version 7.33.0 or higher and must include the c-ares optional dependency.\n");
 #else
-        g_localIP = cli_strdup(fcConfig->localIP);
+        g_localIP = cli_safer_strdup(fcConfig->localIP);
 #endif
     }
     if (NULL != fcConfig->userAgent) {
-        g_userAgent = cli_strdup(fcConfig->userAgent);
+        g_userAgent = cli_safer_strdup(fcConfig->userAgent);
     }
     if (NULL != fcConfig->proxyServer) {
-        g_proxyServer = cli_strdup(fcConfig->proxyServer);
+        g_proxyServer = cli_safer_strdup(fcConfig->proxyServer);
         if (0 != fcConfig->proxyPort) {
             g_proxyPort = fcConfig->proxyPort;
         } else {
@@ -215,10 +217,10 @@ fc_error_t fc_initialize(fc_config *fcConfig)
         }
     }
     if (NULL != fcConfig->proxyUsername) {
-        g_proxyUsername = cli_strdup(fcConfig->proxyUsername);
+        g_proxyUsername = cli_safer_strdup(fcConfig->proxyUsername);
     }
     if (NULL != fcConfig->proxyPassword) {
-        g_proxyPassword = cli_strdup(fcConfig->proxyPassword);
+        g_proxyPassword = cli_safer_strdup(fcConfig->proxyPassword);
     }
 
 #ifdef _WIN32
@@ -227,14 +229,14 @@ fc_error_t fc_initialize(fc_config *fcConfig)
 #else
     if (fcConfig->databaseDirectory[strlen(fcConfig->databaseDirectory) - 1] != '/') {
 #endif
-        g_databaseDirectory = cli_malloc(strlen(fcConfig->databaseDirectory) + strlen(PATHSEP) + 1);
+        g_databaseDirectory = malloc(strlen(fcConfig->databaseDirectory) + strlen(PATHSEP) + 1);
         snprintf(
             g_databaseDirectory,
             strlen(fcConfig->databaseDirectory) + strlen(PATHSEP) + 1,
             "%s" PATHSEP,
             fcConfig->databaseDirectory);
     } else {
-        g_databaseDirectory = cli_strdup(fcConfig->databaseDirectory);
+        g_databaseDirectory = cli_safer_strdup(fcConfig->databaseDirectory);
     }
 
     /* Validate that the database directory exists, and store it. */
@@ -249,13 +251,37 @@ fc_error_t fc_initialize(fc_config *fcConfig)
         goto done;
     }
 
-    g_tempDirectory = cli_strdup(fcConfig->tempDirectory);
+#ifdef _WIN32
+    if ((fcConfig->certsDirectory[strlen(fcConfig->certsDirectory) - 1] != '/') &&
+        ((fcConfig->certsDirectory[strlen(fcConfig->certsDirectory) - 1] != '\\'))) {
+#else
+    if (fcConfig->certsDirectory[strlen(fcConfig->certsDirectory) - 1] != '/') {
+#endif
+        certsDirectory = malloc(strlen(fcConfig->certsDirectory) + strlen(PATHSEP) + 1);
+        snprintf(
+            certsDirectory,
+            strlen(fcConfig->certsDirectory) + strlen(PATHSEP) + 1,
+            "%s" PATHSEP,
+            fcConfig->certsDirectory);
+    } else {
+        certsDirectory = cli_safer_strdup(fcConfig->certsDirectory);
+    }
+
+    if (!codesign_verifier_new(certsDirectory, &g_signVerifier, &new_verifier_error)) {
+        logg(LOGG_ERROR, "Failed to create a new code-signature verifier: %s\n", ffierror_fmt(new_verifier_error));
+        status = FC_EINIT;
+        goto done;
+    }
+
+    g_tempDirectory = cli_safer_strdup(fcConfig->tempDirectory);
 
     g_maxAttempts    = fcConfig->maxAttempts;
     g_connectTimeout = fcConfig->connectTimeout;
     g_requestTimeout = fcConfig->requestTimeout;
 
     g_bCompressLocalDatabase = fcConfig->bCompressLocalDatabase;
+
+    g_bFipsLimits = fcConfig->bFipsLimits;
 
     /* Load or create freshclam.dat */
     if (FC_SUCCESS != load_freshclam_dat()) {
@@ -273,6 +299,12 @@ fc_error_t fc_initialize(fc_config *fcConfig)
 done:
     if (FC_SUCCESS != status) {
         fc_cleanup();
+    }
+    if (NULL != certsDirectory) {
+        free(certsDirectory);
+    }
+    if (NULL != new_verifier_error) {
+        ffierror_free(new_verifier_error);
     }
 
     return status;
@@ -319,6 +351,9 @@ void fc_cleanup(void)
         free(g_freshclamDat);
         g_freshclamDat = NULL;
     }
+    if (NULL != g_signVerifier) {
+        codesign_verifier_free(g_signVerifier);
+    }
 }
 
 fc_error_t fc_prune_database_directory(char **databaseList, uint32_t nDatabases)
@@ -346,13 +381,24 @@ fc_error_t fc_prune_database_directory(char **databaseList, uint32_t nDatabases)
 
     while ((dent = readdir(dir))) {
         if (dent->d_ino) {
+            // prune any CVD/CLD files that are not in the database list
             if ((NULL != (extension = strstr(dent->d_name, ".cld"))) ||
                 (NULL != (extension = strstr(dent->d_name, ".cvd")))) {
+
+                // find the first '-' or '.' in the filename
+                // Use this to determine the database name.
+                // We need this so we can ALSO prune the .sign files for unwanted databases.
+                // Will also be useful in case the database filename includes a hyphenated version number.
+                const char *first_dash_or_dot = strchr(dent->d_name, '-');
+                if (NULL == first_dash_or_dot) {
+                    first_dash_or_dot = extension;
+                }
 
                 uint32_t i;
                 int bFound = 0;
                 for (i = 0; i < nDatabases; i++) {
-                    if (0 == strncmp(databaseList[i], dent->d_name, extension - dent->d_name)) {
+                    // check that the database name is in the database list
+                    if (0 == strncmp(databaseList[i], dent->d_name, first_dash_or_dot - dent->d_name)) {
                         bFound = 1;
                     }
                 }
@@ -420,6 +466,7 @@ fc_error_t fc_test_database(const char *dbFilename, int bBytecodeEnabled)
     struct cl_engine *engine = NULL;
     unsigned newsigs         = 0;
     cl_error_t cl_ret;
+    unsigned int dboptions = 0;
 
     if ((NULL == dbFilename)) {
         logg(LOGG_WARNING, "fc_test_database: Invalid arguments.\n");
@@ -438,10 +485,16 @@ fc_error_t fc_test_database(const char *dbFilename, int bBytecodeEnabled)
 
     cl_engine_set_clcb_stats_submit(engine, NULL);
 
+    dboptions = CL_DB_PHISHING | CL_DB_PHISHING_URLS | CL_DB_BYTECODE | CL_DB_PUA | CL_DB_ENHANCED;
+    if (g_bFipsLimits) {
+        dboptions |= CL_DB_FIPS_LIMITS;
+    }
+
     if (CL_SUCCESS != (cl_ret = cl_load(
-                           dbFilename, engine, &newsigs,
-                           CL_DB_PHISHING | CL_DB_PHISHING_URLS | CL_DB_BYTECODE |
-                               CL_DB_PUA | CL_DB_ENHANCED))) {
+                           dbFilename,
+                           engine,
+                           &newsigs,
+                           dboptions))) {
         logg(LOGG_ERROR, "Failed to load new database: %s\n", cl_strerror(cl_ret));
         status = FC_ETESTFAIL;
         goto done;
@@ -462,8 +515,8 @@ fc_error_t fc_test_database(const char *dbFilename, int bBytecodeEnabled)
 done:
 
     if (NULL != engine) {
-        if (engine->domain_list_matcher && engine->domain_list_matcher->sha256_pfx_set.keys)
-            cli_hashset_destroy(&engine->domain_list_matcher->sha256_pfx_set);
+        if (engine->domain_list_matcher && engine->domain_list_matcher->sha2_256_pfx_set.keys)
+            cli_hashset_destroy(&engine->domain_list_matcher->sha2_256_pfx_set);
 
         cl_engine_free(engine);
     }
@@ -573,7 +626,7 @@ fc_error_t fc_dns_query_update_info(
                 logg(LOGG_WARNING, "Your ClamAV installation is OUTDATED!\n");
                 logg(LOGG_WARNING, "Local version: %s Recommended version: %s\n", version_string, reply_token);
                 logg(LOGG_INFO, "DON'T PANIC! Read https://docs.clamav.net/manual/Installing.html\n");
-                *newVersion = cli_strdup(reply_token);
+                *newVersion = cli_safer_strdup(reply_token);
             }
         }
     }
@@ -693,9 +746,15 @@ fc_error_t fc_update_database(
                     logg(LOGG_INFO, "    In order to rectify this please check that you are:\n");
                     logg(LOGG_INFO, "   a. Running an up-to-date version of FreshClam\n");
                     logg(LOGG_INFO, "   b. Running FreshClam no more than once an hour\n");
-                    logg(LOGG_INFO, "   c. If you have checked (a) and (b), please open a ticket at\n");
+                    logg(LOGG_INFO, "   c. Connecting from an IP in a blocked region\n");
+                    logg(LOGG_INFO, "      Please see https://www.cisco.com/c/m/en_us/crisissupport.html\n");
+                    logg(LOGG_INFO, "   d. If you have checked (a), (b) and (c), please open a ticket at\n");
                     logg(LOGG_INFO, "      https://github.com/Cisco-Talos/clamav/issues\n");
                     logg(LOGG_INFO, "      and we will investigate why your network is blocked.\n");
+                    if (0 != g_lastRay[0]) {
+                        logg(LOGG_INFO, "      Please provide the following cf-ray id with your ticket: %s\n", g_lastRay);
+                        logg(LOGG_INFO, "\n");
+                    }
                     logg(LOGG_WARNING, "You are on cool-down until after: %s\n", retry_after_string);
                     status = ret;
                     goto done;
@@ -795,7 +854,14 @@ fc_error_t fc_update_databases(
             logg(LOGG_INFO, "    CDN and your own network.\n");
             logg(LOGG_INFO, " 4. Please do not open a ticket asking for an exemption from the rate limit,\n");
             logg(LOGG_INFO, "    it will not be granted.\n");
+            if (0 != g_lastRay[0]) {
+                logg(LOGG_INFO, " 5. If you have verified that you are not blocked due to your region, and have\n");
+                logg(LOGG_INFO, "    not exceeded the rate limit, please provide the following cf-ray id when\n");
+                logg(LOGG_INFO, "    submitting a ticket: %s\n", g_lastRay);
+                logg(LOGG_INFO, "\n");
+            }
             logg(LOGG_WARNING, "You are still on cool-down until after: %s\n", retry_after_string);
+
             status = FC_SUCCESS;
             goto done;
         } else {
@@ -804,6 +870,10 @@ fc_error_t fc_update_databases(
             save_freshclam_dat();
         }
     }
+
+    /* Clear the old cf-ray ids.  This is really only so that
+     * we don't have stale ones when we are running in daemon mode. */
+    memset(&g_lastRay, 0, sizeof(g_lastRay));
 
     for (i = 0; i < nDatabases; i++) {
         if (FC_SUCCESS != (ret = fc_update_database(
@@ -914,7 +984,12 @@ fc_error_t fc_download_url_database(
                 logg(LOGG_INFO, "   c. If you have checked (a) and (b), please open a ticket at\n");
                 logg(LOGG_INFO, "      https://github.com/Cisco-Talos/clamav/issues\n");
                 logg(LOGG_INFO, "      and we will investigate why your network is blocked.\n");
+                if (0 != g_lastRay[0]) {
+                    logg(LOGG_INFO, "      Please provide the following cf-ray id with your ticket: %s\n", g_lastRay);
+                    logg(LOGG_INFO, "\n");
+                }
                 logg(LOGG_WARNING, "You are on cool-down until after: %s\n", retry_after_string);
+
                 status = ret;
                 goto done;
                 break;

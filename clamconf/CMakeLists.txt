@@ -1,4 +1,4 @@
-# Copyright (C) 2020-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+# Copyright (C) 2020-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 
 if(WIN32)
     add_definitions(-DWIN32_LEAN_AND_MEAN)
@@ -16,7 +16,9 @@ target_sources( clamconf
     PRIVATE
         clamconf.c )
 if(WIN32)
-    target_sources( clamconf PRIVATE ${CMAKE_SOURCE_DIR}/win32/res/clamconf.rc )
+    target_sources( clamconf PRIVATE 
+    ${CMAKE_SOURCE_DIR}/win32/res/clamconf.rc
+    ${CMAKE_SOURCE_DIR}/win32/res/clam.manifest )
 endif()
 target_include_directories( clamconf
     PRIVATE ${CMAKE_BINARY_DIR} # For clamav-config.h

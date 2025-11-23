@@ -1,4 +1,4 @@
-# Copyright (C) 2020-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+# Copyright (C) 2020-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 
 if(WIN32)
     add_definitions(-DWIN32_LEAN_AND_MEAN)
@@ -45,9 +45,6 @@ if(WIN32)
 else()
     install(TARGETS freshclam-bin DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT programs)
 endif()
-
-# Install an empty database directory
-INSTALL(CODE "FILE(MAKE_DIRECTORY \${ENV}\${CMAKE_INSTALL_PREFIX}/\${DATABASE_DIRECTORY})" COMPONENT programs)
 
 # Now we rename freshclam-bin executable to freshclam using target properties
 set_target_properties( freshclam-bin

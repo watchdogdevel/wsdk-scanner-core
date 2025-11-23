@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Author: Tomasz Kojm <tkojm@clamav.net>
@@ -101,6 +101,7 @@ static void printopts(struct optstruct *opts, int nondef)
 
                 case CLOPT_TYPE_NUMBER:
                 case CLOPT_TYPE_SIZE:
+                case CLOPT_TYPE_SIZE64:
                     printf("%s = \"%lld\"", opts->name, opts->numarg);
                     opt = opts;
                     while ((opt = opt->nextarg))
@@ -169,7 +170,8 @@ static int printconf(const char *name)
                     break;
 
                 case CLOPT_TYPE_SIZE:
-                    printf("# You may use 'M' or 'm' for megabytes (1M = 1m = 1048576 bytes)\n# and 'K' or 'k' for kilobytes (1K = 1k = 1024 bytes). To specify the size\n# in bytes just don't use modifiers.\n");
+                case CLOPT_TYPE_SIZE64:
+                    printf("# You may use 'G' or 'g' for gigabytes (1G = 1g = 1,073,741,824 bytes)\n# 'M' or 'm' for megabytes (1M = 1m = 1048576 bytes)\n# and 'K' or 'k' for kilobytes (1K = 1k = 1024 bytes). To specify the size\n# in bytes just don't use modifiers.\n");
                     if (cpt->numarg != -1)
                         printf("# Default: %lld\n", cpt->numarg);
                     else
@@ -207,7 +209,7 @@ static void help(void)
     printf("\n");
     printf("                       Clam AntiVirus: Configuration Tool %s\n", get_version());
     printf("           By The ClamAV Team: https://www.clamav.net/about.html#credits\n");
-    printf("           (C) 2023 Cisco Systems, Inc.\n");
+    printf("           (C) 2025 Cisco Systems, Inc.\n");
     printf("\n");
     printf("    --help                 -h         Show this help\n");
     printf("    --version              -V         Show version\n");
@@ -226,7 +228,7 @@ static void print_platform(struct cli_environment *env)
 
     printf("OS: " TARGET_OS_TYPE ", ARCH: " TARGET_ARCH_TYPE ", CPU: " TARGET_CPU_TYPE "\n");
 
-#ifdef C_LINUX
+#if defined(C_LINUX) || defined(C_GNU_HURD)
     if (!access("/usr/bin/lsb_release", X_OK)) {
         fputs("Full OS version: ", stdout);
         fflush(stdout);
@@ -444,12 +446,6 @@ int main(int argc, char **argv)
 #ifdef USE_MPOOL
     printf("MEMPOOL ");
 #endif
-#ifdef SUPPORT_IPv6
-    printf("IPv6 ");
-#endif
-#ifdef CLAMUKO
-    printf("CLAMUKO ");
-#endif
 #ifdef C_BIGSTACK
     printf("BIGSTACK ");
 #endif
@@ -460,25 +456,9 @@ int main(int argc, char **argv)
     if (get_fpu_endian() != FPU_ENDIAN_UNKNOWN)
 #endif
         printf("AUTOIT_EA06 ");
-#ifdef HAVE_BZLIB_H
-    printf("BZIP2 ");
-#endif
 
-#ifdef HAVE_LIBXML2
-    printf("LIBXML2 ");
-#endif
-#ifdef HAVE_PCRE
-#if USING_PCRE2
-    printf("PCRE2 ");
-#else
-    printf("PCRE ");
-#endif
-#endif
 #ifdef HAVE_ICONV
     printf("ICONV ");
-#endif
-#ifdef HAVE_JSON
-    printf("JSON ");
 #endif
     if (have_rar)
         printf("RAR ");
@@ -492,7 +472,7 @@ int main(int argc, char **argv)
             strncpy(dbdir, pt, sizeof(dbdir));
             free(pt);
         } else {
-            strncpy(dbdir, DATADIR, sizeof(dbdir));
+            strncpy(dbdir, OPT_DATADIR, sizeof(dbdir));
         }
         dbdir[sizeof(dbdir) - 1] = 0;
     }

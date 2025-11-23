@@ -1,7 +1,7 @@
 /*
  *  ClamAV bytecode internal API
  *
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -35,12 +35,8 @@
 #include <math.h>
 #include <ctype.h>
 
-#if HAVE_JSON
 #include <json.h>
-#endif
-#if HAVE_BZLIB_H
 #include <bzlib.h>
-#endif
 
 #include "clamav.h"
 #include "clambc.h"
@@ -72,13 +68,11 @@ struct bc_lzma {
     int32_t to;
 };
 
-#if HAVE_BZLIB_H
 struct bc_bzip2 {
     bz_stream stream;
     int32_t from;
     int32_t to;
 };
-#endif
 
 uint32_t cli_bcapi_test1(struct cli_bc_ctx *ctx, uint32_t a, uint32_t b)
 {
@@ -221,7 +215,7 @@ int32_t cli_bcapi_write(struct cli_bc_ctx *ctx, uint8_t *data, int32_t len)
         return -1;
     }
     if (-1 == ctx->outfd) {
-        ctx->tempfile = cli_gentemp_with_prefix(cctx ? cctx->sub_tmpdir : NULL, "bcapi_write");
+        ctx->tempfile = cli_gentemp_with_prefix(cctx ? cctx->this_layer_tmpdir : NULL, "bcapi_write");
         if (!ctx->tempfile) {
             cli_dbgmsg("Bytecode API: Unable to allocate memory for tempfile\n");
             cli_event_error_oom(EV, 0);
@@ -470,11 +464,18 @@ uint8_t *cli_bcapi_malloc(struct cli_bc_ctx *ctx, uint32_t size)
             return NULL;
         }
     }
-    v = MPOOL_MALLOC(ctx->mpool, size);
+
+    if (0 == size || size > CLI_MAX_ALLOCATION) {
+        cli_warnmsg("cli_bcapi_malloc(): File or section is too large to scan (" STDu32 " bytes). For your safety, ClamAV limits how much memory an operation can allocate to %d bytes\n",
+                    size, CLI_MAX_ALLOCATION);
+        v = NULL;
+    } else {
+        v = MPOOL_MALLOC(ctx->mpool, size);
+    }
 #else
     /* TODO: implement using a list of pointers we allocated! */
     cli_errmsg("cli_bcapi_malloc not implemented for systems without mmap yet!\n");
-    v = cli_malloc(size);
+    v = cli_max_malloc(size);
 #endif
     if (!v)
         cli_event_error_oom(EV, size);
@@ -600,7 +601,7 @@ int32_t cli_bcapi_read_number(struct cli_bc_ctx *ctx, uint32_t radix)
 int32_t cli_bcapi_hashset_new(struct cli_bc_ctx *ctx)
 {
     unsigned n            = ctx->nhashsets + 1;
-    struct cli_hashset *s = cli_realloc(ctx->hashsets, sizeof(*ctx->hashsets) * n);
+    struct cli_hashset *s = cli_max_realloc(ctx->hashsets, sizeof(*ctx->hashsets) * n);
     if (!s) {
         cli_event_error_oom(EV, 0);
         return -1;
@@ -663,7 +664,7 @@ int32_t cli_bcapi_hashset_done(struct cli_bc_ctx *ctx, int32_t id)
             free(ctx->hashsets);
             ctx->hashsets = NULL;
         } else {
-            s = cli_realloc(ctx->hashsets, ctx->nhashsets * sizeof(*s));
+            s = cli_max_realloc(ctx->hashsets, ctx->nhashsets * sizeof(*s));
             if (s)
                 ctx->hashsets = s;
         }
@@ -677,10 +678,10 @@ int32_t cli_bcapi_buffer_pipe_new(struct cli_bc_ctx *ctx, uint32_t size)
     struct bc_buffer *b;
     unsigned n = ctx->nbuffers + 1;
 
-    data = cli_calloc(1, size);
+    data = cli_max_calloc(1, size);
     if (!data)
         return -1;
-    b = cli_realloc(ctx->buffers, sizeof(*ctx->buffers) * n);
+    b = cli_max_realloc(ctx->buffers, sizeof(*ctx->buffers) * n);
     if (!b) {
         free(data);
         return -1;
@@ -703,7 +704,7 @@ int32_t cli_bcapi_buffer_pipe_new_fromfile(struct cli_bc_ctx *ctx, uint32_t at)
     if (at >= ctx->file_size)
         return -1;
 
-    b = cli_realloc(ctx->buffers, sizeof(*ctx->buffers) * n);
+    b = cli_max_realloc(ctx->buffers, sizeof(*ctx->buffers) * n);
     if (!b) {
         return -1;
     }
@@ -830,7 +831,7 @@ int32_t cli_bcapi_inflate_init(struct cli_bc_ctx *ctx, int32_t from, int32_t to,
         cli_dbgmsg("bytecode api: inflate_init: invalid buffers!\n");
         return -1;
     }
-    b = cli_realloc(ctx->inflates, sizeof(*ctx->inflates) * n);
+    b = cli_max_realloc(ctx->inflates, sizeof(*ctx->inflates) * n);
     if (!b) {
         return -1;
     }
@@ -961,7 +962,7 @@ int32_t cli_bcapi_lzma_init(struct cli_bc_ctx *ctx, int32_t from, int32_t to)
         return -1;
     }
 
-    b = cli_realloc(ctx->lzmas, sizeof(*ctx->lzmas) * n);
+    b = cli_max_realloc(ctx->lzmas, sizeof(*ctx->lzmas) * n);
     if (!b) {
         return -1;
     }
@@ -1041,7 +1042,6 @@ int32_t cli_bcapi_lzma_done(struct cli_bc_ctx *ctx, int32_t id)
 
 int32_t cli_bcapi_bzip2_init(struct cli_bc_ctx *ctx, int32_t from, int32_t to)
 {
-#if HAVE_BZLIB_H
     int ret;
     struct bc_bzip2 *b;
     unsigned n = ctx->nbzip2s + 1;
@@ -1049,7 +1049,7 @@ int32_t cli_bcapi_bzip2_init(struct cli_bc_ctx *ctx, int32_t from, int32_t to)
         cli_dbgmsg("bytecode api: bzip2_init: invalid buffers!\n");
         return -1;
     }
-    b = cli_realloc(ctx->bzip2s, sizeof(*ctx->bzip2s) * n);
+    b = cli_max_realloc(ctx->bzip2s, sizeof(*ctx->bzip2s) * n);
     if (!b) {
         return -1;
     }
@@ -1079,23 +1079,17 @@ int32_t cli_bcapi_bzip2_init(struct cli_bc_ctx *ctx, int32_t from, int32_t to)
     }
 
     return n - 1;
-#else
-    return -1;
-#endif
 }
 
-#if HAVE_BZLIB_H
 static struct bc_bzip2 *get_bzip2(struct cli_bc_ctx *ctx, int32_t id)
 {
     if (id < 0 || (unsigned int)id >= ctx->nbzip2s || !ctx->bzip2s)
         return NULL;
     return &ctx->bzip2s[id];
 }
-#endif
 
 int32_t cli_bcapi_bzip2_process(struct cli_bc_ctx *ctx, int32_t id)
 {
-#if HAVE_BZLIB_H
     int ret;
     unsigned avail_in_orig, avail_out_orig;
     struct bc_bzip2 *b = get_bzip2(ctx, id);
@@ -1128,23 +1122,16 @@ int32_t cli_bcapi_bzip2_process(struct cli_bc_ctx *ctx, int32_t id)
     }
 
     return ret;
-#else
-    return -1;
-#endif
 }
 
 int32_t cli_bcapi_bzip2_done(struct cli_bc_ctx *ctx, int32_t id)
 {
-#if HAVE_BZLIB_H
     struct bc_bzip2 *b = get_bzip2(ctx, id);
     if (!b || b->from == -1 || b->to == -1)
         return -1;
     BZ2_bzDecompressEnd(&b->stream);
     b->from = b->to = -1;
     return 0;
-#else
-    return -1;
-#endif
 }
 
 int32_t cli_bcapi_bytecode_rt_error(struct cli_bc_ctx *ctx, int32_t id)
@@ -1168,7 +1155,7 @@ int32_t cli_bcapi_jsnorm_init(struct cli_bc_ctx *ctx, int32_t from)
     state = cli_js_init();
     if (!state)
         return -1;
-    b = cli_realloc(ctx->jsnorms, sizeof(*ctx->jsnorms) * n);
+    b = cli_max_realloc(ctx->jsnorms, sizeof(*ctx->jsnorms) * n);
     if (!b) {
         cli_js_destroy(state);
         return -1;
@@ -1396,7 +1383,7 @@ int32_t cli_bcapi_map_new(struct cli_bc_ctx *ctx, int32_t keysize, int32_t value
     struct cli_map *s;
     if (!keysize)
         return -1;
-    s = cli_realloc(ctx->maps, sizeof(*ctx->maps) * n);
+    s = cli_max_realloc(ctx->maps, sizeof(*ctx->maps) * n);
     if (!s)
         return -1;
     ctx->maps  = s;
@@ -1523,7 +1510,7 @@ int32_t cli_bcapi_map_done(struct cli_bc_ctx *ctx, int32_t id)
             free(ctx->maps);
             ctx->maps = NULL;
         } else {
-            s = cli_realloc(ctx->maps, ctx->nmaps * (sizeof(*s)));
+            s = cli_max_realloc(ctx->maps, ctx->nmaps * (sizeof(*s)));
             if (s)
                 ctx->maps = s;
         }
@@ -1750,7 +1737,7 @@ int32_t cli_bcapi_input_switch(struct cli_bc_ctx *ctx, int32_t extracted_file)
         }
 
         /* Free the fmap used for the extracted file */
-        funmap(ctx->fmap);
+        fmap_free(ctx->fmap);
 
         /* Restore pointer to original fmap */
         cli_bytecode_context_setfile(ctx, ctx->save_map);
@@ -1774,7 +1761,7 @@ int32_t cli_bcapi_input_switch(struct cli_bc_ctx *ctx, int32_t extracted_file)
         }
 
         /* Create fmap for the extracted file */
-        map = fmap(ctx->outfd, 0, 0, NULL);
+        map = fmap_new(ctx->outfd, 0, 0, NULL, ctx->tempfile);
         if (!map) {
             cli_warnmsg("can't mmap() extracted temporary file %s\n", ctx->tempfile);
             return -1;
@@ -2018,39 +2005,29 @@ int32_t cli_bcapi_get_file_reliability(struct cli_bc_ctx *ctx)
 
 int32_t cli_bcapi_json_is_active(struct cli_bc_ctx *ctx)
 {
-#if HAVE_JSON
     cli_ctx *cctx = (cli_ctx *)ctx->ctx;
-    if (cctx->properties != NULL) {
+    if (cctx->metadata_json != NULL) {
         return 1;
     }
-#else
-    UNUSEDPARAM(ctx);
-    cli_dbgmsg("bytecode api: libjson is not enabled!\n");
-#endif
     return 0;
 }
 
 static int32_t cli_bcapi_json_objs_init(struct cli_bc_ctx *ctx)
 {
-#if HAVE_JSON
     unsigned n = ctx->njsonobjs + 1;
     json_object **j, **jobjs = (json_object **)(ctx->jsonobjs);
     cli_ctx *cctx = (cli_ctx *)ctx->ctx;
 
-    j = cli_realloc(jobjs, sizeof(json_object *) * n);
+    j = cli_max_realloc(jobjs, sizeof(json_object *) * n);
     if (!j) { /* memory allocation failure */
         cli_event_error_oom(EV, 0);
         return -1;
     }
     ctx->jsonobjs  = (void **)j;
     ctx->njsonobjs = n;
-    j[n - 1]       = cctx->properties;
+    j[n - 1]       = cctx->metadata_json;
 
     return 0;
-#else
-    UNUSEDPARAM(ctx);
-    return -1;
-#endif
 }
 
 #define INIT_JSON_OBJS(ctx)                  \
@@ -2064,7 +2041,6 @@ static int32_t cli_bcapi_json_objs_init(struct cli_bc_ctx *ctx)
 
 int32_t cli_bcapi_json_get_object(struct cli_bc_ctx *ctx, const int8_t *name, int32_t name_len, int32_t objid)
 {
-#if HAVE_JSON
     unsigned n;
     json_object **j, *jobj, **jobjs;
     char *namep;
@@ -2085,7 +2061,7 @@ int32_t cli_bcapi_json_get_object(struct cli_bc_ctx *ctx, const int8_t *name, in
     jobj = jobjs[objid];
     if (!jobj) /* shouldn't be possible */
         return -1;
-    namep = (char *)cli_malloc(sizeof(char) * (name_len + 1));
+    namep = (char *)cli_max_malloc(sizeof(char) * (name_len + 1));
     if (!namep)
         return -1;
     strncpy(namep, (char *)name, name_len);
@@ -2096,7 +2072,7 @@ int32_t cli_bcapi_json_get_object(struct cli_bc_ctx *ctx, const int8_t *name, in
         return 0;
     }
 
-    j = cli_realloc(jobjs, sizeof(json_object *) * n);
+    j = cli_max_realloc(jobjs, sizeof(json_object *) * n);
     if (!j) { /* memory allocation failure */
         free(namep);
         cli_event_error_oom(EV, 0);
@@ -2109,19 +2085,10 @@ int32_t cli_bcapi_json_get_object(struct cli_bc_ctx *ctx, const int8_t *name, in
     cli_dbgmsg("bytecode api[json_get_object]: assigned %s => ID %d\n", namep, n - 1);
     free(namep);
     return n - 1;
-#else
-    UNUSEDPARAM(ctx);
-    UNUSEDPARAM(name);
-    UNUSEDPARAM(name_len);
-    UNUSEDPARAM(objid);
-    cli_dbgmsg("bytecode api: libjson is not enabled!\n");
-    return -1;
-#endif
 }
 
 int32_t cli_bcapi_json_get_type(struct cli_bc_ctx *ctx, int32_t objid)
 {
-#if HAVE_JSON
     enum json_type type;
     json_object **jobjs;
 
@@ -2152,17 +2119,11 @@ int32_t cli_bcapi_json_get_type(struct cli_bc_ctx *ctx, int32_t objid)
             cli_dbgmsg("bytecode api[json_get_type]: unrecognized json type %d\n", type);
     }
 
-#else
-    UNUSEDPARAM(ctx);
-    UNUSEDPARAM(objid);
-    cli_dbgmsg("bytecode api: libjson is not enabled!\n");
-#endif
     return -1;
 }
 
 int32_t cli_bcapi_json_get_array_length(struct cli_bc_ctx *ctx, int32_t objid)
 {
-#if HAVE_JSON
     enum json_type type;
     json_object **jobjs;
 
@@ -2179,17 +2140,10 @@ int32_t cli_bcapi_json_get_array_length(struct cli_bc_ctx *ctx, int32_t objid)
     }
 
     return json_object_array_length(jobjs[objid]);
-#else
-    UNUSEDPARAM(ctx);
-    UNUSEDPARAM(objid);
-    cli_dbgmsg("bytecode api: libjson is not enabled!\n");
-    return -1;
-#endif
 }
 
 int32_t cli_bcapi_json_get_array_idx(struct cli_bc_ctx *ctx, int32_t idx, int32_t objid)
 {
-#if HAVE_JSON
     enum json_type type;
     unsigned n;
     int length;
@@ -2220,7 +2174,7 @@ int32_t cli_bcapi_json_get_array_idx(struct cli_bc_ctx *ctx, int32_t idx, int32_
             return 0;
         }
 
-        j = cli_realloc(jobjs, sizeof(json_object *) * n);
+        j = cli_max_realloc(jobjs, sizeof(json_object *) * n);
         if (!j) { /* memory allocation failure */
             cli_event_error_oom(EV, 0);
             return -1;
@@ -2234,18 +2188,10 @@ int32_t cli_bcapi_json_get_array_idx(struct cli_bc_ctx *ctx, int32_t idx, int32_
     }
 
     return 0;
-#else
-    UNUSEDPARAM(ctx);
-    UNUSEDPARAM(idx);
-    UNUSEDPARAM(objid);
-    cli_dbgmsg("bytecode api: libjson is not enabled!\n");
-    return -1;
-#endif
 }
 
 int32_t cli_bcapi_json_get_string_length(struct cli_bc_ctx *ctx, int32_t objid)
 {
-#if HAVE_JSON
     enum json_type type;
     json_object *jobj, **jobjs;
     int32_t len;
@@ -2272,17 +2218,10 @@ int32_t cli_bcapi_json_get_string_length(struct cli_bc_ctx *ctx, int32_t objid)
     len  = strlen(jstr);
 
     return len;
-#else
-    UNUSEDPARAM(ctx);
-    UNUSEDPARAM(objid);
-    cli_dbgmsg("bytecode api: libjson is not enabled!\n");
-    return -1;
-#endif
 }
 
 int32_t cli_bcapi_json_get_string(struct cli_bc_ctx *ctx, int8_t *str, int32_t str_len, int32_t objid)
 {
-#if HAVE_JSON
     enum json_type type;
     json_object *jobj, **jobjs;
     int32_t len;
@@ -2319,19 +2258,10 @@ int32_t cli_bcapi_json_get_string(struct cli_bc_ctx *ctx, int8_t *str, int32_t s
         str[len] = '\0';
         return len + 1;
     }
-#else
-    UNUSEDPARAM(ctx);
-    UNUSEDPARAM(str);
-    UNUSEDPARAM(str_len);
-    UNUSEDPARAM(objid);
-    cli_dbgmsg("bytecode api: libjson is not enabled!\n");
-    return -1;
-#endif
 }
 
 int32_t cli_bcapi_json_get_boolean(struct cli_bc_ctx *ctx, int32_t objid)
 {
-#if HAVE_JSON
     json_object *jobj, **jobjs;
 
     INIT_JSON_OBJS(ctx);
@@ -2343,17 +2273,10 @@ int32_t cli_bcapi_json_get_boolean(struct cli_bc_ctx *ctx, int32_t objid)
 
     jobj = jobjs[objid];
     return json_object_get_boolean(jobj);
-#else
-    UNUSEDPARAM(ctx);
-    UNUSEDPARAM(objid);
-    cli_dbgmsg("bytecode api: libjson is not enabled!\n");
-    return 0;
-#endif
 }
 
 int32_t cli_bcapi_json_get_int(struct cli_bc_ctx *ctx, int32_t objid)
 {
-#if HAVE_JSON
     json_object *jobj, **jobjs;
 
     INIT_JSON_OBJS(ctx);
@@ -2365,13 +2288,4 @@ int32_t cli_bcapi_json_get_int(struct cli_bc_ctx *ctx, int32_t objid)
 
     jobj = jobjs[objid];
     return json_object_get_int(jobj);
-#else
-    UNUSEDPARAM(ctx);
-    UNUSEDPARAM(objid);
-    cli_dbgmsg("bytecode api: libjson is not enabled!\n");
-    return 0;
-#endif
 }
-
-// int64_t cli_bcapi_json_get_int64(struct cli_bc_ctx *ctx, int32_t objid);
-// double cli_bcapi_json_get_double(struct cli_bc_ctx *ctx, int32_t objid);

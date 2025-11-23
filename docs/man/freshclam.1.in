@@ -61,7 +61,7 @@ This option forces old non\-DNS verification method (without a TTL delay).
 Check #n times per day for a new database. #n must be between 1 and 50.
 .TP
 \fB\-\-datadir=DIRECTORY\fR
-Install new database in DIRECTORY. The directory must be writable for the '@CLAMAV_USER@' user or unprivileged user running freshclam.
+Install new database in DIRECTORY. The directory must be writable for the '@CLAMAV_USER@' user or unprivileged user running freshclam, already exist, and be an absolute path.
 .TP
 \fB\-\-daemon\-notify=/path/to/clamd.conf\fR
 Notify the daemon about the new database. By default it reads a hardcoded config file but you can use a different one. Both local and TCP sockets are supported.
@@ -96,6 +96,9 @@ May be set to the path of a file (PEM) containing the client private key. This i
 .TP
 \fBFRESHCLAM_CLIENT_KEY_PASSWD\fR
 May be set to a password for the client key PEM file. This is required if FRESHCLAM_CLIENT_KEY is set and the PEM file is password protected.
+.TP
+\fBCVD_CERTS_DIR\fR
+Specify a directory containing the root CA cert needed to verify detached CVD digital signatures. If not provided, then freshclam will look in the default directory.
 
 .TP
 Note that the CURL_CA_BUNDLE environment variable is also used by the curl command line tool for the same purpose.

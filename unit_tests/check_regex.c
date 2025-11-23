@@ -1,7 +1,7 @@
 /*
  *  Unit tests for regular expression processing.
  *
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -143,7 +143,7 @@ START_TEST(test_suffix)
     ck_assert_msg(!!pattern, "test pattern");
     preg = malloc(sizeof(*regex.preg));
     ck_assert_msg(!!preg, "malloc");
-    rc = cli_regex2suffix(pattern, preg, cb_expect_multi, tests[_i]);
+    rc = cli_regex2suffix(pattern, preg, cb_expect_multi, (void *)tests[_i]);
     ck_assert_msg(rc == CL_SUCCESS, "single character pattern");
     cli_regfree(preg);
     free(preg);
@@ -273,8 +273,8 @@ START_TEST(regex_list_match_test)
 
     ck_assert_msg(rtest->result == RTR_PHISH || rtest->result == RTR_ALLOWED || rtest->result == RTR_INVALID_REGEX,
                   "Allow list test result must be either RTR_PHISH or RTR_ALLOWED or RTR_INVALID_REGEX");
-    pattern = cli_strdup(rtest->pattern);
-    ck_assert_msg(!!pattern, "cli_strdup");
+    pattern = cli_safer_strdup(rtest->pattern);
+    ck_assert_msg(!!pattern, "cli_safer_strdup");
 
     rc = regex_list_add_pattern(&matcher, pattern);
     if (rtest->result == RTR_INVALID_REGEX) {
@@ -292,7 +292,7 @@ START_TEST(regex_list_match_test)
 
     ck_assert_msg(is_regex_ok(&matcher), "is_regex_ok");
 
-    realurl = cli_strdup(rtest->realurl);
+    realurl = cli_safer_strdup(rtest->realurl);
     rc      = regex_list_match(&matcher, realurl, rtest->displayurl, NULL, 1, &info, 1);
     ck_assert_msg(rc == rtest->result, "regex_list_match");
     /* regex_list_match is not supposed to modify realurl in this case */
@@ -393,22 +393,25 @@ static void do_phishing_test(const struct rtest *rtest)
     memset(&options, 0, sizeof(struct cl_scan_options));
     ctx.options = &options;
 
-    realurl = cli_strdup(rtest->realurl);
-    ck_assert_msg(!!realurl, "cli_strdup");
+    realurl = cli_safer_strdup(rtest->realurl);
+    ck_assert_msg(!!realurl, "cli_safer_strdup");
 
     hrefs.count = 1;
-    hrefs.value = cli_malloc(sizeof(*hrefs.value));
-    ck_assert_msg(!!hrefs.value, "cli_malloc");
+    hrefs.value = malloc(sizeof(*hrefs.value));
+    ck_assert_msg(!!hrefs.value, "malloc");
     hrefs.value[0] = (unsigned char *)realurl;
-    hrefs.contents = cli_malloc(sizeof(*hrefs.contents));
-    ck_assert_msg(!!hrefs.contents, "cli_malloc");
-    hrefs.tag = cli_malloc(sizeof(*hrefs.tag));
-    ck_assert_msg(!!hrefs.tag, "cli_malloc");
-    hrefs.tag[0]      = (unsigned char *)cli_strdup("href");
-    hrefs.contents[0] = (unsigned char *)cli_strdup(rtest->displayurl);
+    hrefs.contents = malloc(sizeof(*hrefs.contents));
+    ck_assert_msg(!!hrefs.contents, "malloc");
+    hrefs.tag = malloc(sizeof(*hrefs.tag));
+    ck_assert_msg(!!hrefs.tag, "malloc");
+    hrefs.tag[0]      = (unsigned char *)cli_safer_strdup("href");
+    hrefs.contents[0] = (unsigned char *)cli_safer_strdup(rtest->displayurl);
 
-    ctx.engine   = engine;
-    ctx.evidence = evidence_new();
+    ctx.engine = engine;
+
+    ctx.recursion_stack_size = ctx.engine->max_recursion_level;
+    ctx.recursion_stack      = calloc(sizeof(cli_scan_layer_t), ctx.recursion_stack_size);
+    ck_assert_msg(!!ctx.recursion_stack, "calloc() for recursion_stack failed");
 
     rc = phishingScan(&ctx, &hrefs);
 
@@ -416,29 +419,29 @@ static void do_phishing_test(const struct rtest *rtest)
     ck_assert_msg(rc == CL_CLEAN, "phishingScan");
     switch (rtest->result) {
         case RTR_PHISH:
-            ck_assert_msg(evidence_num_indicators_type(ctx.evidence, IndicatorType_PotentiallyUnwanted),
+            ck_assert_msg(evidence_num_indicators_type(ctx.this_layer_evidence, IndicatorType_PotentiallyUnwanted),
                           "this should be phishing, realURL: %s, displayURL: %s",
                           rtest->realurl, rtest->displayurl);
             break;
         case RTR_ALLOWED:
-            ck_assert_msg(!evidence_num_indicators_type(ctx.evidence, IndicatorType_PotentiallyUnwanted),
+            ck_assert_msg(!evidence_num_indicators_type(ctx.this_layer_evidence, IndicatorType_PotentiallyUnwanted),
                           "this should be allowed, realURL: %s, displayURL: %s",
                           rtest->realurl, rtest->displayurl);
             break;
         case RTR_CLEAN:
-            ck_assert_msg(!evidence_num_indicators_type(ctx.evidence, IndicatorType_PotentiallyUnwanted),
+            ck_assert_msg(!evidence_num_indicators_type(ctx.this_layer_evidence, IndicatorType_PotentiallyUnwanted),
                           "this should be clean, realURL: %s, displayURL: %s",
                           rtest->realurl, rtest->displayurl);
             break;
         case RTR_BLOCKED:
             if (!loaded_2)
-                ck_assert_msg(!evidence_num_indicators_type(ctx.evidence, IndicatorType_PotentiallyUnwanted),
+                ck_assert_msg(!evidence_num_indicators_type(ctx.this_layer_evidence, IndicatorType_PotentiallyUnwanted),
                               "this should be clean, realURL: %s, displayURL: %s",
                               rtest->realurl, rtest->displayurl);
             else {
                 const char *viruname = NULL;
 
-                ck_assert_msg(evidence_num_indicators_type(ctx.evidence, IndicatorType_PotentiallyUnwanted),
+                ck_assert_msg(evidence_num_indicators_type(ctx.this_layer_evidence, IndicatorType_PotentiallyUnwanted),
                               "this should be blocked, realURL: %s, displayURL: %s",
                               rtest->realurl, rtest->displayurl);
 
@@ -463,7 +466,12 @@ static void do_phishing_test(const struct rtest *rtest)
             break;
     }
 
-    evidence_free(ctx.evidence);
+    if (ctx.recursion_stack) {
+        if (NULL != ctx.recursion_stack[ctx.recursion_level].evidence) {
+            evidence_free(ctx.recursion_stack[ctx.recursion_level].evidence);
+        }
+        free(ctx.recursion_stack);
+    }
 }
 
 static void do_phishing_test_allscan(const struct rtest *rtest)
@@ -480,22 +488,25 @@ static void do_phishing_test_allscan(const struct rtest *rtest)
     memset(&options, 0, sizeof(struct cl_scan_options));
     ctx.options = &options;
 
-    realurl = cli_strdup(rtest->realurl);
-    ck_assert_msg(!!realurl, "cli_strdup");
+    realurl = cli_safer_strdup(rtest->realurl);
+    ck_assert_msg(!!realurl, "cli_safer_strdup");
 
     hrefs.count = 1;
-    hrefs.value = cli_malloc(sizeof(*hrefs.value));
-    ck_assert_msg(!!hrefs.value, "cli_malloc");
+    hrefs.value = malloc(sizeof(*hrefs.value));
+    ck_assert_msg(!!hrefs.value, "malloc");
     hrefs.value[0] = (unsigned char *)realurl;
-    hrefs.contents = cli_malloc(sizeof(*hrefs.contents));
-    ck_assert_msg(!!hrefs.contents, "cli_malloc");
-    hrefs.tag = cli_malloc(sizeof(*hrefs.tag));
-    ck_assert_msg(!!hrefs.tag, "cli_malloc");
-    hrefs.tag[0]      = (unsigned char *)cli_strdup("href");
-    hrefs.contents[0] = (unsigned char *)cli_strdup(rtest->displayurl);
+    hrefs.contents = malloc(sizeof(*hrefs.contents));
+    ck_assert_msg(!!hrefs.contents, "malloc");
+    hrefs.tag = malloc(sizeof(*hrefs.tag));
+    ck_assert_msg(!!hrefs.tag, "malloc");
+    hrefs.tag[0]      = (unsigned char *)cli_safer_strdup("href");
+    hrefs.contents[0] = (unsigned char *)cli_safer_strdup(rtest->displayurl);
 
-    ctx.engine   = engine;
-    ctx.evidence = evidence_new();
+    ctx.engine = engine;
+
+    ctx.recursion_stack_size = ctx.engine->max_recursion_level;
+    ctx.recursion_stack      = calloc(sizeof(cli_scan_layer_t), ctx.recursion_stack_size);
+    ck_assert_msg(!!ctx.recursion_stack, "calloc() for recursion_stack failed");
 
     rc = phishingScan(&ctx, &hrefs);
     ck_assert_msg(rc == CL_SUCCESS || rc == CL_VIRUS, "phishingScan failed with error code: %s (%u)",
@@ -505,7 +516,7 @@ static void do_phishing_test_allscan(const struct rtest *rtest)
     // phishingScan() doesn't check the number of alerts. When using CL_SCAN_GENERAL_ALLMATCHES
     // or if using `CL_SCAN_GENERAL_HEURISTIC_PRECEDENCE` and `cli_append_potentially_unwanted()`
     // we need to count the number of alerts manually to determine the verdict.
-    if (0 < evidence_num_alerts(ctx.evidence)) {
+    if (0 < evidence_num_alerts(ctx.this_layer_evidence)) {
         verdict = CL_VIRUS;
     }
 
@@ -523,29 +534,29 @@ static void do_phishing_test_allscan(const struct rtest *rtest)
 
     switch (rtest->result) {
         case RTR_PHISH:
-            ck_assert_msg(evidence_num_alerts(ctx.evidence),
+            ck_assert_msg(evidence_num_alerts(ctx.this_layer_evidence),
                           "this should be phishing, realURL: %s, displayURL: %s",
                           rtest->realurl, rtest->displayurl);
             break;
         case RTR_ALLOWED:
-            ck_assert_msg(!evidence_num_alerts(ctx.evidence),
+            ck_assert_msg(!evidence_num_alerts(ctx.this_layer_evidence),
                           "this should be allowed, realURL: %s, displayURL: %s",
                           rtest->realurl, rtest->displayurl);
             break;
         case RTR_CLEAN:
-            ck_assert_msg(!evidence_num_alerts(ctx.evidence),
+            ck_assert_msg(!evidence_num_alerts(ctx.this_layer_evidence),
                           "this should be clean, realURL: %s, displayURL: %s",
                           rtest->realurl, rtest->displayurl);
             break;
         case RTR_BLOCKED:
             if (!loaded_2) {
-                ck_assert_msg(!evidence_num_alerts(ctx.evidence),
+                ck_assert_msg(!evidence_num_alerts(ctx.this_layer_evidence),
                               "this should be clean, realURL: %s, displayURL: %s",
                               rtest->realurl, rtest->displayurl);
             } else {
                 const char *viruname = NULL;
 
-                ck_assert_msg(evidence_num_alerts(ctx.evidence),
+                ck_assert_msg(evidence_num_alerts(ctx.this_layer_evidence),
                               "this should be blocked, realURL: %s, displayURL: %s",
                               rtest->realurl, rtest->displayurl);
 
@@ -572,7 +583,12 @@ static void do_phishing_test_allscan(const struct rtest *rtest)
 
     html_tag_arg_free(&hrefs);
 
-    evidence_free(ctx.evidence);
+    if (ctx.recursion_stack) {
+        if (NULL != ctx.recursion_stack[ctx.recursion_level].evidence) {
+            evidence_free(ctx.recursion_stack[ctx.recursion_level].evidence);
+        }
+        free(ctx.recursion_stack);
+    }
 }
 
 START_TEST(phishingScan_test)

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Trog, Török Edvin
@@ -267,7 +267,7 @@ int thrmgr_printstats(int f, char term)
                     const struct cl_engine **s;
                     /* new engine */
                     ++seen_cnt;
-                    s = realloc(seen, seen_cnt * sizeof(*seen));
+                    s = realloc((void *)seen, seen_cnt * sizeof(*seen));
                     if (!s) {
                         error_flag = 1;
                         break;
@@ -285,7 +285,7 @@ int thrmgr_printstats(int f, char term)
         }
         mdprintf(f, "\n");
     }
-    free(seen);
+    free((void *)seen);
 #ifdef HAVE_MALLINFO
     {
         struct mallinfo inf = mallinfo();

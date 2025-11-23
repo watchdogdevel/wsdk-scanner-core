@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, Nigel Horne, Török Edvin
@@ -134,7 +134,7 @@ uint16_t *cli_hex2ui(const char *hex)
         return NULL;
     }
 
-    str = cli_calloc((len / 2) + 1, sizeof(uint16_t));
+    str = cli_max_calloc((len / 2) + 1, sizeof(uint16_t));
     if (!str)
         return NULL;
 
@@ -158,7 +158,7 @@ char *cli_hex2str(const char *hex)
         return NULL;
     }
 
-    str = cli_calloc((len / 2) + 1, sizeof(char));
+    str = cli_max_calloc((len / 2) + 1, sizeof(char));
     if (!str)
         return NULL;
 
@@ -224,9 +224,9 @@ int cli_xtoi(const char *hex)
     if (len % 2 == 0)
         return cli_hex2num(hex);
 
-    hexbuf = cli_calloc(len + 2, sizeof(char));
+    hexbuf = cli_max_calloc(len + 2, sizeof(char));
     if (hexbuf == NULL) {
-        cli_errmsg("cli_xtoi(): cli_malloc fails.\n");
+        cli_errmsg("cli_xtoi(): cli_max_malloc fails.\n");
         return -1;
     }
 
@@ -244,7 +244,7 @@ char *cli_str2hex(const char *string, unsigned int len)
                   '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
     unsigned int i, j;
 
-    if ((hexstr = (char *)cli_calloc(2 * len + 1, sizeof(char))) == NULL)
+    if ((hexstr = (char *)cli_max_calloc(2 * len + 1, sizeof(char))) == NULL)
         return NULL;
 
     for (i = 0, j = 0; i < len; i++, j += 2) {
@@ -332,7 +332,7 @@ char *cli_strtok(const char *line, int fieldno, const char *delim)
     if (i == j) {
         return NULL;
     }
-    buffer = cli_malloc(j - i + 1);
+    buffer = cli_max_malloc(j - i + 1);
     if (!buffer) {
         cli_errmsg("cli_strtok: Unable to allocate memory for buffer\n");
         return NULL;
@@ -424,8 +424,7 @@ char *cli_strrcpy(char *dest, const char *source) /* by NJH */
         return NULL;
     }
 
-    while ((*dest++ = *source++))
-        ;
+    while ((*dest++ = *source++));
 
     return --dest;
 }
@@ -470,8 +469,7 @@ char *__cli_strndup(const char *s, size_t n)
 size_t __cli_strnlen(const char *s, size_t n)
 {
     size_t i = 0;
-    for (; (i < n) && s[i] != '\0'; ++i)
-        ;
+    for (; (i < n) && s[i] != '\0'; ++i);
     return i;
 }
 
@@ -940,7 +938,7 @@ char *cli_unescape(const char *str)
     const size_t len = strlen(str);
     /* unescaped string is at most as long as original,
      * it will usually be shorter */
-    R = cli_malloc(len + 1);
+    R = cli_max_malloc(len + 1);
     if (!R) {
         cli_errmsg("cli_unescape: Unable to allocate memory for string\n");
         return NULL;
@@ -974,7 +972,7 @@ char *cli_unescape(const char *str)
         R[i++] = c;
     }
     R[i++] = '\0';
-    R      = cli_realloc2(R, i);
+    R      = cli_max_realloc_or_free(R, i);
     return R;
 }
 
@@ -1058,8 +1056,11 @@ int cli_hexnibbles(char *str, int len)
     return 0;
 }
 
-cl_error_t cli_basename(const char *filepath, size_t filepath_len,
-                        char **filebase)
+cl_error_t cli_basename(
+    const char *filepath,
+    size_t filepath_len,
+    char **filebase,
+    bool posix_support_backslash_pathsep)
 {
     cl_error_t status = CL_EARG;
     const char *index = NULL;
@@ -1071,13 +1072,25 @@ cl_error_t cli_basename(const char *filepath, size_t filepath_len,
 
     index = filepath + filepath_len - 1;
 
+#ifdef _WIN32
     while (index > filepath) {
-        if (index[0] == PATHSEP[0])
+        if ((index[0] == '/') || (index[0] == '\\'))
             break;
         index--;
     }
-    if ((index != filepath) || (index[0] == PATHSEP[0]))
+    if ((index != filepath) || (index[0] == '/') || (index[0] == '\\')) {
         index++;
+    }
+#else
+    while (index > filepath) {
+        if ((index[0] == '/') || (index[0] == '\\' && posix_support_backslash_pathsep))
+            break;
+        index--;
+    }
+    if ((index != filepath) || (index[0] == '/') || (index[0] == '\\' && posix_support_backslash_pathsep)) {
+        index++;
+    }
+#endif
 
     if (0 == CLI_STRNLEN(index, filepath_len - (index - filepath))) {
         cli_dbgmsg("cli_basename: Provided path does not include a file name.\n");
@@ -1096,4 +1109,40 @@ cl_error_t cli_basename(const char *filepath, size_t filepath_len,
 
 done:
     return status;
+}
+
+cl_error_t cli_hexstr_to_bytes(const char *hexstr, size_t hexlen, uint8_t *outbuf)
+{
+    size_t i;
+    if (!hexstr || !outbuf || (hexlen % 2 != 0)) {
+        return CL_EFORMAT;
+    }
+
+    for (i = 0; i < hexlen / 2; ++i) {
+        int hi, lo;
+        char c1 = hexstr[2 * i];
+        char c2 = hexstr[2 * i + 1];
+
+        if (!isxdigit((unsigned char)c1) || !isxdigit((unsigned char)c2)) {
+            return CL_EFORMAT;
+        }
+
+        // clang-format off
+        hi = (c1 >= '0' && c1 <= '9') ? c1 - '0' :
+             (c1 >= 'a' && c1 <= 'f') ? c1 - 'a' + 10 :
+             (c1 >= 'A' && c1 <= 'F') ? c1 - 'A' + 10 : -1;
+
+        lo = (c2 >= '0' && c2 <= '9') ? c2 - '0' :
+             (c2 >= 'a' && c2 <= 'f') ? c2 - 'a' + 10 :
+             (c2 >= 'A' && c2 <= 'F') ? c2 - 'A' + 10 : -1;
+        // clang-format on
+
+        if (hi < 0 || lo < 0) {
+            return CL_EFORMAT;
+        }
+
+        outbuf[i] = (uint8_t)((hi << 4) | lo);
+    }
+
+    return CL_SUCCESS;
 }

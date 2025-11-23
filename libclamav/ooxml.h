@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2014-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2014-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Kevin Lin
  *
@@ -27,7 +27,7 @@
 
 #include "others.h"
 
-cli_file_t cli_ooxml_filetype(cli_ctx *, fmap_t *);
+cli_file_t cli_ooxml_filetype(cli_ctx *);
 cl_error_t cli_process_ooxml(cli_ctx *, int);
 
 #endif

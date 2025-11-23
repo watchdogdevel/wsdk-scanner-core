@@ -15,9 +15,7 @@
 #include <sys/mman.h>
 #endif
 
-#if HAVE_LIBXML2
 #include <libxml/parser.h>
-#endif
 
 #include "platform.h"
 
@@ -79,7 +77,7 @@ START_TEST(test_cl_build)
     // ck_assert_msg(engine, "cl_build calloc");
     // ck_assert_msg(CL_ENULLARG == cl_build(engine), "cl_build(engine) with null ->root");
 
-    // engine->root = cli_calloc(CL_TARGET_TABLE_SIZE, sizeof(struct cli_matcher *));
+    // engine->root = calloc(CL_TARGET_TABLE_SIZE, sizeof(struct cli_matcher *));
 }
 END_TEST
 
@@ -418,6 +416,7 @@ START_TEST(test_cl_load)
     struct cl_engine *engine;
     unsigned int sigs = 0;
     const char *testfile;
+    const char *cvdcertsdir;
 
     ret = cl_init(CL_INIT_DEFAULT);
     ck_assert_msg(ret == CL_SUCCESS, "cl_init failed: %s", cl_strerror(ret));
@@ -435,7 +434,7 @@ START_TEST(test_cl_load)
 }
 END_TEST
 
-/* cl_error_t cl_cvdverify(const char *file) */
+/* cl_error_t cl_cvdverify_ex(const char *file, const char *certs_directory, uint32_t dboptions) */
 START_TEST(test_cl_cvdverify)
 {
     cl_error_t ret;
@@ -444,26 +443,30 @@ START_TEST(test_cl_cvdverify)
     FILE *orig_fs;
     FILE *new_fs;
     char cvd_bytes[5000];
+    const char *cvdcertsdir;
+
+    cvdcertsdir = getenv("CVD_CERTS_DIR");
+    ck_assert_msg(cvdcertsdir != NULL, "CVD_CERTS_DIR not set");
 
     // Should be able to verify this cvd
     testfile = SRCDIR "/input/freshclam_testfiles/test-1.cvd";
-    ret      = cl_cvdverify(testfile);
-    ck_assert_msg(CL_SUCCESS == ret, "cl_cvdverify failed for: %s -- %s", testfile, cl_strerror(ret));
+    ret      = cl_cvdverify_ex(testfile, cvdcertsdir, 0);
+    ck_assert_msg(CL_SUCCESS == ret, "cl_cvdverify_ex failed for: %s -- %s", testfile, cl_strerror(ret));
 
     // Can't verify a cvd that doesn't exist
     testfile = SRCDIR "/input/freshclam_testfiles/test-na.cvd";
-    ret      = cl_cvdverify(testfile);
-    ck_assert_msg(CL_EOPEN == ret, "cl_cvdverify should have failed for: %s -- %s", testfile, cl_strerror(ret));
+    ret      = cl_cvdverify_ex(testfile, cvdcertsdir, 0);
+    ck_assert_msg(CL_ECVD == ret, "cl_cvdverify_ex should have failed for: %s -- %s", testfile, cl_strerror(ret));
 
-    // A cdiff is not a cvd. Cannot verify with cl_cvdverify!
+    // A cdiff is not a cvd. Cannot verify with cl_cvdverify_ex!
     testfile = SRCDIR "/input/freshclam_testfiles/test-2.cdiff";
-    ret      = cl_cvdverify(testfile);
-    ck_assert_msg(CL_ECVD == ret, "cl_cvdverify should have failed for: %s -- %s", testfile, cl_strerror(ret));
+    ret      = cl_cvdverify_ex(testfile, cvdcertsdir, 0);
+    ck_assert_msg(CL_ECVD == ret, "cl_cvdverify_ex should have failed for: %s -- %s", testfile, cl_strerror(ret));
 
     // Can't verify an hdb file
     testfile = SRCDIR "/input/clamav.hdb";
-    ret      = cl_cvdverify(testfile);
-    ck_assert_msg(CL_ECVD == ret, "cl_cvdverify should have failed for: %s -- %s", testfile, cl_strerror(ret));
+    ret      = cl_cvdverify_ex(testfile, cvdcertsdir, 0);
+    ck_assert_msg(CL_ECVD == ret, "cl_cvdverify_ex should have failed for: %s -- %s", testfile, cl_strerror(ret));
 
     // Modify the cvd to make it invalid
     sprintf(newtestfile, "%s/modified.cvd", tmpdir);
@@ -482,13 +485,13 @@ START_TEST(test_cl_cvdverify)
     fclose(new_fs);
 
     // Now verify the modified cvd
-    ret = cl_cvdverify(newtestfile);
-    ck_assert_msg(CL_EVERIFY == ret, "cl_cvdverify should have failed for: %s -- %s", newtestfile, cl_strerror(ret));
+    ret = cl_cvdverify_ex(newtestfile, cvdcertsdir, 0);
+    ck_assert_msg(CL_EVERIFY == ret, "cl_cvdverify_ex should have failed for: %s -- %s", newtestfile, cl_strerror(ret));
 }
 END_TEST
 
-/* cl_error_t cl_cvdunpack(const char *file, const char *dir, bool dont_verify) */
-START_TEST(test_cl_cvdunpack)
+/* cl_error_t cl_cvdunpack_ex(const char *file, const char *dir, const char *certs_directory, uint32_t dboptions) */
+START_TEST(test_cl_cvdunpack_ex)
 {
     cl_error_t ret;
     char *utf8       = NULL;
@@ -496,13 +499,13 @@ START_TEST(test_cl_cvdunpack)
     const char *testfile;
 
     testfile = SRCDIR "/input/freshclam_testfiles/test-1.cvd";
-    ret      = cl_cvdunpack(testfile, tmpdir, true);
-    ck_assert_msg(CL_SUCCESS == ret, "cl_cvdunpack: failed for: %s -- %s", testfile, cl_strerror(ret));
+    ret      = cl_cvdunpack_ex(testfile, tmpdir, NULL, CL_DB_UNSIGNED);
+    ck_assert_msg(CL_SUCCESS == ret, "cl_cvdunpack_ex: failed for: %s -- %s", testfile, cl_strerror(ret));
 
     // Can't unpack a cdiff
     testfile = SRCDIR "/input/freshclam_testfiles/test-2.cdiff";
-    ret      = cl_cvdunpack(testfile, tmpdir, true);
-    ck_assert_msg(CL_ECVD == ret, "cl_cvdunpack: should have failed for: %s -- %s", testfile, cl_strerror(ret));
+    ret      = cl_cvdunpack_ex(testfile, tmpdir, NULL, CL_DB_UNSIGNED);
+    ck_assert_msg(CL_ECVD == ret, "cl_cvdunpack_ex: should have failed for: %s -- %s", testfile, cl_strerror(ret));
 }
 END_TEST
 
@@ -533,30 +536,13 @@ END_TEST
 static char **testfiles     = NULL;
 static unsigned testfiles_n = 0;
 
-static const int expected_testfiles = 49;
+static const int expected_testfiles = 53;
 
 static unsigned skip_files(void)
 {
     unsigned skipped = 0;
 
     /* skip .rar files if unrar is disabled */
-    const char *s = getenv("unrar_disabled");
-    if (s && !strcmp(s, "1")) {
-        skipped += 2;
-    }
-
-    /* skip .bz2 files if bzip is disabled */
-#if HAVE_BZLIB_H
-#else
-    skipped += 2;
-#endif
-
-    /* skip [placeholder] files if xml is disabled */
-#if HAVE_LIBXML2
-#else
-    skipped += 0;
-#endif
-
 #if HAVE_UNRAR
 #else
     skipped += 2;
@@ -581,8 +567,8 @@ static void init_testfiles(void)
         if (strncmp(dirent->d_name, "clam", 4))
             continue;
         i++;
-        testfiles = cli_realloc(testfiles, i * sizeof(*testfiles));
-        ck_assert_msg(!!testfiles, "cli_realloc");
+        testfiles = cli_safer_realloc(testfiles, i * sizeof(*testfiles));
+        ck_assert_msg(!!testfiles, "cli_safer_realloc");
         testfiles[i - 1] = strdup(dirent->d_name);
     }
     testfiles_n = i;
@@ -856,7 +842,7 @@ START_TEST(test_fmap_duplicate)
     dup_map = NULL;
 
     /*
-     * Test duplicate of map omiting the last 2 bytes
+     * Test duplicate of map omitting the last 2 bytes
      */
     cli_dbgmsg("duplicating map with shorter len\n");
     dup_map = fmap_duplicate(map, 0, map->len - 2, "short duplicate");
@@ -870,7 +856,7 @@ START_TEST(test_fmap_duplicate)
     ck_assert(0 == memcmp(map_data, tmp, 4));
 
     /*
-     * Test duplicate of the duplicate omiting the last 2 bytes again (so just the first 2 bytes)
+     * Test duplicate of the duplicate omitting the last 2 bytes again (so just the first 2 bytes)
      */
     cli_dbgmsg("duplicating dup_map with shorter len\n");
     dup_dup_map = fmap_duplicate(dup_map, 0, dup_map->len - 2, "double short duplicate");
@@ -905,7 +891,7 @@ START_TEST(test_fmap_duplicate)
     ck_assert(0 == memcmp(map_data + 2, tmp, 4));
 
     /*
-     * Test duplicate of the duplicate omiting the last 2 bytes again (so just the middle 2 bytes)
+     * Test duplicate of the duplicate omitting the last 2 bytes again (so just the middle 2 bytes)
      */
     cli_dbgmsg("duplicating dup_map with shorter len\n");
     dup_dup_map = fmap_duplicate(dup_map, 0, dup_map->len - 2, "offset short duplicate");
@@ -1206,12 +1192,12 @@ START_TEST(test_fmap_assorted_api)
     ck_assert_msg(fmap_dump_fd != -1, "fmap_dump_fd failed");
     cli_dbgmsg("dumped map to %s\n", fmap_dump_filepath);
 
-    fd_based_map = fmap(fmap_dump_fd, 0, 0, NULL); // using fmap() instead of cl_fmap_open_handle() because I don't want to have to stat the the file to figure out the len. fmap() does that for us.
+    fd_based_map = fmap_new(fmap_dump_fd, 0, 0, NULL, NULL); // using fmap_new() instead of cl_fmap_open_handle() because I don't want to have to stat the file to figure out the len. fmap_new() does that for us.
     ck_assert_msg(!!fd_based_map, "cl_fmap_open_handle failed");
     cli_dbgmsg("created fmap from file descriptor\n");
 
     /*
-     * Test those same things things on an fmap created with an fd that is a dumped copy of the original map.
+     * Test those same things on an fmap created with an fd that is a dumped copy of the original map.
      */
     fmap_api_tests(fd_based_map, FMAP_TEST_STRING, sizeof(FMAP_TEST_STRING), "handle map");
 
@@ -1230,7 +1216,7 @@ START_TEST(test_fmap_assorted_api)
     ck_assert_msg(dup_map->real_len == sizeof(FMAP_TEST_STRING), "%zu != %zu", dup_map->real_len, sizeof(FMAP_TEST_STRING));
 
     /*
-     * Test those same things things on an fmap created with an fd that is a dumped copy of the original map.
+     * Test those same things on an fmap created with an fd that is a dumped copy of the original map.
      */
     fmap_api_tests(dup_map, FMAP_TEST_STRING_PART_2, sizeof(FMAP_TEST_STRING_PART_2), "nested mem map");
 
@@ -1254,7 +1240,7 @@ START_TEST(test_fmap_assorted_api)
     ck_assert_msg(dup_map->real_len == sizeof(FMAP_TEST_STRING), "%zu != %zu", dup_map->real_len, sizeof(FMAP_TEST_STRING));
 
     /*
-     * Test those same things things on an fmap created with an fd that is a dumped copy of the original map.
+     * Test those same things on an fmap created with an fd that is a dumped copy of the original map.
      */
     fmap_api_tests(dup_map, FMAP_TEST_STRING_PART_2, sizeof(FMAP_TEST_STRING_PART_2), "nested handle map");
 
@@ -1270,7 +1256,7 @@ START_TEST(test_fmap_assorted_api)
     free_duplicate_fmap(dup_map);
     dup_map = NULL;
 
-    /* We can close the fd-based map now that we're done with it's duplicate */
+    /* We can close the fd-based map now that we're done with its duplicate */
     cl_fmap_close(fd_based_map);
     fd_based_map = NULL;
 
@@ -1288,12 +1274,12 @@ START_TEST(test_fmap_assorted_api)
     /*
      * Let's make an fmap of the dumped nested map, and run the tests to verify that everything is as expected.
      */
-    fd_based_dup_map = fmap(dup_fmap_dump_fd, 0, 0, NULL); // using fmap() instead of cl_fmap_open_handle() because I don't want to have to stat the the file to figure out the len. fmap() does that for us.
+    fd_based_dup_map = fmap_new(dup_fmap_dump_fd, 0, 0, NULL, NULL); // using fmap_new() instead of cl_fmap_open_handle() because I don't want to have to stat the file to figure out the len. fmap_new() does that for us.
     ck_assert_msg(!!fd_based_dup_map, "cl_fmap_open_handle failed");
     cli_dbgmsg("created fmap from file descriptor\n");
 
     /*
-     * Test those same things things on an fmap created with an fd that is a dumped copy of the original map.
+     * Test those same things on an fmap created with an fd that is a dumped copy of the original map.
      */
     fmap_api_tests(fd_based_dup_map, FMAP_TEST_STRING_PART_2, sizeof(FMAP_TEST_STRING_PART_2), "dumped nested handle map");
 
@@ -1521,28 +1507,28 @@ static uint8_t res256[3][SHA256_HASH_SIZE] = {
      0x84, 0xd7, 0x3e, 0x67, 0xf1, 0x80, 0x9a, 0x48, 0xa4, 0x97, 0x20, 0x0e,
      0x04, 0x6d, 0x39, 0xcc, 0xc7, 0x11, 0x2c, 0xd0}};
 
-START_TEST(test_sha256)
+START_TEST(test_sha2_256)
 {
-    void *sha256;
-    uint8_t hsha256[SHA256_HASH_SIZE];
+    void *sha2_256;
+    uint8_t h_sha2_256[SHA256_HASH_SIZE];
     uint8_t buf[1000];
     int i;
 
     memset(buf, 0x61, sizeof(buf));
 
-    cl_sha256(tv1, sizeof(tv1), hsha256, NULL);
-    ck_assert_msg(!memcmp(hsha256, res256[0], sizeof(hsha256)), "sha256 test vector #1 failed");
+    cl_sha256(tv1, sizeof(tv1), h_sha2_256, NULL);
+    ck_assert_msg(!memcmp(h_sha2_256, res256[0], sizeof(h_sha2_256)), "sha2-256 test vector #1 failed");
 
-    cl_sha256(tv2, sizeof(tv2), hsha256, NULL);
-    ck_assert_msg(!memcmp(hsha256, res256[1], sizeof(hsha256)), "sha256 test vector #2 failed");
+    cl_sha256(tv2, sizeof(tv2), h_sha2_256, NULL);
+    ck_assert_msg(!memcmp(h_sha2_256, res256[1], sizeof(h_sha2_256)), "sha2-256 test vector #2 failed");
 
-    sha256 = cl_hash_init("sha256");
-    ck_assert_msg(sha256 != NULL, "Could not create EVP_MD_CTX for sha256");
+    sha2_256 = cl_hash_init("sha2-256");
+    ck_assert_msg(sha2_256 != NULL, "Could not create EVP_MD_CTX for sha2-256");
 
     for (i = 0; i < 1000; i++)
-        cl_update_hash(sha256, buf, sizeof(buf));
-    cl_finish_hash(sha256, hsha256);
-    ck_assert_msg(!memcmp(hsha256, res256[2], sizeof(hsha256)), "sha256 test vector #3 failed");
+        cl_update_hash(sha2_256, buf, sizeof(buf));
+    cl_finish_hash(sha2_256, h_sha2_256);
+    ck_assert_msg(!memcmp(h_sha2_256, res256[2], sizeof(h_sha2_256)), "sha2-256 test vector #3 failed");
 }
 END_TEST
 
@@ -1893,7 +1879,7 @@ static Suite *test_cli_suite(void)
 
     suite_add_tcase(s, tc_cli_dsig);
     tcase_add_loop_test(tc_cli_dsig, test_cli_dsig, 0, dsig_tests_cnt);
-    tcase_add_test(tc_cli_dsig, test_sha256);
+    tcase_add_test(tc_cli_dsig, test_sha2_256);
 
     suite_add_tcase(s, tc_cli_assorted);
     tcase_add_test(tc_cli_assorted, test_sanitize_path);
@@ -1913,17 +1899,11 @@ void errmsg_expected(void)
 int open_testfile(const char *name, int flags)
 {
     int fd;
-    const char *srcdir = getenv("srcdir");
     char *str;
 
-    if (!srcdir) {
-        /* when run from automake srcdir is set, but if run manually then not */
-        srcdir = SRCDIR;
-    }
-
-    str = cli_malloc(strlen(name) + strlen(srcdir) + 2);
-    ck_assert_msg(!!str, "cli_malloc");
-    sprintf(str, "%s" PATHSEP "%s", srcdir, name);
+    str = malloc(strlen(name) + strlen(SRCDIR) + 2);
+    ck_assert_msg(!!str, "malloc");
+    sprintf(str, "%s" PATHSEP "%s", SRCDIR, name);
 
     fd = open(str, flags);
     ck_assert_msg(fd >= 0, "open() failed: %s", str);
@@ -1935,7 +1915,7 @@ void diff_file_mem(int fd, const char *ref, size_t len)
 {
     char c1, c2;
     size_t p, reflen = len;
-    char *buf = cli_malloc(len);
+    char *buf = malloc(len);
 
     ck_assert_msg(!!buf, "unable to malloc buffer: %zu", len);
     p = read(fd, buf, len);
@@ -1964,7 +1944,7 @@ void diff_files(int fd, int ref_fd)
     off_t siz = lseek(ref_fd, 0, SEEK_END);
     ck_assert_msg(siz != -1, "lseek failed");
 
-    ref = cli_malloc(siz);
+    ref = malloc(siz);
     ck_assert_msg(!!ref, "unable to malloc buffer: " STDi64, (int64_t)siz);
 
     ck_assert_msg(lseek(ref_fd, 0, SEEK_SET) == 0, "lseek failed");
@@ -2027,11 +2007,15 @@ static void check_version_compatible()
 }
 #endif
 
-int main(void)
+int main(int argc, char **argv)
 {
     int nf;
     Suite *s;
     SRunner *sr;
+    FILE *log_file = NULL;
+
+    UNUSEDPARAM(argc);
+    UNUSEDPARAM(argv);
 
     cl_initialize_crypto();
 
@@ -2054,7 +2038,8 @@ int main(void)
     srunner_add_suite(sr, test_bytecode_suite());
 
     srunner_set_log(sr, OBJDIR PATHSEP "test.log");
-    if (freopen(OBJDIR PATHSEP "test-stderr.log", "w+", stderr) == NULL) {
+    log_file = freopen(OBJDIR PATHSEP "test-stderr.log", "w+", stderr);
+    if (log_file == NULL) {
         // The stderr FILE pointer may be closed by `freopen()` even if redirecting to the log file files.
         // So we will output the error message to stdout instead.
         fputs("Unable to redirect stderr!\n", stdout);
@@ -2067,9 +2052,11 @@ int main(void)
         printf("NOTICE: Use the 'T' environment variable to adjust testcase timeout\n");
     srunner_free(sr);
 
-#if HAVE_LIBXML2
     xmlCleanupParser();
-#endif
+
+    if (log_file) {
+        fclose(log_file);
+    }
 
     return (nf == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

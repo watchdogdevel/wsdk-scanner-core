@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2015-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2015-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, aCaB, Mickey Sola
@@ -161,7 +161,7 @@ int onas_check_remote(struct onas_context **ctx, cl_error_t *err)
 }
 
 /* pings clamd at the specified interval the number of time specified
- * return 0 on a succesful connection, 1 upon timeout, -1 on error */
+ * return 0 on a successful connection, 1 upon timeout, -1 on error */
 int16_t onas_ping_clamd(struct onas_context **ctx)
 {
 
@@ -208,7 +208,7 @@ int16_t onas_ping_clamd(struct onas_context **ctx)
     opt = optget((*ctx)->opts, "ping");
 
     if (opt->enabled) {
-        attempt_str = cli_strdup(opt->strarg);
+        attempt_str = cli_safer_strdup(opt->strarg);
         if (attempt_str) {
             if (NULL == attempt_str) {
                 logg(LOGG_ERROR, "could not allocate memory for string\n");
@@ -525,7 +525,7 @@ int onas_get_clamd_version(struct onas_context **ctx)
  * @param fd        the file descriptor for the file to be scanned, often (but not always) this is held by fanotify
  * @param timeout   time in ms to allow curl before timing out connection attempts
  * @param sb        variable to store and pass all of our stat info on the file so we don't have to access it multiple times (triggering multiple events)
- * @param infected  return variable indincating whether daemon returned with an infected verdict or not
+ * @param infected  return variable indicating whether daemon returned with an infected verdict or not
  * @param err       return variable passed to the daemon protocol interface indicating how many things went wrong in the course of scanning
  * @param ret_code  return variable passed to the daemon protocol interface indicating last known issue or success
  */

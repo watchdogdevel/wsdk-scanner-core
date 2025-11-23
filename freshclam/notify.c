@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2002-2013 Sourcefire, Inc.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -60,6 +60,11 @@ int clamd_connect(const char *cfgfile, const char *option)
         logg(LOGG_ERROR, "%s: Can't find or parse configuration file %s\n", option,
              cfgfile);
         return -11;
+    }
+
+    if (!optget(opts, "EnableReloadCommand")->enabled) {
+        logg(LOGG_WARNING, "Clamd was NOT notified: The RELOAD command is disabled. Consider enabling it in the clamd configuration!\n");
+        return -1;
     }
 
 #ifndef _WIN32
@@ -163,6 +168,12 @@ int notify(const char *cfgfile)
 
     memset(buff, 0, sizeof(buff));
     if ((bread = recv(sockd, buff, sizeof(buff), 0)) > 0) {
+        if (strstr(buff, "COMMAND UNAVAILABLE")) {
+            // this will only happen when the running clamd instance has EnableReloadCommand set to no,
+            // but the config on disk differs (e.g. after a config change without clamd restart)
+            logg(LOGG_ERROR, "NotifyClamd: RELOAD command unavailable, consider enabling it in the clamd configuration and restarting clamd.\n");
+            return -1;
+        }
         if (!strstr(buff, "RELOADING")) {
             logg(LOGG_ERROR, "NotifyClamd: Unknown answer from clamd: '%s'\n", buff);
             closesocket(sockd);

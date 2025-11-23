@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -51,7 +51,7 @@
 #include <syslog.h>
 #endif
 
-#ifdef C_LINUX
+#if defined(C_LINUX) || defined(__GLIBC__)
 #include <sys/resource.h>
 #endif
 
@@ -92,7 +92,7 @@ static void help(void)
     printf("\n");
     printf("                      Clam AntiVirus: Daemon %s\n", get_version());
     printf("           By The ClamAV Team: https://www.clamav.net/about.html#credits\n");
-    printf("           (C) 2023 Cisco Systems, Inc.\n");
+    printf("           (C) 2025 Cisco Systems, Inc.\n");
     printf("\n");
     printf("    clamd [options]\n");
     printf("\n");
@@ -109,6 +109,17 @@ static void help(void)
     printf("    --fail-if-cvd-older-than=days           Return with a nonzero error code if virus database outdated\n");
     printf("    --datadir=DIRECTORY                     Load signatures from DIRECTORY\n");
     printf("    --pid=FILE               -p FILE        Write the daemon's pid to FILE\n");
+    printf("    --cvdcertsdir=DIRECTORY                 Specify a directory containing the root\n");
+    printf("                                            CA cert needed to verify detached CVD digital signatures.\n");
+    printf("                                            If not provided, then clamd will look in the default directory.\n");
+    printf("\n");
+    printf("Environment Variables:\n");
+    printf("\n");
+    printf("    LD_LIBRARY_PATH                         May be used on startup to find the libclamunrar_iface\n");
+    printf("                                            shared library module to enable RAR archive support.\n");
+    printf("    CVD_CERTS_DIR                           Specify a directory containing the root CA cert needed\n");
+    printf("                                            to verify detached CVD digital signatures.\n");
+    printf("                                            If not provided, then clamd will look in the default directory.\n");
     printf("\n");
     printf("Pass in - as the filename for stdin.\n");
     printf("\n");
@@ -139,7 +150,7 @@ int main(int argc, char **argv)
     struct sigaction sa;
     int dropPrivRet = 0;
 #endif
-#if defined(C_LINUX) || (defined(RLIMIT_DATA) && defined(C_BSD))
+#if defined(C_LINUX) || defined(__GLIBC__) || (defined(RLIMIT_DATA) && defined(C_BSD))
     struct rlimit rlim;
 #endif
     time_t currtime;
@@ -160,11 +171,15 @@ int main(int argc, char **argv)
     pid_t mainpid         = 0;
     mode_t old_umask      = 0;
     const char *user_name = NULL;
+    char *cvdcertsdir     = NULL;
+    STATBUF statbuf;
 
     if (check_flevel())
         exit(1);
 
-#ifndef _WIN32
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+#else /* !_WIN32 */
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = SIG_IGN;
     sigaction(SIGHUP, &sa, NULL);
@@ -186,7 +201,7 @@ int main(int argc, char **argv)
     }
 
     if (optget(opts, "debug")->enabled) {
-#if defined(C_LINUX)
+#if defined(C_LINUX) || defined(__GLIBC__)
         /* njh@bandsman.co.uk: create a dump if needed */
         rlim.rlim_cur = rlim.rlim_max = RLIM_INFINITY;
         if (setrlimit(RLIMIT_CORE, &rlim) < 0)
@@ -568,14 +583,45 @@ int main(int argc, char **argv)
                 ret = 1;
                 break;
             }
+
+            STATBUF sb;
+            if (CLAMSTAT(opt->strarg, &sb) != 0 && !S_ISDIR(sb.st_mode)) {
+                logg(LOGG_ERROR, "Current configuration of TemporaryDirectory: %s does not exist, or is not valid \n", opt->strarg);
+                ret = 1;
+                break;
+            }
+        }
+
+        cvdcertsdir = optget(opts, "cvdcertsdir")->strarg;
+        if (NULL != cvdcertsdir) {
+            // Config option must override the engine defaults
+            // (which would've used the env var or hardcoded path)
+            if (LSTAT(cvdcertsdir, &statbuf) == -1) {
+                logg(LOGG_ERROR,
+                     "ClamAV CA certificates directory is missing: %s"
+                     " - It should have been provided as a part of installation.\n",
+                     cvdcertsdir);
+                ret = 1;
+                break;
+            }
+
+            if ((ret = cl_engine_set_str(engine, CL_ENGINE_CVDCERTSDIR, cvdcertsdir))) {
+                logg(LOGG_ERROR, "cli_engine_set_str(CL_ENGINE_CVDCERTSDIR) failed: %s\n", cl_strerror(ret));
+                ret = 1;
+                break;
+            }
         }
 
         cl_engine_set_clcb_hash(engine, hash_callback);
 
         cl_engine_set_clcb_virus_found(engine, clamd_virus_found_cb);
 
-        if (optget(opts, "LeaveTemporaryFiles")->enabled)
+        if (optget(opts, "LeaveTemporaryFiles")->enabled) {
+            /* Set the engine to keep temporary files */
             cl_engine_set_num(engine, CL_ENGINE_KEEPTMP, 1);
+            /* Also set the engine to create temporary directory structure */
+            cl_engine_set_num(engine, CL_ENGINE_TMPDIR_RECURSION, 1);
+        }
 
         if (optget(opts, "ForceToDisk")->enabled)
             cl_engine_set_num(engine, CL_ENGINE_FORCETODISK, 1);
@@ -661,6 +707,12 @@ int main(int argc, char **argv)
                 ret = 1;
                 break;
             }
+        }
+
+        if (optget(opts, "FIPSCryptoHashLimits")->enabled) {
+            dboptions |= CL_DB_FIPS_LIMITS;
+            cl_engine_set_num(engine, CL_ENGINE_FIPS_LIMITS, 1);
+            logg(LOGG_INFO_NF, "FIPS crypto hash limits enabled.\n");
         }
 
         if ((ret = cl_load(dbdir, engine, &sigs, dboptions))) {

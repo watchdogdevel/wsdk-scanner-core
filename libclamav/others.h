@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -40,11 +40,10 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-#ifdef HAVE_JSON
 #include <json.h>
-#endif
 
 #include "clamav.h"
+#include "other_types.h"
 #include "dconf.h"
 #include "filetypes.h"
 #include "fmap.h"
@@ -53,6 +52,7 @@
 #include "bytecode_api.h"
 #include "events.h"
 #include "crtmgr.h"
+#include "scan_layer.h"
 
 #include "unrar_iface.h"
 
@@ -60,9 +60,7 @@
 #include "yara_clam.h"
 #endif
 
-#if HAVE_LIBXML2
 #define CLAMAV_MIN_XMLREADER_FLAGS (XML_PARSE_NOERROR | XML_PARSE_NONET)
-#endif
 
 /*
  * CL_FLEVEL is the signature f-level specific to the current code and
@@ -73,7 +71,7 @@
  * in re-enabling affected modules.
  */
 
-#define CL_FLEVEL 191
+#define CL_FLEVEL 231
 #define CL_FLEVEL_DCONF CL_FLEVEL
 #define CL_FLEVEL_SIGTOOL CL_FLEVEL
 
@@ -175,52 +173,29 @@ typedef struct bitset_tag {
     unsigned long length;
 } bitset_t;
 
-typedef struct image_fuzzy_hash {
-    uint8_t hash[8];
-} image_fuzzy_hash_t;
-
-typedef struct recursion_level_tag {
-    cli_file_t type;
-    size_t size;
-    cl_fmap_t *fmap;                      /* The fmap for this layer. This used to be in an array in the ctx. */
-    uint32_t recursion_level_buffer;      /* Which buffer layer in scan recursion. */
-    uint32_t recursion_level_buffer_fmap; /* Which fmap layer in this buffer. */
-    uint32_t attributes;                  /* layer attributes. */
-    image_fuzzy_hash_t image_fuzzy_hash;  /* Used for image/graphics files to store a fuzzy hash. */
-    bool calculated_image_fuzzy_hash;     /* Used for image/graphics files to store a fuzzy hash. */
-} recursion_level_t;
-
-typedef void *evidence_t;
-
 /* internal clamav context */
 typedef struct cli_ctx_tag {
-    char *target_filepath;    /* (optional) The filepath of the original scan target. */
-    const char *sub_filepath; /* (optional) The filepath of the current file being parsed. May be a temp file. */
-    char *sub_tmpdir;         /* The directory to store tmp files at this recursion depth. */
-    evidence_t evidence;      /* Stores the evidence for this scan to alert (alerting indicators). */
-    unsigned long int *scanned;
+    char *target_filepath;   /* (optional) The filepath of the original scan target. */
+    char *this_layer_tmpdir; /* Pointer to current temporary directory, MAY vary with recursion depth. For convenience. */
+    uint64_t *scanned;
     const struct cli_matcher *root;
     const struct cl_engine *engine;
     uint64_t scansize;
     struct cl_scan_options *options;
-    unsigned int scannedfiles;
-    unsigned int corrupted_input;       /* Setting this flag will prevent the PE parser from reporting "broken executable" for unpacked/reconstructed files that may not be 100% to spec. */
-    recursion_level_t *recursion_stack; /* Array of recursion levels used as a stack. */
-    uint32_t recursion_stack_size;      /* stack size must == engine->max_recursion_level */
-    uint32_t recursion_level;           /* Index into recursion_stack; current fmap recursion level from start of scan. */
-    fmap_t *fmap;                       /* Pointer to current fmap in recursion_stack, varies with recursion depth. For convenience. */
-    unsigned char handlertype_hash[16];
+    uint32_t scannedfiles;
+    unsigned int corrupted_input;      /* Setting this flag will prevent the PE parser from reporting "broken executable" for unpacked/reconstructed files that may not be 100% to spec. */
+    cli_scan_layer_t *recursion_stack; /* Array of recursion levels used as a stack. */
+    uint32_t recursion_stack_size;     /* stack size must == engine->max_recursion_level */
+    uint32_t recursion_level;          /* Index into recursion_stack; current fmap recursion level from start of scan. */
+    evidence_t this_layer_evidence;    /* Pointer to current evidence in recursion_stack, varies with recursion depth. For convenience. */
+    fmap_t *fmap;                      /* Pointer to current fmap in recursion_stack, varies with recursion depth. For convenience. */
+    size_t object_count;               /* Counter for number of unique entities/contained files (including normalized files) processed. */
     struct cli_dconf *dconf;
     bitset_t *hook_lsig_matches;
     void *cb_ctx;
     cli_events_t *perf;
-#ifdef HAVE__INTERNAL__SHA_COLLECT
-    int sha_collect;
-#endif
-#ifdef HAVE_JSON
-    struct json_object *properties;
-    struct json_object *wrkproperty;
-#endif
+    struct json_object *metadata_json;            /* Top level metadata JSON object for the whole scan. */
+    struct json_object *this_layer_metadata_json; /* Pointer to current metadata JSON object in recursion_stack, varies with recursion depth. For convenience. */
     struct timeval time_limit;
     bool limit_exceeded; /* To guard against alerting on limits exceeded more than once, or storing that in the JSON metadata more than once. */
     bool abort_scan;     /* So we can guarantee a scan is aborted, even if CL_ETIMEOUT/etc. status is lost in the scan recursion stack. */
@@ -232,7 +207,7 @@ typedef struct cli_ctx_tag {
 
 typedef struct cli_flagged_sample {
     char **virus_name;
-    char md5[16];
+    char md5[MD5_HASH_SIZE];
     uint32_t size; /* A size of zero means size is unavailable (why would this ever happen?) */
     uint32_t hits;
     stats_section_t *sections;
@@ -289,9 +264,9 @@ struct icomtr {
 
 struct icon_matcher {
     char **group_names[2];
-    unsigned int group_counts[2];
+    uint32_t group_counts[2];
     struct icomtr *icons[3];
-    unsigned int icon_counts[3];
+    uint32_t icon_counts[3];
 };
 
 struct cli_dbinfo {
@@ -325,6 +300,7 @@ struct cl_engine {
     uint32_t ac_mindepth;
     uint32_t ac_maxdepth;
     char *tmpdir;
+    char *certs_directory;
     uint32_t keeptmp;
     uint64_t engine_options;
     uint32_t cache_size;
@@ -408,8 +384,13 @@ struct cl_engine {
     crtmgr cmgr;
 
     /* Callback(s) */
-    clcb_file_inspection cb_file_inspection;
+    clcb_scan cb_scan_pre_hash;
+    clcb_scan cb_scan_pre_scan;
+    clcb_scan cb_scan_post_scan;
+    clcb_scan cb_scan_alert;
+    clcb_scan cb_scan_file_type;
     clcb_pre_cache cb_pre_cache;
+    clcb_file_inspection cb_file_inspection;
     clcb_pre_scan cb_pre_scan;
     clcb_post_scan cb_post_scan;
     clcb_virus_found cb_virus_found;
@@ -557,6 +538,9 @@ extern LIBCLAMAV_EXPORT int have_rar;
 #define SCAN_HEURISTICS (ctx->options->general & CL_SCAN_GENERAL_HEURISTICS)
 #define SCAN_HEURISTIC_PRECEDENCE (ctx->options->general & CL_SCAN_GENERAL_HEURISTIC_PRECEDENCE)
 #define SCAN_UNPRIVILEGED (ctx->options->general & CL_SCAN_GENERAL_UNPRIVILEGED)
+#define SCAN_STORE_HTML_URIS (ctx->options->general & CL_SCAN_GENERAL_STORE_HTML_URIS)
+#define SCAN_STORE_PDF_URIS (ctx->options->general & CL_SCAN_GENERAL_STORE_PDF_URIS)
+#define SCAN_STORE_EXTRA_HASHES (ctx->options->general & CL_SCAN_GENERAL_STORE_EXTRA_HASHES)
 
 #define SCAN_PARSE_ARCHIVE (ctx->options->parse & CL_SCAN_PARSE_ARCHIVE)
 #define SCAN_PARSE_ELF (ctx->options->parse & CL_SCAN_PARSE_ELF)
@@ -568,6 +552,9 @@ extern LIBCLAMAV_EXPORT int have_rar;
 #define SCAN_PARSE_OLE2 (ctx->options->parse & CL_SCAN_PARSE_OLE2)
 #define SCAN_PARSE_HTML (ctx->options->parse & CL_SCAN_PARSE_HTML)
 #define SCAN_PARSE_PE (ctx->options->parse & CL_SCAN_PARSE_PE)
+#define SCAN_PARSE_ONENOTE (ctx->options->parse & CL_SCAN_PARSE_ONENOTE)
+#define SCAN_PARSE_IMAGE (ctx->options->parse & CL_SCAN_PARSE_IMAGE)
+#define SCAN_PARSE_IMAGE_FUZZY_HASH (ctx->options->parse & CL_SCAN_PARSE_IMAGE_FUZZY_HASH)
 
 #define SCAN_HEURISTIC_BROKEN (ctx->options->heuristic & CL_SCAN_HEURISTIC_BROKEN)
 #define SCAN_HEURISTIC_BROKEN_MEDIA (ctx->options->heuristic & CL_SCAN_HEURISTIC_BROKEN_MEDIA)
@@ -584,21 +571,20 @@ extern LIBCLAMAV_EXPORT int have_rar;
 
 #define SCAN_MAIL_PARTIAL_MESSAGE (ctx->options->mail & CL_SCAN_MAIL_PARTIAL_MESSAGE)
 
-#define SCAN_DEV_COLLECT_SHA (ctx->options->dev & CL_SCAN_DEV_COLLECT_SHA)
 #define SCAN_DEV_COLLECT_PERF_INFO (ctx->options->dev & CL_SCAN_DEV_COLLECT_PERFORMANCE_INFO)
 
 /* based on macros from A. Melnikoff */
 #define cbswap16(v) (((v & 0xff) << 8) | (((v) >> 8) & 0xff))
-#define cbswap32(v) ((((v)&0x000000ff) << 24) | (((v)&0x0000ff00) << 8) | \
-                     (((v)&0x00ff0000) >> 8) | (((v)&0xff000000) >> 24))
-#define cbswap64(v) ((((v)&0x00000000000000ffULL) << 56) | \
-                     (((v)&0x000000000000ff00ULL) << 40) | \
-                     (((v)&0x0000000000ff0000ULL) << 24) | \
-                     (((v)&0x00000000ff000000ULL) << 8) |  \
-                     (((v)&0x000000ff00000000ULL) >> 8) |  \
-                     (((v)&0x0000ff0000000000ULL) >> 24) | \
-                     (((v)&0x00ff000000000000ULL) >> 40) | \
-                     (((v)&0xff00000000000000ULL) >> 56))
+#define cbswap32(v) ((((v) & 0x000000ff) << 24) | (((v) & 0x0000ff00) << 8) | \
+                     (((v) & 0x00ff0000) >> 8) | (((v) & 0xff000000) >> 24))
+#define cbswap64(v) ((((v) & 0x00000000000000ffULL) << 56) | \
+                     (((v) & 0x000000000000ff00ULL) << 40) | \
+                     (((v) & 0x0000000000ff0000ULL) << 24) | \
+                     (((v) & 0x00000000ff000000ULL) << 8) |  \
+                     (((v) & 0x000000ff00000000ULL) >> 8) |  \
+                     (((v) & 0x0000ff0000000000ULL) >> 24) | \
+                     (((v) & 0x00ff000000000000ULL) >> 40) | \
+                     (((v) & 0xff00000000000000ULL) >> 56))
 
 #ifndef HAVE_ATTRIB_PACKED
 #define __attribute__(x)
@@ -749,7 +735,18 @@ void cli_append_potentially_unwanted_if_heur_exceedsmax(cli_ctx *ctx, char *virn
 
 const char *cli_get_last_virus(const cli_ctx *ctx);
 const char *cli_get_last_virus_str(const cli_ctx *ctx);
-void cli_virus_found_cb(cli_ctx *ctx, const char *virname);
+
+/**
+ * @brief Dispatch the alert / virus found callbacks.
+ *
+ * AKA for clamscan it will print FOUND message.
+ *
+ * @param ctx                     The scan context.
+ * @param virname                 The name of the virus.
+ * @param is_potentially_unwanted true if the alert is for a potentially unwanted application (PUA).
+ * @return cl_error_t
+ */
+cl_error_t cli_virus_found_cb(cli_ctx *ctx, const char *virname, bool is_potentially_unwanted);
 
 /**
  * @brief Push a new fmap onto our scan recursion stack.
@@ -768,7 +765,7 @@ cl_error_t cli_recursion_stack_push(cli_ctx *ctx, cl_fmap_t *map, cli_file_t typ
 /**
  * @brief Pop off a layer of our scan recursion stack.
  *
- * Returns the fmap for the popped layer. Does NOT funmap() the fmap for you.
+ * Returns the fmap for the popped layer. Does NOT fmap_free() the fmap for you.
  *
  * @param ctx           The scanning context.
  * @return cl_fmap_t*   A pointer to the fmap for the popped layer, may return NULL instead if the stack is empty.
@@ -778,10 +775,13 @@ cl_fmap_t *cli_recursion_stack_pop(cli_ctx *ctx);
 /**
  * @brief Re-assign the type for the current layer.
  *
- * @param ctx   The scanning context.
- * @param type  The new file type.
+ * @param ctx           The scanning context.
+ * @param type          The new file type.
+ * @param run_callback  Whether to run the scan callback for file type corrections.
+ *
+ * @return cl_error_t   CL_SUCCESS if successful, else an error code.
  */
-void cli_recursion_stack_change_type(cli_ctx *ctx, cli_file_t type);
+cl_error_t cli_recursion_stack_change_type(cli_ctx *ctx, cli_file_t type, bool run_callback);
 
 /**
  * @brief Get the type of a specific layer.
@@ -821,11 +821,20 @@ cli_file_t cli_recursion_stack_get_type(cli_ctx *ctx, int index);
  */
 size_t cli_recursion_stack_get_size(cli_ctx *ctx, int index);
 
+/**
+ * @brief Dispatch scan callback based on location.
+ *
+ * @param ctx           Current scan context.
+ * @param location      Callback location.
+ * @return cl_error_t
+ */
+cl_error_t cli_dispatch_scan_callback(cli_ctx *ctx, cl_scan_callback_t location);
+
 /* used by: spin, yc (C) aCaB */
 #define __SHIFTBITS(a) (sizeof(a) << 3)
 #define __SHIFTMASK(a) (__SHIFTBITS(a) - 1)
-#define CLI_ROL(a, b) a = (a << ((b)&__SHIFTMASK(a))) | (a >> ((__SHIFTBITS(a) - (b)) & __SHIFTMASK(a)))
-#define CLI_ROR(a, b) a = (a >> ((b)&__SHIFTMASK(a))) | (a << ((__SHIFTBITS(a) - (b)) & __SHIFTMASK(a)))
+#define CLI_ROL(a, b) a = (a << ((b) & __SHIFTMASK(a))) | (a >> ((__SHIFTBITS(a) - (b)) & __SHIFTMASK(a)))
+#define CLI_ROR(a, b) a = (a >> ((b) & __SHIFTMASK(a))) | (a << ((__SHIFTBITS(a) - (b)) & __SHIFTMASK(a)))
 
 /* Implementation independent sign-extended signed right shift */
 #ifdef HAVE_SAR
@@ -934,13 +943,34 @@ static inline int cli_getpagesize(void)
 #endif /* HAVE_SYSCONF_SC_PAGESIZE */
 #endif /* _WIN32 */
 
-void *cli_malloc(size_t nmemb);
-void *cli_calloc(size_t nmemb, size_t size);
+/**
+ * @brief Wrapper around malloc that limits how much may be allocated to CLI_MAX_ALLOCATION.
+ *
+ * Please use CLI_MAX_MALLOC_OR_GOTO_DONE() with `goto done;` error handling instead.
+ *
+ * @param ptr
+ * @param size
+ * @return void*
+ */
+void *cli_max_malloc(size_t nmemb);
+
+/**
+ * @brief Wrapper around calloc that limits how much may be allocated to CLI_MAX_ALLOCATION.
+ *
+ * Please use CLI_MAX_CALLOC_OR_GOTO_DONE() with `goto done;` error handling instead.
+ *
+ * @param ptr
+ * @param size
+ * @return void*
+ */
+void *cli_max_calloc(size_t nmemb, size_t size);
 
 /**
  * @brief Wrapper around realloc that limits how much may be allocated to CLI_MAX_ALLOCATION.
  *
- * Please use CLI_REALLOC() with `goto done;` error handling instead.
+ * Please use CLI_MAX_REALLOC_OR_GOTO_DONE() with `goto done;` error handling instead.
+ *
+ * NOTE: cli_max_realloc() will NOT free ptr if size==0. It is safe to free ptr after `done:`.
  *
  * IMPORTANT: This differs from realloc() in that if size==0, it will NOT free the ptr.
  *
@@ -948,28 +978,83 @@ void *cli_calloc(size_t nmemb, size_t size);
  * @param size
  * @return void*
  */
-void *cli_realloc(void *ptr, size_t size);
+void *cli_max_realloc(void *ptr, size_t size);
 
 /**
  * @brief Wrapper around realloc that limits how much may be allocated to CLI_MAX_ALLOCATION.
  *
- * Please use CLI_REALLOC() with `goto done;` error handling instead.
+ * Please use CLI_MAX_REALLOC_OR_GOTO_DONE() with `goto done;` error handling instead.
  *
  * IMPORTANT: This differs from realloc() in that if size==0, it will NOT free the ptr.
  *
- * WARNING: This differs from cli_realloc() in that it will free the ptr if the allocation fails.
+ * WARNING: This differs from cli_max_realloc() in that it will free the ptr if the allocation fails.
  * If you're using `goto done;` error handling, this may result in a double-free!!
  *
  * @param ptr
  * @param size
  * @return void*
  */
-void *cli_realloc2(void *ptr, size_t size);
+void *cli_max_realloc_or_free(void *ptr, size_t size);
 
-char *cli_strdup(const char *s);
+/**
+ * @brief Wrapper around realloc that, unlike some variants of realloc, will not free the ptr if size==0.
+ *
+ * Please use CLI_MAX_REALLOC_OR_GOTO_DONE() with `goto done;` error handling instead.
+ *
+ * IMPORTANT: This differs from realloc() in that if size==0, it will NOT free the ptr.
+ *
+ * @param ptr
+ * @param size
+ * @return void*
+ */
+void *cli_safer_realloc(void *ptr, size_t size);
+
+/**
+ * @brief Wrapper around realloc that, unlike some variants of realloc, will not free the ptr if size==0.
+ *
+ * Please use CLI_SAFER_REALLOC_OR_GOTO_DONE() with `goto done;` error handling instead.
+ *
+ * IMPORTANT: This differs from realloc() in that if size==0, it will NOT free the ptr.
+ *
+ * WARNING: This differs from cli_safer_realloc() in that it will free the ptr if the allocation fails.
+ * If you're using `goto done;` error handling, this may result in a double-free!!
+ *
+ * @param ptr
+ * @param size
+ * @return void*
+ */
+void *cli_safer_realloc_or_free(void *ptr, size_t size);
+
+/**
+ * @brief Wrapper around strdup that does a NULL check.
+ *
+ * Please use CLI_STRDUP_OR_GOTO_DONE() with `goto done;` error handling instead.
+ *
+ * @param s
+ * @return char* Returns the allocated string or NULL if allocation failed. This includes if allocation fails because s==NULL.
+ */
+char *cli_safer_strdup(const char *s);
+
 int cli_rmdirs(const char *dirname);
-char *cli_hashstream(FILE *fs, unsigned char *digcpy, int type);
-char *cli_hashfile(const char *filename, int type);
+
+/**
+ * @brief Calculate a hash of a stream.
+ * @param fs        The file stream to read from.
+ * @param[out] hash (Optional) The buffer to store the calculated raw binary hash.
+ * @param type      The type of hash to calculate.
+ * @return char*    Returns the allocated hash string or NULL if allocation failed.
+ */
+char *cli_hashstream(FILE *fs, uint8_t *hash, cli_hash_type_t type);
+
+/**
+ * @brief Calculate a hash of a file.
+ *
+ * @param filename  The file to read from.
+ * @param[out] hash (Optional) The buffer to store the calculated raw binary hash.
+ * @param type      The type of hash to calculate.
+ * @return char*    Returns the allocated hash string or NULL if allocation failed.
+ */
+char *cli_hashfile(const char *filename, uint8_t *hash, cli_hash_type_t type);
 
 /**
  * @brief unlink() with error checking
@@ -987,7 +1072,7 @@ const char *cli_gettmpdir(void);
  * @brief Sanitize a relative path, so it cannot have a negative depth.
  *
  * Caller is responsible for freeing the sanitized filepath.
- * The optioal sanitized_filebase output param is a pointer into the filepath,
+ * The optional sanitized_filebase output param is a pointer into the filepath,
  * if set, and does not need to be freed.
  *
  * @param filepath                  The filepath to sanitize
@@ -1080,7 +1165,7 @@ int cli_bitset_set(bitset_t *bs, unsigned long bit_offset);
 int cli_bitset_test(bitset_t *bs, unsigned long bit_offset);
 const char *cli_ctime(const time_t *timep, char *buf, const size_t bufsize);
 
-cl_error_t cli_checklimits(const char *who, cli_ctx *ctx, unsigned long need1, unsigned long need2, unsigned long need3);
+cl_error_t cli_checklimits(const char *who, cli_ctx *ctx, uint64_t need1, uint64_t need2, uint64_t need3);
 
 /**
  * @brief Call before scanning a file to determine if we should scan it, skip it, or abort the entire scanning process.
@@ -1094,7 +1179,6 @@ cl_error_t cli_checklimits(const char *who, cli_ctx *ctx, unsigned long need1, u
  */
 cl_error_t cli_updatelimits(cli_ctx *ctx, size_t needed);
 
-unsigned long cli_getsizelimit(cli_ctx *, unsigned long);
 int cli_matchregex(const char *str, const char *regex);
 void cli_qsort(void *a, size_t n, size_t es, int (*cmp)(const void *, const void *));
 void cli_qsort_r(void *a, size_t n, size_t es, int (*cmp)(const void *, const void *, const void *), void *arg);
@@ -1239,103 +1323,170 @@ uint8_t cli_get_debug_flag(void);
  */
 uint8_t cli_set_debug_flag(uint8_t debug_flag);
 
-#ifndef STRDUP
-#define STRDUP(buf, var, ...) \
-    do {                      \
-        var = strdup(buf);    \
-        if (NULL == var) {    \
-            do {              \
-                __VA_ARGS__;  \
-            } while (0);      \
-            goto done;        \
-        }                     \
+/**
+ * @brief Trust the current layer by removing any evidence and setting the verdict to trusted.
+ *
+ * @param ctx           The scan context.
+ * @param source        The source of the trust request.
+ * @return cl_error_t   CL_SUCCESS on success, or an error code.
+ */
+cl_error_t cli_trust_this_layer(cli_ctx *ctx, const char *source);
+
+/**
+ * @brief Trust a range of layers by removing any evidence and setting the verdict to trusted.
+ *
+ * @param ctx           The scan context.
+ * @param start_layer   The layer to start trusting from (inclusive).
+ * @param end_layer     The layer to stop trusting at (inclusive).
+ * @param source        The source of the trust request.
+ * @return cl_error_t   CL_SUCCESS on success, or an error code.
+ */
+cl_error_t cli_trust_layers(cli_ctx *ctx, uint32_t start_layer, uint32_t end_layer, const char *source);
+
+#ifndef CLI_SAFER_STRDUP_OR_GOTO_DONE
+/**
+ * @brief Wrapper around strdup that does a NULL check.
+ *
+ * This macro requires `goto done;` error handling.
+ *
+ * @param buf   The string to duplicate.
+ * @param var   The variable to assign the allocated string to.
+ * @param ...   The error handling code to execute if the allocation fails.
+ */
+#define CLI_SAFER_STRDUP_OR_GOTO_DONE(buf, var, ...) \
+    do {                                             \
+        var = cli_safer_strdup(buf);                 \
+        if (NULL == var) {                           \
+            do {                                     \
+                __VA_ARGS__;                         \
+            } while (0);                             \
+            goto done;                               \
+        }                                            \
     } while (0)
 #endif
 
-#ifndef CLI_STRDUP
-#define CLI_STRDUP(buf, var, ...) \
-    do {                          \
-        var = cli_strdup(buf);    \
-        if (NULL == var) {        \
-            do {                  \
-                __VA_ARGS__;      \
-            } while (0);          \
-            goto done;            \
-        }                         \
-    } while (0)
-#endif
-
-#ifndef FREE
-#define FREE(var)          \
-    do {                   \
-        if (NULL != var) { \
-            free(var);     \
-            var = NULL;    \
-        }                  \
-    } while (0)
-#endif
-
-#ifndef MALLOC
-#define MALLOC(var, size, ...) \
-    do {                       \
-        var = malloc(size);    \
-        if (NULL == var) {     \
-            do {               \
-                __VA_ARGS__;   \
-            } while (0);       \
-            goto done;         \
-        }                      \
-    } while (0)
-#endif
-
-#ifndef CLI_MALLOC
-#define CLI_MALLOC(var, size, ...) \
+#ifndef CLI_FREE_AND_SET_NULL
+/**
+ * @brief Wrapper around `free()` to ensure you reset the variable to NULL so as to prevent a double-free.
+ *
+ * @param var The variable to free and set to NULL.
+ */
+#define CLI_FREE_AND_SET_NULL(var) \
     do {                           \
-        var = cli_malloc(size);    \
-        if (NULL == var) {         \
-            do {                   \
-                __VA_ARGS__;       \
-            } while (0);           \
-            goto done;             \
+        if (NULL != var) {         \
+            free((void *)var);     \
+            var = NULL;            \
         }                          \
     } while (0)
 #endif
 
-#ifndef CALLOC
-#define CALLOC(var, nmemb, size, ...) \
-    do {                              \
-        (var) = calloc(nmemb, size);  \
-        if (NULL == var) {            \
-            do {                      \
-                __VA_ARGS__;          \
-            } while (0);              \
-            goto done;                \
-        }                             \
+#ifndef CLI_MALLOC_OR_GOTO_DONE
+/**
+ * @brief Wrapper around malloc that will `goto done;` if the allocation fails.
+ *
+ * This macro requires `goto done;` error handling.
+ *
+ * @param ptr   The variable to assign the allocated memory to.
+ * @param size  The size of the memory to allocate.
+ * @param ...   The error handling code to execute if the allocation fails.
+ */
+#define CLI_MALLOC_OR_GOTO_DONE(var, size, ...) \
+    do {                                        \
+        var = malloc(size);                     \
+        if (NULL == var) {                      \
+            do {                                \
+                __VA_ARGS__;                    \
+            } while (0);                        \
+            goto done;                          \
+        }                                       \
     } while (0)
 #endif
 
-#ifndef CLI_CALLOC
-#define CLI_CALLOC(var, nmemb, size, ...) \
-    do {                                  \
-        (var) = cli_calloc(nmemb, size);  \
-        if (NULL == var) {                \
-            do {                          \
-                __VA_ARGS__;              \
-            } while (0);                  \
-            goto done;                    \
-        }                                 \
+#ifndef CLI_MAX_MALLOC_OR_GOTO_DONE
+/**
+ * @brief Wrapper around malloc that limits how much may be allocated to CLI_MAX_ALLOCATION.
+ *
+ * This macro requires `goto done;` error handling.
+ *
+ * @param var   The variable to assign the allocated memory to.
+ * @param size  The size of the memory to allocate.
+ * @param ...   The error handling code to execute if the allocation fails.
+ */
+#define CLI_MAX_MALLOC_OR_GOTO_DONE(var, size, ...) \
+    do {                                            \
+        var = cli_max_malloc(size);                 \
+        if (NULL == var) {                          \
+            do {                                    \
+                __VA_ARGS__;                        \
+            } while (0);                            \
+            goto done;                              \
+        }                                           \
     } while (0)
 #endif
 
-#ifndef VERIFY_POINTER
-#define VERIFY_POINTER(ptr, ...) \
-    do {                         \
-        if (NULL == ptr) {       \
-            do {                 \
-                __VA_ARGS__;     \
-            } while (0);         \
-            goto done;           \
-        }                        \
+#ifndef CLI_CALLOC_OR_GOTO_DONE
+/**
+ * @brief Wrapper around calloc that will `goto done;` if the allocation fails.
+ *
+ * This macro requires `goto done;` error handling.
+ *
+ * @param var   The variable to assign the allocated memory to.
+ * @param nmemb The number of elements to allocate.
+ * @param size  The size of each element.
+ * @param ...   The error handling code to execute if the allocation fails.
+ */
+#define CLI_CALLOC_OR_GOTO_DONE(var, nmemb, size, ...) \
+    do {                                               \
+        (var) = calloc(nmemb, size);                   \
+        if (NULL == var) {                             \
+            do {                                       \
+                __VA_ARGS__;                           \
+            } while (0);                               \
+            goto done;                                 \
+        }                                              \
+    } while (0)
+#endif
+
+#ifndef CLI_MAX_CALLOC_OR_GOTO_DONE
+/**
+ * @brief Wrapper around calloc that limits how much may be allocated to CLI_MAX_ALLOCATION.
+ *
+ * This macro requires `goto done;` error handling.
+ *
+ * @param var   The variable to assign the allocated memory to.
+ * @param nmemb The number of elements to allocate.
+ * @param size  The size of each element.
+ * @param ...   The error handling code to execute if the allocation fails.
+ */
+#define CLI_MAX_CALLOC_OR_GOTO_DONE(var, nmemb, size, ...) \
+    do {                                                   \
+        (var) = cli_max_calloc(nmemb, size);               \
+        if (NULL == var) {                                 \
+            do {                                           \
+                __VA_ARGS__;                               \
+            } while (0);                                   \
+            goto done;                                     \
+        }                                                  \
+    } while (0)
+#endif
+
+#ifndef CLI_VERIFY_POINTER_OR_GOTO_DONE
+/**
+ * @brief Wrapper around a NULL-check that will `goto done;` if the pointer is NULL.
+ *
+ * This macro requires `goto done;` error handling.
+ *
+ * @param ptr   The pointer to verify.
+ * @param ...   The error handling code to execute if the pointer is NULL.
+ */
+#define CLI_VERIFY_POINTER_OR_GOTO_DONE(ptr, ...) \
+    do {                                          \
+        if (NULL == ptr) {                        \
+            do {                                  \
+                __VA_ARGS__;                      \
+            } while (0);                          \
+            goto done;                            \
+        }                                         \
     } while (0)
 #endif
 
@@ -1344,37 +1495,48 @@ uint8_t cli_set_debug_flag(uint8_t debug_flag);
  *
  * IMPORTANT: This differs from realloc() in that if size==0, it will NOT free the ptr.
  *
- * NOTE: cli_realloc() will NOT free ptr if size==0. It is safe to free ptr after `done:`.
+ * NOTE: cli_max_realloc() will NOT free ptr if size==0. It is safe to free ptr after `done:`.
  *
- * @param ptr
- * @param size
- * @return void*
+ * @param ptr   The pointer to realloc.
+ * @param size  The size of the memory to allocate.
+ * @param ...   The error handling code to execute if the allocation fails.
  */
-#ifndef CLI_REALLOC
-#define CLI_REALLOC(ptr, size, ...)          \
-    do {                                     \
-        void *vTmp = cli_realloc(ptr, size); \
-        if (NULL == vTmp) {                  \
-            do {                             \
-                __VA_ARGS__;                 \
-            } while (0);                     \
-            goto done;                       \
-        }                                    \
-        ptr = vTmp;                          \
+#ifndef CLI_MAX_REALLOC_OR_GOTO_DONE
+#define CLI_MAX_REALLOC_OR_GOTO_DONE(ptr, size, ...)     \
+    do {                                                 \
+        void *vTmp = cli_max_realloc((void *)ptr, size); \
+        if (NULL == vTmp) {                              \
+            do {                                         \
+                __VA_ARGS__;                             \
+            } while (0);                                 \
+            goto done;                                   \
+        }                                                \
+        ptr = vTmp;                                      \
     } while (0)
 #endif
 
-/*This is a duplicate from other PR's.*/
-#ifndef CLI_STRDUP
-#define CLI_STRDUP(buf, var, ...) \
-    do {                          \
-        var = cli_strdup(buf);    \
-        if (NULL == var) {        \
-            do {                  \
-                __VA_ARGS__;      \
-            } while (0);          \
-            goto done;            \
-        }                         \
+/**
+ * @brief Wrapper around realloc that, unlike some variants of realloc, will not free the ptr if size==0.
+ *
+ * IMPORTANT: This differs from realloc() in that if size==0, it will NOT free the ptr.
+ *
+ * NOTE: cli_safer_realloc() will NOT free ptr if size==0. It is safe to free ptr after `done:`.
+ *
+ * @param ptr   The pointer to realloc.
+ * @param size  The size of the memory to allocate.
+ * @param ...   The error handling code to execute if the allocation fails.
+ */
+#ifndef CLI_SAFER_REALLOC_OR_GOTO_DONE
+#define CLI_SAFER_REALLOC_OR_GOTO_DONE(ptr, size, ...)     \
+    do {                                                   \
+        void *vTmp = cli_safer_realloc((void *)ptr, size); \
+        if (NULL == vTmp) {                                \
+            do {                                           \
+                __VA_ARGS__;                               \
+            } while (0);                                   \
+            goto done;                                     \
+        }                                                  \
+        ptr = vTmp;                                        \
     } while (0)
 #endif
 

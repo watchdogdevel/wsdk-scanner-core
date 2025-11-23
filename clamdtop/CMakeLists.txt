@@ -1,4 +1,4 @@
-# Copyright (C) 2020-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+# Copyright (C) 2020-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 
 if(WIN32)
     add_definitions(-DWIN32_LEAN_AND_MEAN)
@@ -16,7 +16,9 @@ target_sources( clamdtop
     PRIVATE
         clamdtop.c )
 if(WIN32)
-    target_sources( clamdtop PRIVATE ${CMAKE_SOURCE_DIR}/win32/res/clamdtop.rc )
+    target_sources( clamdtop PRIVATE 
+    ${CMAKE_SOURCE_DIR}/win32/res/clamdtop.rc
+    ${CMAKE_SOURCE_DIR}/win32/res/clam.manifest )
 endif()
 target_include_directories( clamdtop
     PRIVATE ${CMAKE_BINARY_DIR} # For clamav-config.h
@@ -47,6 +49,8 @@ if(WIN32)
             UNRESOLVED_DEPENDENCIES_VAR _u_deps
             DIRECTORIES
                 $<TARGET_FILE_DIR:Curses::curses>
+            POST_EXCLUDE_REGEXES
+                "[cC]:[\\/][wW][iI][nN][dD][oO][wW][sS]"
         )
         foreach(_file ${_r_deps})
             string(TOLOWER ${_file} _file_lower)

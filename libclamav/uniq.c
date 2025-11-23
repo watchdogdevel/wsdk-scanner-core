@@ -1,7 +1,7 @@
 /*
  *  md5 based hashtab
  *
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB <acab@clamav.net>
@@ -39,10 +39,10 @@ struct uniq *uniq_init(uint32_t count)
     struct uniq *U;
 
     if (!count) return NULL;
-    U = cli_calloc(1, sizeof(*U));
+    U = calloc(1, sizeof(*U));
     if (!U) return NULL;
 
-    U->md5s = cli_malloc(count * sizeof(*U->md5s));
+    U->md5s = cli_max_malloc(count * sizeof(*U->md5s));
     if (!U->md5s) {
         uniq_free(U);
         return NULL;

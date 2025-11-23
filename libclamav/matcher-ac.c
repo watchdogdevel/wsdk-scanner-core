@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -209,7 +209,7 @@ static int sort_list_fn(const void *a, const void *b)
     RETURN_RES_IF_NE(patt_a->partno, patt_b->partno);
 
     /* 4. Keep close patterns close
-     * (this is for performace) */
+     * (this is for performance) */
     RETURN_RES_IF_NE(patt_a, patt_b);
 
     return 0;
@@ -242,7 +242,7 @@ static int sort_heads_by_partno_fn(const void *a, const void *b)
     }
 
     /* 3. Keep close patterns close
-     * (this is for performace) */
+     * (this is for performance) */
     RETURN_RES_IF_NE(patt_a, patt_b);
 
     return 0;
@@ -494,7 +494,7 @@ static int bfs_enqueue(struct bfs_list **bfs, struct bfs_list **last, struct cli
 {
     struct bfs_list *new;
 
-    new = (struct bfs_list *)cli_malloc(sizeof(struct bfs_list));
+    new = (struct bfs_list *)malloc(sizeof(struct bfs_list));
     if (!new) {
         cli_errmsg("bfs_enqueue: Can't allocate memory for bfs_list\n");
         return CL_EMEM;
@@ -833,8 +833,9 @@ int cli_ac_chklsig(const char *expr, const char *end, uint32_t *lsigcnt, unsigne
                     return -1;
                 }
 
-                for (i += 2; i + 1 < len && (isdigit(expr[i + 1]) || expr[i + 1] == ','); i++)
-                    ;
+                for (i += 2; i + 1 < len && (isdigit(expr[i + 1]) || expr[i + 1] == ','); i++) {
+                    continue;
+                }
             }
 
             if (&expr[i + 1] == rend)
@@ -1412,7 +1413,7 @@ cl_error_t cli_ac_initdata(struct cli_ac_data *data, uint32_t partsigs, uint32_t
 
     data->reloffsigs = reloffsigs;
     if (reloffsigs) {
-        data->offset = (uint32_t *)cli_malloc(reloffsigs * 2 * sizeof(uint32_t));
+        data->offset = (uint32_t *)malloc(reloffsigs * 2 * sizeof(uint32_t));
         if (!data->offset) {
             cli_errmsg("cli_ac_init: Can't allocate memory for data->offset\n");
             return CL_EMEM;
@@ -1423,7 +1424,7 @@ cl_error_t cli_ac_initdata(struct cli_ac_data *data, uint32_t partsigs, uint32_t
 
     data->partsigs = partsigs;
     if (partsigs) {
-        data->offmatrix = (uint32_t ***)cli_calloc(partsigs, sizeof(uint32_t **));
+        data->offmatrix = (uint32_t ***)calloc(partsigs, sizeof(uint32_t **));
         if (!data->offmatrix) {
             cli_errmsg("cli_ac_init: Can't allocate memory for data->offmatrix\n");
 
@@ -1436,7 +1437,7 @@ cl_error_t cli_ac_initdata(struct cli_ac_data *data, uint32_t partsigs, uint32_t
 
     data->lsigs = lsigs;
     if (lsigs) {
-        data->lsigcnt = (uint32_t **)cli_malloc(lsigs * sizeof(uint32_t *));
+        data->lsigcnt = (uint32_t **)malloc(lsigs * sizeof(uint32_t *));
         if (!data->lsigcnt) {
             if (partsigs)
                 free(data->offmatrix);
@@ -1447,7 +1448,7 @@ cl_error_t cli_ac_initdata(struct cli_ac_data *data, uint32_t partsigs, uint32_t
             cli_errmsg("cli_ac_init: Can't allocate memory for data->lsigcnt\n");
             return CL_EMEM;
         }
-        data->lsigcnt[0] = (uint32_t *)cli_calloc(lsigs * 64, sizeof(uint32_t));
+        data->lsigcnt[0] = (uint32_t *)calloc(lsigs * 64, sizeof(uint32_t));
         if (!data->lsigcnt[0]) {
             free(data->lsigcnt);
             if (partsigs)
@@ -1461,7 +1462,7 @@ cl_error_t cli_ac_initdata(struct cli_ac_data *data, uint32_t partsigs, uint32_t
         }
         for (i = 1; i < lsigs; i++)
             data->lsigcnt[i] = data->lsigcnt[0] + 64 * i;
-        data->yr_matches = (uint8_t *)cli_calloc(lsigs, sizeof(uint8_t));
+        data->yr_matches = (uint8_t *)calloc(lsigs, sizeof(uint8_t));
         if (data->yr_matches == NULL) {
             free(data->lsigcnt[0]);
             free(data->lsigcnt);
@@ -1474,7 +1475,7 @@ cl_error_t cli_ac_initdata(struct cli_ac_data *data, uint32_t partsigs, uint32_t
         }
 
         /* subsig offsets */
-        data->lsig_matches = (struct cli_lsig_matches **)cli_calloc(lsigs, sizeof(struct cli_lsig_matches *));
+        data->lsig_matches = (struct cli_lsig_matches **)calloc(lsigs, sizeof(struct cli_lsig_matches *));
         if (!data->lsig_matches) {
             free(data->yr_matches);
             free(data->lsigcnt[0]);
@@ -1488,8 +1489,8 @@ cl_error_t cli_ac_initdata(struct cli_ac_data *data, uint32_t partsigs, uint32_t
             cli_errmsg("cli_ac_init: Can't allocate memory for data->lsig_matches\n");
             return CL_EMEM;
         }
-        data->lsigsuboff_last  = (uint32_t **)cli_malloc(lsigs * sizeof(uint32_t *));
-        data->lsigsuboff_first = (uint32_t **)cli_malloc(lsigs * sizeof(uint32_t *));
+        data->lsigsuboff_last  = (uint32_t **)malloc(lsigs * sizeof(uint32_t *));
+        data->lsigsuboff_first = (uint32_t **)malloc(lsigs * sizeof(uint32_t *));
         if (!data->lsigsuboff_last || !data->lsigsuboff_first) {
             free(data->lsig_matches);
             free(data->lsigsuboff_last);
@@ -1506,8 +1507,8 @@ cl_error_t cli_ac_initdata(struct cli_ac_data *data, uint32_t partsigs, uint32_t
             cli_errmsg("cli_ac_init: Can't allocate memory for data->lsigsuboff_(last|first)\n");
             return CL_EMEM;
         }
-        data->lsigsuboff_last[0]  = (uint32_t *)cli_calloc(lsigs * 64, sizeof(uint32_t));
-        data->lsigsuboff_first[0] = (uint32_t *)cli_calloc(lsigs * 64, sizeof(uint32_t));
+        data->lsigsuboff_last[0]  = (uint32_t *)calloc(lsigs * 64, sizeof(uint32_t));
+        data->lsigsuboff_first[0] = (uint32_t *)calloc(lsigs * 64, sizeof(uint32_t));
         if (!data->lsigsuboff_last[0] || !data->lsigsuboff_first[0]) {
             free(data->lsig_matches);
             free(data->lsigsuboff_last[0]);
@@ -1625,19 +1626,23 @@ void cli_ac_freedata(struct cli_ac_data *data)
     }
 }
 
-/* returns only CL_SUCCESS or CL_EMEM */
-inline static int ac_addtype(struct cli_matched_type **list, cli_file_t type, off_t offset, const cli_ctx *ctx)
+/**
+ * @brief Add a match for an object type to the list of matched types.
+ *
+ * Important: The caller is responsible for checking limits!
+ *
+ * @param list Pointer to the list of matched types. *list may be NULL if no types have been added yet.
+ * @param type The type of the embedded object.
+ * @param offset The offset of the embedded object.
+ * @param ctx The context information. May be NULL.
+ * @return cl_error_t CL_SUCCESS regardless if added, or CL_EMEM if memory allocation failed.
+ */
+inline static cl_error_t ac_addtype(struct cli_matched_type **list, cli_file_t type, off_t offset, const cli_ctx *ctx)
 {
-    struct cli_matched_type *tnode, *tnode_last;
+    struct cli_matched_type *tnode;
 
-    if (type == CL_TYPE_ZIPSFX) {
-        if (*list && ctx && ctx->engine->maxfiles && (*list)->cnt > ctx->engine->maxfiles)
-            return CL_SUCCESS;
-    } else if (*list && (*list)->cnt >= MAX_EMBEDDED_OBJ) {
-        return CL_SUCCESS;
-    }
-
-    if (!(tnode = cli_calloc(1, sizeof(struct cli_matched_type)))) {
+    tnode = calloc(1, sizeof(struct cli_matched_type));
+    if (NULL == tnode) {
         cli_errmsg("cli_ac_addtype: Can't allocate memory for new type node\n");
         return CL_EMEM;
     }
@@ -1645,16 +1650,25 @@ inline static int ac_addtype(struct cli_matched_type **list, cli_file_t type, of
     tnode->type   = type;
     tnode->offset = offset;
 
-    tnode_last = *list;
-    while (tnode_last && tnode_last->next)
-        tnode_last = tnode_last->next;
+    if (*list) {
+        // Add to end of existing list.
+        struct cli_matched_type *tnode_last = *list;
 
-    if (tnode_last)
+        while (tnode_last && tnode_last->next) {
+            tnode_last = tnode_last->next;
+        }
         tnode_last->next = tnode;
-    else
+    } else {
+        // First type in the list.
         *list = tnode;
+    }
 
     (*list)->cnt++;
+
+    if (UNLIKELY(cli_get_debug_flag())) {
+        cli_dbgmsg("ac_addtype: added %s embedded object at offset " STDi64 ". Embedded object count: %d\n", cli_ftname(type), (uint64_t)offset, (*list)->cnt);
+    }
+
     return CL_SUCCESS;
 }
 
@@ -1704,28 +1718,28 @@ cl_error_t lsig_sub_matched(const struct cli_matcher *root, struct cli_ac_data *
 
             ls_matches = mdata->lsig_matches[lsig_id];
             if (ls_matches == NULL) { /* allocate cli_lsig_matches */
-                ls_matches = mdata->lsig_matches[lsig_id] = (struct cli_lsig_matches *)cli_calloc(1, sizeof(struct cli_lsig_matches) +
-                                                                                                         (ac_lsig->tdb.subsigs - 1) * sizeof(struct cli_subsig_matches *));
+                ls_matches = mdata->lsig_matches[lsig_id] = (struct cli_lsig_matches *)calloc(1, sizeof(struct cli_lsig_matches) +
+                                                                                                     (ac_lsig->tdb.subsigs - 1) * sizeof(struct cli_subsig_matches *));
                 if (ls_matches == NULL) {
-                    cli_errmsg("lsig_sub_matched: cli_calloc failed for cli_lsig_matches\n");
+                    cli_errmsg("lsig_sub_matched: calloc failed for cli_lsig_matches\n");
                     return CL_EMEM;
                 }
                 ls_matches->subsigs = ac_lsig->tdb.subsigs;
             }
             ss_matches = ls_matches->matches[subsig_id];
             if (ss_matches == NULL) { /*  allocate cli_subsig_matches */
-                ss_matches = ls_matches->matches[subsig_id] = cli_malloc(sizeof(struct cli_subsig_matches));
+                ss_matches = ls_matches->matches[subsig_id] = malloc(sizeof(struct cli_subsig_matches));
                 if (ss_matches == NULL) {
-                    cli_errmsg("lsig_sub_matched: cli_malloc failed for cli_subsig_matches struct\n");
+                    cli_errmsg("lsig_sub_matched: malloc failed for cli_subsig_matches struct\n");
                     return CL_EMEM;
                 }
                 ss_matches->next = 0;
                 ss_matches->last = sizeof(ss_matches->offsets) / sizeof(uint32_t) - 1;
             }
             if (ss_matches->next > ss_matches->last) { /* cli_matches out of space? realloc */
-                ss_matches = ls_matches->matches[subsig_id] = cli_realloc(ss_matches, sizeof(struct cli_subsig_matches) + sizeof(uint32_t) * ss_matches->last * 2);
+                ss_matches = ls_matches->matches[subsig_id] = realloc(ss_matches, sizeof(struct cli_subsig_matches) + sizeof(uint32_t) * ss_matches->last * 2);
                 if (ss_matches == NULL) {
-                    cli_errmsg("lsig_sub_matched: cli_realloc failed for cli_subsig_matches struct\n");
+                    cli_errmsg("lsig_sub_matched: realloc failed for cli_subsig_matches struct\n");
                     return CL_EMEM;
                 }
                 ss_matches->last = sizeof(ss_matches->offsets) / sizeof(uint32_t) + ss_matches->last * 2 - 1;
@@ -1926,13 +1940,13 @@ cl_error_t cli_ac_scanbuff(
 
                             /* sparsely populated matrix, so allocate and initialize if NULL */
                             if (!mdata->offmatrix[pt->sigid - 1]) {
-                                mdata->offmatrix[pt->sigid - 1] = cli_malloc(pt->parts * sizeof(int32_t *));
+                                mdata->offmatrix[pt->sigid - 1] = malloc(pt->parts * sizeof(int32_t *));
                                 if (!mdata->offmatrix[pt->sigid - 1]) {
                                     cli_errmsg("cli_ac_scanbuff: Can't allocate memory for mdata->offmatrix[%u]\n", pt->sigid - 1);
                                     return CL_EMEM;
                                 }
 
-                                mdata->offmatrix[pt->sigid - 1][0] = cli_malloc(pt->parts * (CLI_DEFAULT_AC_TRACKLEN + 2) * sizeof(uint32_t));
+                                mdata->offmatrix[pt->sigid - 1][0] = malloc(pt->parts * (CLI_DEFAULT_AC_TRACKLEN + 2) * sizeof(uint32_t));
                                 if (!mdata->offmatrix[pt->sigid - 1][0]) {
                                     cli_errmsg("cli_ac_scanbuff: Can't allocate memory for mdata->offmatrix[%u][0]\n", pt->sigid - 1);
                                     free(mdata->offmatrix[pt->sigid - 1]);
@@ -1999,14 +2013,65 @@ cl_error_t cli_ac_scanbuff(
 
                                         cli_dbgmsg("Matched signature for file type %s\n", pt->virname);
                                         type = pt->type;
-                                        if ((ftoffset != NULL) &&
-                                            ((*ftoffset == NULL) || (*ftoffset)->cnt < MAX_EMBEDDED_OBJ || type == CL_TYPE_ZIPSFX) && (type >= CL_TYPE_SFX || ((ftype == CL_TYPE_MSEXE || ftype == CL_TYPE_ZIP || ftype == CL_TYPE_MSOLE2) && type == CL_TYPE_MSEXE))) {
-                                            /* FIXME: the first offset in the array is most likely the correct one but
-                                             * it may happen it is not
-                                             */
-                                            for (j = 1; j <= CLI_DEFAULT_AC_TRACKLEN + 1 && offmatrix[0][j] != (uint32_t)-1; j++)
-                                                if (ac_addtype(ftoffset, type, offmatrix[pt->parts - 1][j], ctx))
-                                                    return CL_EMEM;
+
+                                        if (ftoffset != NULL) {
+                                            // Caller provided a pointer to record matched types.
+                                            bool too_many_types = false;
+                                            bool supported_type = false;
+
+                                            if (*ftoffset != NULL) {
+                                                // Have some type matches already. Check limits.
+
+                                                if (ctx && ((type == CL_TYPE_ZIPSFX) ||
+                                                            (type == CL_TYPE_MSEXE && ftype == CL_TYPE_MSEXE))) {
+                                                    // When ctx present, limit the number of type matches using ctx->engine->maxfiles for specific types.
+                                                    // Reasoning:
+                                                    //   ZIP local file header entries likely to be numerous if a single ZIP appended to the scanned file.
+                                                    //   MSEXE can contain many embedded MSEXE entries and MSEXE type false positives matches.
+
+                                                    if (ctx->engine->maxfiles == 0) {
+                                                        // Max-files limit is disabled.
+                                                    } else if ((*ftoffset)->cnt >= ctx->engine->maxfiles) {
+                                                        if (UNLIKELY(cli_get_debug_flag())) {
+                                                            cli_dbgmsg("ac_addtype: Can't add %s type at offset " STDu64 " to list of embedded type matches. Reached maxfiles limit of %u\n", cli_ftname(type), (*ftoffset)->offset, ctx->engine->maxfiles);
+                                                        }
+                                                        too_many_types = true;
+                                                    }
+                                                } else {
+                                                    // Limit the number of type matches using MAX_EMBEDDED_OBJ.
+                                                    if ((*ftoffset)->cnt >= MAX_EMBEDDED_OBJ) {
+                                                        if (UNLIKELY(cli_get_debug_flag())) {
+                                                            cli_dbgmsg("ac_addtype: Can't add %s type at offset " STDu64 " to list of embedded type matches. Reached MAX_EMBEDDED_OBJ limit of %u\n", cli_ftname(type), (*ftoffset)->offset, MAX_EMBEDDED_OBJ);
+                                                        }
+                                                        too_many_types = true;
+                                                    }
+                                                }
+                                            }
+
+                                            // Filter to supported types.
+                                            if (
+                                                // Found type is MBR.
+                                                type == CL_TYPE_MBR ||
+                                                // Found type is any SFX type (i.e., ZIPSFX, RARSFX, 7ZSSFX, etc.).
+                                                type >= CL_TYPE_SFX ||
+                                                // Found type is an MSEXE, but only if host file type is one of MSEXE, ZIP, or MSOLE2.
+                                                (type == CL_TYPE_MSEXE && (ftype == CL_TYPE_MSEXE || ftype == CL_TYPE_ZIP || ftype == CL_TYPE_MSOLE2))) {
+
+                                                supported_type = true;
+                                            }
+
+                                            if (supported_type && !too_many_types) {
+                                                /* FIXME: the first offset in the array is most likely the correct one but
+                                                 * it may happen it is not
+                                                 * Until we're certain and can fix this, we add all offsets in the list.
+                                                 */
+                                                for (j = 1; j <= CLI_DEFAULT_AC_TRACKLEN + 1 && offmatrix[0][j] != (uint32_t)-1; j++) {
+                                                    ret = ac_addtype(ftoffset, type, offmatrix[pt->parts - 1][j], ctx);
+                                                    if (CL_SUCCESS != ret) {
+                                                        return ret;
+                                                    }
+                                                }
+                                            }
                                         }
 
                                         memset(offmatrix[0], (uint32_t)-1, pt->parts * (CLI_DEFAULT_AC_TRACKLEN + 2) * sizeof(uint32_t));
@@ -2066,11 +2131,59 @@ cl_error_t cli_ac_scanbuff(
 
                                     cli_dbgmsg("Matched signature for file type %s at %u\n", pt->virname, realoff);
                                     type = pt->type;
-                                    if ((ftoffset != NULL) &&
-                                        ((*ftoffset == NULL) || (*ftoffset)->cnt < MAX_EMBEDDED_OBJ || type == CL_TYPE_ZIPSFX) && (type == CL_TYPE_MBR || type >= CL_TYPE_SFX || ((ftype == CL_TYPE_MSEXE || ftype == CL_TYPE_ZIP || ftype == CL_TYPE_MSOLE2) && type == CL_TYPE_MSEXE))) {
 
-                                        if (ac_addtype(ftoffset, type, realoff, ctx))
-                                            return CL_EMEM;
+                                    if (ftoffset != NULL) {
+                                        // Caller provided a pointer to record matched types.
+                                        bool too_many_types = false;
+                                        bool supported_type = false;
+
+                                        if (*ftoffset != NULL) {
+                                            // Have some type matches already. Check limits.
+
+                                            if (ctx && ((type == CL_TYPE_ZIPSFX) ||
+                                                        (type == CL_TYPE_MSEXE && ftype == CL_TYPE_MSEXE))) {
+                                                // When ctx present, limit the number of type matches using ctx->engine->maxfiles for specific types.
+                                                // Reasoning:
+                                                //   ZIP local file header entries likely to be numerous if a single ZIP appended to the scanned file.
+                                                //   MSEXE can contain many embedded MSEXE entries and MSEXE type false positives matches.
+
+                                                if (ctx->engine->maxfiles == 0) {
+                                                    // Max-files limit is disabled.
+                                                } else if ((*ftoffset)->cnt >= ctx->engine->maxfiles) {
+                                                    if (UNLIKELY(cli_get_debug_flag())) {
+                                                        cli_dbgmsg("ac_addtype: Can't add %s type at offset " STDu64 " to list of embedded type matches. Reached maxfiles limit of %u\n", cli_ftname(type), (*ftoffset)->offset, ctx->engine->maxfiles);
+                                                    }
+                                                    too_many_types = true;
+                                                }
+                                            } else {
+                                                // Limit the number of type matches using MAX_EMBEDDED_OBJ.
+                                                if ((*ftoffset)->cnt >= MAX_EMBEDDED_OBJ) {
+                                                    if (UNLIKELY(cli_get_debug_flag())) {
+                                                        cli_dbgmsg("ac_addtype: Can't add %s type at offset " STDu64 " to list of embedded type matches. Reached MAX_EMBEDDED_OBJ limit of %u\n", cli_ftname(type), (*ftoffset)->offset, MAX_EMBEDDED_OBJ);
+                                                    }
+                                                    too_many_types = true;
+                                                }
+                                            }
+                                        }
+
+                                        // Filter to supported types.
+                                        if (
+                                            // Found type is MBR.
+                                            type == CL_TYPE_MBR ||
+                                            // Found type is any SFX type (i.e., ZIPSFX, RARSFX, 7ZSSFX, etc.).
+                                            type >= CL_TYPE_SFX ||
+                                            // Found type is an MSEXE, but only if host file type is one of MSEXE, ZIP, or MSOLE2.
+                                            (type == CL_TYPE_MSEXE && (ftype == CL_TYPE_MSEXE || ftype == CL_TYPE_ZIP || ftype == CL_TYPE_MSOLE2))) {
+
+                                            supported_type = true;
+                                        }
+
+                                        if (supported_type && !too_many_types) {
+                                            ret = ac_addtype(ftoffset, type, realoff, ctx);
+                                            if (CL_SUCCESS != ret) {
+                                                return ret;
+                                            }
+                                        }
                                     }
                                 }
                             } else {
@@ -2519,7 +2632,7 @@ inline static int ac_special_altstr(const char *hexpr, uint8_t sigopts, struct c
     char *hexprcpy, *h, *c;
     int i, ret, num, fixed, slen;
 
-    if (!(hexprcpy = cli_strdup(hexpr))) {
+    if (!(hexprcpy = cli_safer_strdup(hexpr))) {
         cli_errmsg("ac_special_altstr: Can't duplicate alternate expression\n");
         return CL_EDUP;
     }
@@ -2589,7 +2702,7 @@ inline static int ac_special_altstr(const char *hexpr, uint8_t sigopts, struct c
         special->type = AC_SPECIAL_ALT_STR;
 
         /* allocate reusable subexpr */
-        if (!(subexpr = cli_calloc(slen + 1, sizeof(char)))) {
+        if (!(subexpr = calloc(slen + 1, sizeof(char)))) {
             cli_errmsg("ac_special_altstr: Can't allocate subexpr container\n");
             free(hexprcpy);
             return CL_EMEM;
@@ -2646,7 +2759,7 @@ cl_error_t cli_ac_addsig(struct cli_matcher *root, const char *virname, const ch
     }
 
     if (strchr(hexsig, '[')) {
-        if (!(hexcpy = cli_strdup(hexsig))) {
+        if (!(hexcpy = cli_safer_strdup(hexsig))) {
             MPOOL_FREE(root->mempool, new);
             return CL_EMEM;
         }
@@ -2730,7 +2843,7 @@ cl_error_t cli_ac_addsig(struct cli_matcher *root, const char *virname, const ch
             return error;
         }
 
-        hex = cli_strdup(hex);
+        hex = cli_safer_strdup(hex);
         free(hexcpy);
         if (!hex) {
             MPOOL_FREE(root->mempool, new);
@@ -2745,13 +2858,13 @@ cl_error_t cli_ac_addsig(struct cli_matcher *root, const char *virname, const ch
 
         if (hex) {
             hexcpy = hex;
-        } else if (!(hexcpy = cli_strdup(hexsig))) {
+        } else if (!(hexcpy = cli_safer_strdup(hexsig))) {
             MPOOL_FREE(root->mempool, new);
             return CL_EMEM;
         }
 
         hexnewsz = strlen(hexsig) + 1;
-        if (!(hexnew = (char *)cli_calloc(1, hexnewsz))) {
+        if (!(hexnew = (char *)calloc(1, hexnewsz))) {
             MPOOL_FREE(root->mempool, new);
             free(hexcpy);
             return CL_EMEM;
@@ -3046,7 +3159,7 @@ cl_error_t cli_ac_addsig(struct cli_matcher *root, const char *virname, const ch
             return CL_EMALFDB;
         }
 
-        // Store those intial bytes as the pattern "prefix" (the stuff before what goes in the AC Trie)
+        // Store those initial bytes as the pattern "prefix" (the stuff before what goes in the AC Trie)
         new->prefix = new->pattern;
         // The "prefix" length is the number of bytes before the starting position of the pattern that goes in the AC Trie.
         new->prefix_length[0] = ppos;

@@ -32,10 +32,10 @@ CLAMAV_PUBLIC {
     cl_retver;
     cl_scandesc;
     cl_scandesc_callback;
-	cl_scanhandle;
-    cl_scanhandle_callback;
     cl_scanfile;
     cl_scanfile_callback;
+    cl_scanhandle;
+    cl_scanhandle_callback;
     cl_statchkdir;
     cl_statfree;
     cl_statinidir;
@@ -61,30 +61,44 @@ CLAMAV_PUBLIC {
     cl_hash_destroy;
     cl_engine_stats_enable;
     lsig_sub_matched;
-};
-CLAMAV_0.104.0 {
-  global:
     cl_engine_set_clcb_engine_compile_progress;
     cl_engine_set_clcb_engine_free_progress;
     cl_engine_set_clcb_sigload_progress;
-} CLAMAV_PUBLIC;
-CLAMAV_1.0.0 {
-  global:
     cl_cvdunpack;
     cl_engine_set_clcb_file_inspection;
-} CLAMAV_0.104.0;
-CLAMAV_1.1.0 {
-  global:
     cl_cvdgetage;
     cl_engine_set_clcb_vba;
-} CLAMAV_1.0.0;
+    cl_cvdunpack_ex;
+    cl_cvdverify_ex;
+    cl_scandesc_ex;
+    cl_scanmap_ex;
+    cl_scanfile_ex;
+    cl_fmap_set_name;
+    cl_fmap_get_name;
+    cl_fmap_set_path;
+    cl_fmap_get_path;
+    cl_fmap_get_fd;
+    cl_fmap_get_size;
+    cl_fmap_set_hash;
+    cl_fmap_have_hash;
+    cl_fmap_will_need_hash_later;
+    cl_fmap_get_hash;
+    cl_fmap_get_data;
+    cl_scan_layer_get_fmap;
+    cl_scan_layer_get_parent_layer;
+    cl_scan_layer_get_type;
+    cl_scan_layer_get_recursion_level;
+    cl_scan_layer_get_object_id;
+    cl_scan_layer_get_last_alert;
+    cl_scan_layer_get_attributes;
+    cl_engine_set_scan_callback;
+};
 CLAMAV_PRIVATE {
   global:
     cli_sigperf_print;
     cli_sigperf_events_destroy;
     cli_pcre_perf_print;
     cli_pcre_perf_events_destroy;
-    cli_pcre_init;
     cli_pcre_build;
     cli_pcre_scanbuf;
     cli_pcre_recaloff;
@@ -109,7 +123,6 @@ CLAMAV_PRIVATE {
     cli_chomp;
     cli_rndnum;
 
-    cli_calloc;
     cli_ole2_extract;
     cli_errmsg;
     cli_debug_flag;
@@ -129,10 +142,12 @@ CLAMAV_PRIVATE {
     html_normalise_map;
     cli_utf16toascii;
 
-    cli_malloc;
     cli_memstr;
-    cli_strdup;
-    cli_realloc;
+    cli_safer_strdup;
+    cli_max_calloc;
+    cli_max_malloc;
+    cli_max_realloc;
+    cli_safer_realloc;
     cli_ctime;
     tableCreate;
     tableDestroy;
@@ -204,10 +219,17 @@ CLAMAV_PRIVATE {
     cli_writen;
     cli_url_canon;
     cli_strerror;
+    cli_ftname;
+    cli_ftcode;
     decodeLine;
     messageCreate;
     messageDestroy;
     base64Flush;
+    cli_unrar_open;
+    cli_unrar_peek_file_header;
+    cli_unrar_extract_file;
+    cli_unrar_skip_file;
+    cli_unrar_close;
     have_rar;
     have_clamjit;
     cli_bytecode_load;
@@ -226,7 +248,7 @@ CLAMAV_PRIVATE {
     cli_bytecode_done;
     cli_bytecode_debug;
     cli_hex2ui;
-    fmap;
+    fmap_new;
     cli_bytecode_context_set_trace;
     cli_bytecode_debug_printsrc;
     cli_bytecode_printversion;
@@ -294,6 +316,11 @@ CLAMAV_PRIVATE {
     readdb_parse_ldb_subsignature;
     fuzzy_hash_calculate_image;
     ffierror_fmt;
+    cli_magic_scan_buff;
+    cli_checklimits;
+    cli_matchmeta;
+    cli_cvdunpack_and_verify;
+    cli_cvdverify;
 
     __cli_strcasestr;
     __cli_strndup;

@@ -1,7 +1,7 @@
 /*
  *  Match a string against a list of patterns/regexes.
  *
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -200,7 +200,7 @@ cl_error_t regex_list_match(struct regex_matcher *matcher, char *real_url, const
         /* too short, no match possible */
         return CL_SUCCESS;
     }
-    buffer = cli_malloc(buffer_len + 1);
+    buffer = cli_max_malloc(buffer_len + 1);
     if (!buffer) {
         cli_errmsg("regex_list_match: Unable to allocate memory for buffer\n");
         return CL_EMEM;
@@ -224,7 +224,7 @@ cl_error_t regex_list_match(struct regex_matcher *matcher, char *real_url, const
     if (CL_SUCCESS != (rc = cli_ac_initdata(&mdata, 0, 0, 0, CLI_DEFAULT_AC_TRACKLEN)))
         return rc;
 
-    bufrev = cli_strdup(buffer);
+    bufrev = cli_safer_strdup(buffer);
     if (!bufrev)
         return CL_EMEM;
 
@@ -235,8 +235,8 @@ cl_error_t regex_list_match(struct regex_matcher *matcher, char *real_url, const
         free(buffer);
         free(bufrev);
         /* filter says this suffix doesn't match.
-        * The filter has false positives, but no false
-        * negatives */
+         * The filter has false positives, but no false
+         * negatives */
         return CL_SUCCESS;
     }
 
@@ -320,10 +320,10 @@ cl_error_t init_regex_list(struct regex_matcher *matcher, uint8_t dconf_prefilte
         goto done;
     }
 #ifdef USE_MPOOL
-    matcher->sha256_hashes.mempool  = mp;
-    matcher->hostkey_prefix.mempool = mp;
+    matcher->sha2_256_hashes.mempool = mp;
+    matcher->hostkey_prefix.mempool  = mp;
 #endif
-    if ((rc = cli_bm_init(&matcher->sha256_hashes))) {
+    if ((rc = cli_bm_init(&matcher->sha2_256_hashes))) {
         goto done;
     }
     if ((rc = cli_bm_init(&matcher->hostkey_prefix))) {
@@ -406,18 +406,18 @@ static int add_hash(struct regex_matcher *matcher, char *pattern, const char fl,
         pat->length = 4;
         bm          = &matcher->hostkey_prefix;
     } else {
-        bm = &matcher->sha256_hashes;
+        bm = &matcher->sha2_256_hashes;
     }
 
-    if (!matcher->sha256_pfx_set.keys) {
-        if ((rc = cli_hashset_init(&matcher->sha256_pfx_set, 1048576, 90))) {
+    if (!matcher->sha2_256_pfx_set.keys) {
+        if ((rc = cli_hashset_init(&matcher->sha2_256_pfx_set, 1048576, 90))) {
             goto done;
         }
     }
 
     if (fl != 'W' && pat->length == 32 &&
-        cli_hashset_contains(&matcher->sha256_pfx_set, cli_readint32(pat->pattern)) &&
-        cli_bm_scanbuff(pat->pattern, 32, &vname, NULL, &matcher->sha256_hashes, 0, NULL, NULL, NULL) == CL_VIRUS) {
+        cli_hashset_contains(&matcher->sha2_256_pfx_set, cli_readint32(pat->pattern)) &&
+        cli_bm_scanbuff(pat->pattern, 32, &vname, NULL, &matcher->sha2_256_hashes, 0, NULL, NULL, NULL) == CL_VIRUS) {
         if (*vname == 'W') {
             /* hash is allowed in local.gdb */
             cli_dbgmsg("Skipping hash %s\n", pattern);
@@ -432,7 +432,7 @@ static int add_hash(struct regex_matcher *matcher, char *pattern, const char fl,
         goto done;
     }
     *pat->virname = fl;
-    cli_hashset_addkey(&matcher->sha256_pfx_set, cli_readint32(pat->pattern));
+    cli_hashset_addkey(&matcher->sha2_256_pfx_set, cli_readint32(pat->pattern));
     if ((rc = cli_bm_addpatt(bm, pat, "*"))) {
         cli_errmsg("add_hash: failed to add BM pattern\n");
         rc = CL_EMALFDB;
@@ -597,7 +597,7 @@ cl_error_t cli_build_regex_list(struct regex_matcher *matcher)
     if ((rc = cli_ac_buildtrie(&matcher->suffixes)))
         return rc;
     matcher->list_built = 1;
-    cli_hashset_destroy(&matcher->sha256_pfx_set);
+    cli_hashset_destroy(&matcher->sha2_256_pfx_set);
 
     return CL_SUCCESS;
 }
@@ -635,7 +635,7 @@ void regex_list_done(struct regex_matcher *matcher)
             MPOOL_FREE(matcher->mempool, matcher->all_pregs);
         }
         cli_hashtab_free(&matcher->suffix_hash);
-        cli_bm_free(&matcher->sha256_hashes);
+        cli_bm_free(&matcher->sha2_256_hashes);
         cli_bm_free(&matcher->hostkey_prefix);
     }
 
@@ -774,21 +774,21 @@ static cl_error_t add_pattern_suffix(void *cbdata, const char *suffix, size_t su
         goto done;
     }
 
-    CLI_MALLOC(regex, sizeof(*regex),
-               cli_errmsg("add_pattern_suffix: Unable to allocate memory for regex\n");
-               ret = CL_EMEM);
+    CLI_MALLOC_OR_GOTO_DONE(regex, sizeof(*regex),
+                            cli_errmsg("add_pattern_suffix: Unable to allocate memory for regex\n");
+                            ret = CL_EMEM);
 
     if (NULL == iregex->pattern) {
         regex->pattern = NULL;
     } else {
-        CLI_STRDUP(iregex->pattern, regex->pattern,
-                   cli_errmsg("add_pattern_suffix: unable to strdup iregex->pattern");
-                   ret = CL_EMEM);
+        CLI_SAFER_STRDUP_OR_GOTO_DONE(iregex->pattern, regex->pattern,
+                                      cli_errmsg("add_pattern_suffix: unable to strdup iregex->pattern");
+                                      ret = CL_EMEM);
     }
     regex->preg = iregex->preg;
     regex->nxt  = NULL;
     el          = cli_hashtab_find(&matcher->suffix_hash, suffix, suffix_len);
-    /* TODO: what if suffixes are prefixes of eachother and only one will
+    /* TODO: what if suffixes are prefixes of each other and only one will
      * match? */
     if (el) {
         /* existing suffix */
@@ -802,10 +802,10 @@ static cl_error_t add_pattern_suffix(void *cbdata, const char *suffix, size_t su
         /* new suffix */
         size_t n = matcher->suffix_cnt;
         el       = cli_hashtab_insert(&matcher->suffix_hash, suffix, suffix_len, (cli_element_data)n);
-        CLI_REALLOC(matcher->suffix_regexes,
-                    (n + 1) * sizeof(*matcher->suffix_regexes),
-                    cli_errmsg("add_pattern_suffix: Unable to reallocate memory for matcher->suffix_regexes\n");
-                    ret = CL_EMEM);
+        CLI_MAX_REALLOC_OR_GOTO_DONE(matcher->suffix_regexes,
+                                     (n + 1) * sizeof(*matcher->suffix_regexes),
+                                     cli_errmsg("add_pattern_suffix: Unable to reallocate memory for matcher->suffix_regexes\n");
+                                     ret = CL_EMEM);
         matcher->suffix_regexes[n].tail = regex;
         matcher->suffix_regexes[n].head = regex;
         if (suffix[0] == '/' && suffix[1] == '\0') {
@@ -817,16 +817,16 @@ static cl_error_t add_pattern_suffix(void *cbdata, const char *suffix, size_t su
         if (CL_SUCCESS != ret) {
             cli_hashtab_delete(&matcher->suffix_hash, suffix, suffix_len);
             /*shrink the size back to what it was.*/
-            CLI_REALLOC(matcher->suffix_regexes, n * sizeof(*matcher->suffix_regexes));
+            CLI_MAX_REALLOC_OR_GOTO_DONE(matcher->suffix_regexes, n * sizeof(*matcher->suffix_regexes));
         } else {
             matcher->suffix_cnt++;
         }
     }
 
 done:
-    if (CL_SUCCESS != ret) {
-        FREE(regex->pattern);
-        FREE(regex);
+    if (CL_SUCCESS != ret && NULL != regex) {
+        CLI_FREE_AND_SET_NULL(regex->pattern);
+        CLI_FREE_AND_SET_NULL(regex);
     }
 
     return ret;
@@ -869,13 +869,13 @@ static cl_error_t add_static_pattern(struct regex_matcher *matcher, char *patter
 
     len       = reverse_string(pattern);
     regex.nxt = NULL;
-    CLI_STRDUP(pattern, regex.pattern,
-               cli_errmsg("add_static_pattern: Cannot allocate memory for regex.pattern\n");
-               rc = CL_EMEM);
+    CLI_SAFER_STRDUP_OR_GOTO_DONE(pattern, regex.pattern,
+                                  cli_errmsg("add_static_pattern: Cannot allocate memory for regex.pattern\n");
+                                  rc = CL_EMEM);
     regex.preg = NULL;
     rc         = add_pattern_suffix(matcher, pattern, len, &regex);
 done:
-    FREE(regex.pattern);
+    CLI_FREE_AND_SET_NULL(regex.pattern);
     return rc;
 }
 

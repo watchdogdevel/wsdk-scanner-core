@@ -97,6 +97,16 @@ This option allows you to change the default database directory. If you enable i
 .br
 Default: defined at configuration (/usr/local/share/clamav)
 .TP
+\fBCVDCertsDirectory STRING\fR
+Path to a directory containing ClamAV CA certificate files used to verify signed database archives (e.g. CVD files).  This directory must already exist, be an absolute path, be readable by freshclam, clamd, clamscan, and sigtool.
+.br
+Default: @CERTSDIR@
+.TP
+\fBFIPSCryptoHashLimits BOOL\fR
+Enforce FIPS\-like limits on using hash algorithms for cryptographic purposes. Will disable MD5 & SHA1 FP sigs and will require '.sign' files to verify CVD authenticity.
+.br
+Default: no
+.TP
 \fBOfficialDatabaseOnly BOOL\fR
 Only load the official signatures published by the ClamAV project.
 .br
@@ -138,6 +148,34 @@ By default clamd binds to INADDR_ANY.
 This option allows you to restrict the TCP address and provide some degree of protection from the outside world. This option can be specified multiple times in order to listen on multiple IPs. IPv6 is now supported.
 .br
 Default: disabled
+.TP
+\fBEnableShutdownCommand BOOL\fR
+Enables the SHUTDOWN command. Setting this to no prevents a client to stop clamd via the protocol.
+.br
+When disabled, clamd responds to this command with COMMAND UNAVAILABLE.
+.br
+Default: yes
+.TP
+\fBEnableReloadCommand BOOL\fR
+Enables the RELOAD command. Setting this to no prevents a client to reload the database.
+.br
+When disabled, clamd responds to this command with COMMAND UNAVAILABLE.
+.br
+Default: yes
+.TP
+\fBEnableVersionCommand BOOL\fR
+Enables the VERSION command. Setting this to no prevents a client from querying version information.
+.br
+When disabled, clamd responds to this command with COMMAND UNAVAILABLE.
+.br
+Default: yes
+.TP
+\fBEnableStatsCommand BOOL\fR
+Enables the STATS command. Setting this to no prevents a client from querying statistics.
+.br
+When disabled, clamd responds to this command with COMMAND UNAVAILABLE.
+.br
+Default: yes
 .TP
 \fBMaxConnectionQueueLength NUMBER\fR
 Maximum length the queue of pending connections may grow to.
@@ -245,10 +283,16 @@ Enable non-blocking (multi-threaded/concurrent) database reloads. This feature w
 Default: yes
 .TP
 \fBVirusEvent COMMAND\fR
-Execute a command when a virus is found. In the command string %v will be
-replaced with the virus name and %f will be replaced with the file name.
-Additionally, two environment variables will be defined: $CLAM_VIRUSEVENT_FILENAME
-and $CLAM_VIRUSEVENT_VIRUSNAME.
+Execute a command when virus is found.
+Use the following environment variables to identify the file and virus names:
+- $CLAM_VIRUSEVENT_FILENAME
+- $CLAM_VIRUSEVENT_VIRUSNAME
+In the command string, '%v' will also be replaced with the virus name.
+Note: The '%f' filename format character has been disabled and will no longer
+be replaced with the file name, due to command injection security concerns.
+Use the 'CLAM_VIRUSEVENT_FILENAME' environment variable instead.
+For the same reason, you should NOT use the environment variables in the
+command directly, but should use it carefully from your executed script.
 \fR
 .br
 Default: disabled
@@ -283,6 +327,26 @@ Record metadata about the file being scanned.
 Scan metadata is useful for file analysis purposes and for debugging scan behavior.
 The JSON metadata will be printed after the scan is complete if Debug is enabled.
 A metadata.json file will be written to the scan temp directory if LeaveTemporaryFiles is enabled.
+.br
+Default: no
+.TP
+\fBJsonStoreHTMLURIs BOOL\fR
+Store URIs found in html files to the json metadata.
+URIs will be stored in an array with the tag 'URIs'.
+GenerateMetadataJson is required for this feature.
+.br
+Default: yes (if GenerateMetadataJson is used)
+.TP
+\fBJsonStorePDFURIs BOOL\fR
+Store URIs found in pdf files to the json metadata.
+URIs will be stored in an array with the tag 'URIs'.
+GenerateMetadataJson is required for this feature.
+.br
+Default: yes (if GenerateMetadataJson is used)
+.TP
+\fBJsonStoreExtraHashes BOOL\fR
+Calculate MD5 and SHA1 hashes (in addition to SHA2-256) and store to the json metadata.
+GenerateMetadataJson is required for this feature.
 .br
 Default: no
 .TP
@@ -479,10 +543,31 @@ If you turn off this option, the original files will still be scanned, but witho
 .br
 Default: yes
 .TP
+\fBScanOneNote BOOL\fR
+This option enables scanning OneNote files.
+.br
+If you turn off this option, the original files will still be scanned, but without additional processing.
+.br
+Default: yes
+.TP
 \fBScanArchive BOOL\fR
 Scan within archives and compressed files.
 .br
 If you turn off this option, the original files will still be scanned, but without unpacking and additional processing.
+.br
+Default: yes
+.TP
+\fBScanImage BOOL\fR
+This option enables scanning of image (graphics).
+.br
+If you turn off this option, the original files will still be scanned, but without unpacking and additional processing.
+.br
+Default: yes
+.TP
+\fBScanImageFuzzyHash BOOL\fR
+This option enables detection by calculating a fuzzy hash of image (graphics) files. Signatures using image fuzzy hashes typically match files and documents by identifying images embedded or attached to those files.
+.br
+If you turn off this option, then some files may no longer be detected.
 .br
 Default: yes
 .TP
@@ -745,7 +830,7 @@ Max number of scanning threads to allocate to the OnAccess thread pool at startu
 Default: 5
 .TP
 \fBOnAccessCurlTimeout NUMBER\fR
-Max amount of time (in milliseconds) that the OnAccess client should spend for every connect, send, and recieve attempt when communicating with clamd via curl.
+Max amount of time (in milliseconds) that the OnAccess client should spend for every connect, send, and receive attempt when communicating with clamd via curl.
 .br
 Default: 5000 (5 seconds)
 .TP

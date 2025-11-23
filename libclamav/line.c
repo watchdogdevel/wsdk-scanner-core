@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Nigel Horne
@@ -70,7 +70,7 @@ line_t *
 lineCreate(const char *data)
 {
     const size_t size = strlen(data);
-    line_t *ret       = (line_t *)cli_malloc(size + 2);
+    line_t *ret       = (line_t *)cli_max_malloc(size + 2);
 
     if (ret == NULL) {
         cli_errmsg("lineCreate: Unable to allocate memory for ret\n");

@@ -1,7 +1,7 @@
 /*
  * OOXML JSON Internals
  *
- * Copyright (C) 2014-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ * Copyright (C) 2014-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  * Authors: Kevin Lin
  *
@@ -23,13 +23,9 @@
 #include "clamav-config.h"
 #endif
 
-#if HAVE_JSON
 #include "json.h"
-#endif
 
-#if HAVE_LIBXML2
 #include <libxml/xmlreader.h>
-#endif
 
 #include "clamav.h"
 #include "filetypes.h"
@@ -38,8 +34,6 @@
 #include "json_api.h"
 #include "msxml_parser.h"
 #include "ooxml.h"
-
-#if HAVE_LIBXML2 && HAVE_JSON
 
 // clang-format off
 
@@ -157,9 +151,9 @@ static cl_error_t ooxml_core_cb(int fd, const char *filepath, cli_ctx *ctx, cons
     cli_dbgmsg("in ooxml_core_cb\n");
     ret = ooxml_parse_document(fd, ctx);
     if (ret == CL_EPARSE)
-        cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_CORE_XMLPARSER");
+        cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_CORE_XMLPARSER");
     else if (ret == CL_EFORMAT)
-        cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_CORE_MALFORMED");
+        cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_CORE_MALFORMED");
 
     return ret;
 }
@@ -175,9 +169,9 @@ static cl_error_t ooxml_extn_cb(int fd, const char *filepath, cli_ctx *ctx, cons
     cli_dbgmsg("in ooxml_extn_cb\n");
     ret = ooxml_parse_document(fd, ctx);
     if (ret == CL_EPARSE)
-        cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_EXTN_XMLPARSER");
+        cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_EXTN_XMLPARSER");
     else if (ret == CL_EFORMAT)
-        cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_EXTN_MALFORMED");
+        cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_EXTN_MALFORMED");
 
     return ret;
 }
@@ -212,7 +206,7 @@ static cl_error_t ooxml_content_cb(int fd, const char *filepath, cli_ctx *ctx, c
         cli_dbgmsg("ooxml_content_cb: xmlReaderForFd error for "
                    "[Content_Types].xml"
                    "\n");
-        cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_XML_READER_FD");
+        cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_XML_READER_FD");
 
         ctx->scansize     = sav_scansize;
         ctx->scannedfiles = sav_scannedfiles;
@@ -309,40 +303,40 @@ static cl_error_t ooxml_content_cb(int fd, const char *filepath, cli_ctx *ctx, c
 
 ooxml_content_exit:
     if (core) {
-        cli_jsonint(ctx->wrkproperty, "CorePropertiesFileCount", core);
+        cli_jsonint(ctx->this_layer_metadata_json, "CorePropertiesFileCount", core);
         if (core > 1)
-            cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_MULTIPLE_CORE_PROPFILES");
+            cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_MULTIPLE_CORE_PROPFILES");
     } else if (!mcore)
         cli_dbgmsg("cli_process_ooxml: file does not contain core properties file\n");
     if (mcore) {
-        cli_jsonint(ctx->wrkproperty, "CorePropertiesMissingFileCount", mcore);
-        cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_MISSING_CORE_PROPFILES");
+        cli_jsonint(ctx->this_layer_metadata_json, "CorePropertiesMissingFileCount", mcore);
+        cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_MISSING_CORE_PROPFILES");
     }
 
     if (extn) {
-        cli_jsonint(ctx->wrkproperty, "ExtendedPropertiesFileCount", extn);
+        cli_jsonint(ctx->this_layer_metadata_json, "ExtendedPropertiesFileCount", extn);
         if (extn > 1)
-            cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_MULTIPLE_EXTN_PROPFILES");
+            cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_MULTIPLE_EXTN_PROPFILES");
     } else if (!mextn)
         cli_dbgmsg("cli_process_ooxml: file does not contain extended properties file\n");
     if (mextn) {
-        cli_jsonint(ctx->wrkproperty, "ExtendedPropertiesMissingFileCount", mextn);
-        cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_MISSING_EXTN_PROPFILES");
+        cli_jsonint(ctx->this_layer_metadata_json, "ExtendedPropertiesMissingFileCount", mextn);
+        cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_MISSING_EXTN_PROPFILES");
     }
 
     if (cust) {
-        cli_jsonint(ctx->wrkproperty, "CustomPropertiesFileCount", cust);
+        cli_jsonint(ctx->this_layer_metadata_json, "CustomPropertiesFileCount", cust);
         if (cust > 1)
-            cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_MULTIPLE_CUSTOM_PROPFILES");
+            cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_MULTIPLE_CUSTOM_PROPFILES");
     } else if (!mcust)
         cli_dbgmsg("cli_process_ooxml: file does not contain custom properties file\n");
     if (mcust) {
-        cli_jsonint(ctx->wrkproperty, "CustomPropertiesMissingFileCount", mcust);
-        cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_MISSING_CUST_PROPFILES");
+        cli_jsonint(ctx->this_layer_metadata_json, "CustomPropertiesMissingFileCount", mcust);
+        cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_MISSING_CUST_PROPFILES");
     }
 
     if (dsig) {
-        cli_jsonint(ctx->wrkproperty, "DigitalSignaturesCount", dsig);
+        cli_jsonint(ctx->this_layer_metadata_json, "DigitalSignaturesCount", dsig);
     }
 
     /* restore the engine tracking limits; resets session limit tracking */
@@ -386,9 +380,7 @@ static cl_error_t ooxml_hwp_cb(int fd, const char *filepath, cli_ctx *ctx, const
     return ret;
 }
 
-#endif /* HAVE_LIBXML2 && HAVE_JSON */
-
-cli_file_t cli_ooxml_filetype(cli_ctx *ctx, fmap_t *map)
+cli_file_t cli_ooxml_filetype(cli_ctx *ctx)
 {
     struct zip_requests requests;
     cl_error_t ret;
@@ -408,7 +400,7 @@ cli_file_t cli_ooxml_filetype(cli_ctx *ctx, fmap_t *map)
         return CL_TYPE_ANY;
     }
 
-    if ((ret = unzip_search(ctx, map, &requests)) == CL_VIRUS) {
+    if ((ret = unzip_search(ctx, &requests)) == CL_VIRUS) {
         switch (requests.found) {
             case 0:
                 return CL_TYPE_OOXML_XL;
@@ -428,7 +420,6 @@ cli_file_t cli_ooxml_filetype(cli_ctx *ctx, fmap_t *map)
 
 cl_error_t cli_process_ooxml(cli_ctx *ctx, int type)
 {
-#if HAVE_LIBXML2 && HAVE_JSON
     uint32_t loff  = 0;
     cl_error_t ret = CL_SUCCESS;
 
@@ -446,7 +437,7 @@ cl_error_t cli_process_ooxml(cli_ctx *ctx, int type)
             cli_dbgmsg("cli_process_ooxml: failed to find "
                        "version.xml"
                        "!\n");
-            cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_NO_HWP_VERSION");
+            cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_NO_HWP_VERSION");
             return CL_EFORMAT;
         }
         ret = unzip_single_internal(ctx, loff, ooxml_hwp_cb);
@@ -459,7 +450,7 @@ cl_error_t cli_process_ooxml(cli_ctx *ctx, int type)
                 cli_dbgmsg("cli_process_ooxml: failed to find "
                            "Contents/content.hpf"
                            "!\n");
-                cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_NO_HWP_CONTENT");
+                cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_NO_HWP_CONTENT");
                 return CL_EFORMAT;
             }
             ret = unzip_single_internal(ctx, loff, ooxml_hwp_cb);
@@ -473,7 +464,7 @@ cl_error_t cli_process_ooxml(cli_ctx *ctx, int type)
             cli_dbgmsg("cli_process_ooxml: failed to find "
                        "[Content_Types].xml"
                        "!\n");
-            cli_json_parse_error(ctx->wrkproperty, "OOXML_ERROR_NO_CONTENT_TYPES");
+            cli_json_parse_error(ctx->this_layer_metadata_json, "OOXML_ERROR_NO_CONTENT_TYPES");
             return CL_EFORMAT;
         }
         cli_dbgmsg("cli_process_ooxml: found "
@@ -485,15 +476,4 @@ cl_error_t cli_process_ooxml(cli_ctx *ctx, int type)
     }
 
     return ret;
-#else
-    UNUSEDPARAM(ctx);
-    cli_dbgmsg("in cli_process_ooxml\n");
-#if !HAVE_LIBXML2
-    cli_dbgmsg("cli_process_ooxml: libxml2 needs to enabled!\n");
-#endif
-#if !HAVE_JSON
-    cli_dbgmsg("cli_process_ooxml: libjson needs to enabled!\n");
-#endif
-    return CL_SUCCESS;
-#endif
 }

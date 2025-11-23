@@ -1,5 +1,5 @@
 /*
- ** Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ ** Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  ** Copyright (C) 1998-2013 Sourcefire, Inc.
  **
  ** Written by Patrick Mullen <pmullen@sourcefire.com>
@@ -27,6 +27,6 @@
 #include <stdio.h>
 #include "clamav-types.h"
 
-int sf_base64decode(uint8_t*, size_t, uint8_t*, size_t, size_t*);
+int sf_base64decode(uint8_t *, size_t, uint8_t *, size_t, size_t *);
 
 #endif

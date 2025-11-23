@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Trog
@@ -182,13 +182,13 @@ static unsigned char *cli_readchunk(FILE *stream, m_area_t *m_area, unsigned int
     unsigned char *chunk, *start, *ptr, *end;
     unsigned int chunk_len, count;
 
-    chunk = (unsigned char *)cli_malloc(max_len);
+    chunk = (unsigned char *)cli_max_malloc(max_len);
     if (!chunk) {
         cli_errmsg("readchunk: Unable to allocate memory for chunk\n");
         return NULL;
     }
 
-    /* Try and use the memory buffer first */
+    /* Try to use the memory buffer first */
     if (m_area) {
         /* maximum we can copy into the buffer,
          * we could have less than max_len bytes available */
@@ -360,7 +360,7 @@ static void html_tag_arg_set(tag_arguments_t *tags, const char *tag, const char 
     for (i = 0; i < tags->count; i++) {
         if (strcmp((const char *)tags->tag[i], tag) == 0) {
             free(tags->value[i]);
-            tags->value[i] = (unsigned char *)cli_strdup(value);
+            tags->value[i] = (unsigned char *)cli_safer_strdup(value);
             return;
         }
     }
@@ -370,51 +370,70 @@ void html_tag_arg_add(tag_arguments_t *tags,
                       const char *tag, char *value)
 {
     int len, i;
-    tags->count++;
-    tags->tag = (unsigned char **)cli_realloc2(tags->tag,
-                                               tags->count * sizeof(char *));
-    if (!tags->tag) {
+    int tagCnt          = tags->count;
+    int valueCnt        = tags->count;
+    int contentCnt      = 0;
+    unsigned char **tmp = NULL;
+
+    tmp = (unsigned char **)cli_max_realloc(tags->tag, (tagCnt + 1) * sizeof(char *));
+    if (!tmp) {
         goto done;
     }
-    tags->value = (unsigned char **)cli_realloc2(tags->value,
-                                                 tags->count * sizeof(char *));
-    if (!tags->value) {
+    tags->tag = tmp;
+    tagCnt++;
+
+    tmp = (unsigned char **)cli_max_realloc(tags->value, (valueCnt + 1) * sizeof(char *));
+    if (!tmp) {
         goto done;
     }
+    tags->value = tmp;
+    valueCnt++;
+
     if (tags->scanContents) {
-        tags->contents = (unsigned char **)cli_realloc2(tags->contents,
-                                                        tags->count * sizeof(*tags->contents));
-        if (!tags->contents) {
+        contentCnt = tags->count;
+        tmp        = (unsigned char **)cli_max_realloc(tags->contents, (contentCnt + 1) * sizeof(*tags->contents));
+        if (!tmp) {
             goto done;
         }
-        tags->contents[tags->count - 1] = NULL;
+        tags->contents             = tmp;
+        tags->contents[contentCnt] = NULL;
+        contentCnt++;
     }
-    tags->tag[tags->count - 1] = (unsigned char *)cli_strdup(tag);
+
+    tags->tag[tags->count] = (unsigned char *)cli_safer_strdup(tag);
     if (value) {
         if (*value == '"') {
-            tags->value[tags->count - 1] = (unsigned char *)cli_strdup(value + 1);
-            len                          = strlen((const char *)value + 1);
+            tags->value[tags->count] = (unsigned char *)cli_safer_strdup(value + 1);
+            if (NULL == tags->value[tags->count]) {
+                goto done;
+            }
+            len = strlen((const char *)value + 1);
             if (len > 0) {
-                tags->value[tags->count - 1][len - 1] = '\0';
+                tags->value[tags->count][len - 1] = '\0';
             }
         } else {
-            tags->value[tags->count - 1] = (unsigned char *)cli_strdup(value);
+            tags->value[tags->count] = (unsigned char *)cli_safer_strdup(value);
         }
     } else {
-        tags->value[tags->count - 1] = NULL;
+        tags->value[tags->count] = NULL;
     }
+
+    tags->count++;
     return;
 
 done:
     /* Bad error - can't do 100% recovery */
-    tags->count--;
-    for (i = 0; i < tags->count; i++) {
+    for (i = 0; i < tagCnt; i++) {
         if (tags->tag) {
             free(tags->tag[i]);
         }
+    }
+    for (i = 0; i < valueCnt; i++) {
         if (tags->value) {
             free(tags->value[i]);
         }
+    }
+    for (i = 0; i < contentCnt; i++) {
         if (tags->contents) {
             if (tags->contents[i])
                 free(tags->contents[i]);
@@ -527,7 +546,7 @@ static inline void html_tag_contents_done(tag_arguments_t *tags, int idx, struct
 {
     unsigned char *p;
     cont->contents[cont->pos++] = '\0';
-    p                           = cli_malloc(cont->pos);
+    p                           = cli_max_malloc(cont->pos);
     if (!p) {
         cli_errmsg("html_tag_contents_done: Unable to allocate memory for p\n");
         return;
@@ -649,7 +668,46 @@ static void js_process(struct parser_state *js_state, const unsigned char *js_be
     }
 }
 
-static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const char *dirname, tag_arguments_t *hrefs, const struct cli_dconf *dconf)
+bool html_insert_form_data(const char *const value, form_data_t *tags)
+{
+    bool bRet  = false;
+    size_t cnt = tags->count + 1;
+    char **tmp = NULL;
+
+    /*
+     * Do NOT use cli_max_realloc_or_free because all the previously malloc'd tag
+     * values will be leaked when tag is free'd in the case where realloc fails.
+     */
+    tmp = cli_max_realloc(tags->urls, cnt * sizeof(unsigned char *));
+    if (!tmp) {
+        goto done;
+    }
+    tags->urls = tmp;
+
+    tags->urls[tags->count] = cli_safer_strdup(value);
+    if (tags->urls[tags->count]) {
+        tags->count = cnt;
+    }
+
+    bRet = true;
+done:
+    if (!bRet) {
+        memset(tags, 0, sizeof(*tags));
+    }
+
+    return bRet;
+}
+
+void html_form_data_tag_free(form_data_t *tags)
+{
+    size_t i;
+    for (i = 0; i < tags->count; i++) {
+        CLI_FREE_AND_SET_NULL(tags->urls[i]);
+    }
+    CLI_FREE_AND_SET_NULL(tags->urls);
+}
+
+static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const char *dirname, tag_arguments_t *hrefs, const struct cli_dconf *dconf, form_data_t *form_data)
 {
     int fd_tmp, tag_length = 0, tag_arg_length = 0;
     bool binary, retval = false, escape = false, hex = false;
@@ -659,7 +717,7 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
     FILE *stream_in  = NULL;
     html_state state = HTML_NORM, next_state = HTML_BAD_STATE, saved_next_state = HTML_BAD_STATE;
     char filename[1024], tag[HTML_STR_LENGTH + 1], tag_arg[HTML_STR_LENGTH + 1];
-    char tag_val[HTML_STR_LENGTH + 1], *tmp_file, *arg_value;
+    char tag_val[HTML_STR_LENGTH + 1], *tmp_file = NULL, *arg_value = NULL;
     unsigned char *line = NULL, *ptr, *ptr_screnc = NULL;
     tag_arguments_t tag_args;
     quoted_state quoted  = NOT_QUOTED;
@@ -720,7 +778,7 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
     tag_args.value    = NULL;
     tag_args.contents = NULL;
     if (dirname) {
-        file_buff_o2 = (file_buff_t *)cli_malloc(sizeof(file_buff_t));
+        file_buff_o2 = (file_buff_t *)malloc(sizeof(file_buff_t));
         if (!file_buff_o2) {
             cli_errmsg("cli_html_normalise: Unable to allocate memory for file_buff_o2\n");
             file_buff_o2 = file_buff_text = NULL;
@@ -737,7 +795,7 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
             goto done;
         }
 
-        file_buff_text = (file_buff_t *)cli_malloc(sizeof(file_buff_t));
+        file_buff_text = (file_buff_t *)malloc(sizeof(file_buff_t));
         if (!file_buff_text) {
             close(file_buff_o2->fd);
             free(file_buff_o2);
@@ -1194,16 +1252,16 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
                             style_end = ptr - strlen("</style>");
 
                             if (style_end < style_begin) {
-                                cli_errmsg("cli_html_normalise: style chunk size underflow\n");
+                                cli_dbgmsg("cli_html_normalise: style chunk size underflow\n");
                                 goto done;
                             }
 
                             chunk_size = style_end - style_begin;
 
                             if (style_buff == NULL) {
-                                CLI_MALLOC(style_buff, chunk_size + 1);
+                                CLI_MAX_MALLOC_OR_GOTO_DONE(style_buff, chunk_size + 1);
                             } else {
-                                CLI_REALLOC(style_buff, style_buff_size + chunk_size + 1);
+                                CLI_MAX_REALLOC_OR_GOTO_DONE(style_buff, style_buff_size + chunk_size + 1);
                             }
 
                             memcpy(style_buff + style_buff_size, style_begin, chunk_size);
@@ -1224,8 +1282,9 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
                             href_contents_begin = ptr;
                         }
                         if (strcmp(tag, "/form") == 0) {
-                            if (in_form_action)
+                            if (in_form_action) {
                                 free(in_form_action);
+                            }
                             in_form_action = NULL;
                         }
                     } else if (strcmp(tag, "script") == 0) {
@@ -1310,9 +1369,13 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
                         } else if (strcmp(tag, "form") == 0 && hrefs->scanContents) {
                             const char *arg_action_value = html_tag_arg_value(&tag_args, "action");
                             if (arg_action_value) {
-                                if (in_form_action)
+                                if (in_form_action) {
                                     free(in_form_action);
-                                in_form_action = (unsigned char *)cli_strdup(arg_action_value);
+                                }
+                                in_form_action = (unsigned char *)cli_safer_strdup(arg_action_value);
+                                if (form_data) {
+                                    html_insert_form_data((const char *const)in_form_action, form_data);
+                                }
                             }
                         } else if (strcmp(tag, "img") == 0) {
                             arg_value = html_tag_arg_value(&tag_args, "src");
@@ -1320,7 +1383,7 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
                                 html_tag_arg_add(hrefs, "src", arg_value);
                                 if (hrefs->scanContents && in_ahref)
                                     /* "contents" of an img tag, is the URL of its parent <a> tag */
-                                    hrefs->contents[hrefs->count - 1] = (unsigned char *)cli_strdup((const char *)hrefs->value[in_ahref - 1]);
+                                    hrefs->contents[hrefs->count - 1] = (unsigned char *)cli_safer_strdup((const char *)hrefs->value[in_ahref - 1]);
                                 if (in_form_action) {
                                     /* form action is the real URL, and href is the 'displayed' */
                                     html_tag_arg_add(hrefs, "form", arg_value);
@@ -1335,7 +1398,7 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
                                 html_tag_arg_add(hrefs, "dynsrc", arg_value);
                                 if (hrefs->scanContents && in_ahref)
                                     /* see above */
-                                    hrefs->contents[hrefs->count - 1] = (unsigned char *)cli_strdup((const char *)hrefs->value[in_ahref - 1]);
+                                    hrefs->contents[hrefs->count - 1] = (unsigned char *)cli_safer_strdup((const char *)hrefs->value[in_ahref - 1]);
                                 if (in_form_action) {
                                     /* form action is the real URL, and href is the 'displayed' */
                                     html_tag_arg_add(hrefs, "form", arg_value);
@@ -1351,7 +1414,7 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
                                 html_tag_arg_add(hrefs, "iframe", arg_value);
                                 if (hrefs->scanContents && in_ahref)
                                     /* see above */
-                                    hrefs->contents[hrefs->count - 1] = (unsigned char *)cli_strdup((const char *)hrefs->value[in_ahref - 1]);
+                                    hrefs->contents[hrefs->count - 1] = (unsigned char *)cli_safer_strdup((const char *)hrefs->value[in_ahref - 1]);
                                 if (in_form_action) {
                                     /* form action is the real URL, and href is the 'displayed' */
                                     html_tag_arg_add(hrefs, "form", arg_value);
@@ -1367,7 +1430,7 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
                                 html_tag_arg_add(hrefs, "area", arg_value);
                                 if (hrefs->scanContents && in_ahref)
                                     /* see above */
-                                    hrefs->contents[hrefs->count - 1] = (unsigned char *)cli_strdup((const char *)hrefs->value[in_ahref - 1]);
+                                    hrefs->contents[hrefs->count - 1] = (unsigned char *)cli_safer_strdup((const char *)hrefs->value[in_ahref - 1]);
                                 if (in_form_action) {
                                     /* form action is the real URL, and href is the 'displayed' */
                                     html_tag_arg_add(hrefs, "form", arg_value);
@@ -1671,7 +1734,7 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
                             free(file_tmp_o1);
                         }
 
-                        file_tmp_o1 = (file_buff_t *)cli_malloc(sizeof(file_buff_t));
+                        file_tmp_o1 = (file_buff_t *)malloc(sizeof(file_buff_t));
                         if (!file_tmp_o1) {
                             cli_errmsg("cli_html_normalise: Unable to allocate memory for file_tmp_o1\n");
                             goto done;
@@ -1830,16 +1893,16 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
 
         if (in_tag == TAG_STYLE) {
             if (ptr < style_begin) {
-                cli_errmsg("cli_html_normalise: style chunk size underflow\n");
+                cli_dbgmsg("cli_html_normalise: style chunk size underflow\n");
                 goto done;
             }
 
             size_t chunk_size = ptr - style_begin;
 
             if (style_buff == NULL) {
-                CLI_MALLOC(style_buff, chunk_size + 1);
+                CLI_MAX_MALLOC_OR_GOTO_DONE(style_buff, chunk_size + 1);
             } else {
-                CLI_REALLOC(style_buff, style_buff_size + chunk_size + 1);
+                CLI_MAX_REALLOC_OR_GOTO_DONE(style_buff, style_buff_size + chunk_size + 1);
             }
 
             memcpy(style_buff + style_buff_size, style_begin, chunk_size);
@@ -1882,33 +1945,12 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
     }
 
     if (style_buff != NULL) {
-        // Found contents of <style> ... </style> block
-
-        // Create image extractor for style block
-        css_image_extractor_t extractor = new_css_image_extractor((const char *)style_buff);
-        if (NULL != extractor) {
-            uint8_t *image                  = NULL;
-            size_t image_len                = 0;
-            css_image_handle_t image_handle = NULL;
-
-            // Extract until there are no more images remaining.
-            while (false != css_image_extract_next(extractor,
-                                                   (const uint8_t **)&image,
-                                                   &image_len,
-                                                   &image_handle)) {
-                // Scan each extracted image. The magic scan will figure out the file type.
-                cl_error_t ret = cli_magic_scan_buff(image, image_len, ctx, NULL, LAYER_ATTRIBUTES_NONE);
-                if (CL_SUCCESS != ret) {
-                    cli_dbgmsg("Scan of image extracted from html <style> block returned: %s\n", cl_strerror(ret));
-                    free_extracted_image(image_handle);
-                    free_css_image_extractor(extractor);
-                    goto done;
-                }
-                free_extracted_image(image_handle);
-                image_handle = NULL;
-            }
-
-            free_css_image_extractor(extractor);
+        // Found contents of <style> ... </style> block.
+        // Search it for images embedded in the CSS.
+        cl_error_t ret = html_style_block_handler(ctx, (const char *)style_buff);
+        if (CL_SUCCESS != ret) {
+            cli_dbgmsg("Scan of image extracted from html <style> block returned: %s\n", cl_strerror(ret));
+            goto done;
         }
 
         free(style_buff);
@@ -1938,8 +1980,9 @@ static bool cli_html_normalise(cli_ctx *ctx, int fd, m_area_t *m_area, const cha
 done:
     if (line) /* only needed for done case */
         free(line);
-    if (in_form_action)
+    if (in_form_action) {
         free(in_form_action);
+    }
     if (in_ahref) /* tag not closed, force closing */
         html_tag_contents_done(hrefs, in_ahref, &contents);
 
@@ -1982,6 +2025,11 @@ done:
 
 bool html_normalise_mem(cli_ctx *ctx, unsigned char *in_buff, off_t in_size, const char *dirname, tag_arguments_t *hrefs, const struct cli_dconf *dconf)
 {
+    return html_normalise_mem_form_data(ctx, in_buff, in_size, dirname, hrefs, dconf, NULL);
+}
+
+bool html_normalise_mem_form_data(cli_ctx *ctx, unsigned char *in_buff, off_t in_size, const char *dirname, tag_arguments_t *hrefs, const struct cli_dconf *dconf, form_data_t *form_data)
+{
     m_area_t m_area;
 
     m_area.buffer = in_buff;
@@ -1989,10 +2037,15 @@ bool html_normalise_mem(cli_ctx *ctx, unsigned char *in_buff, off_t in_size, con
     m_area.offset = 0;
     m_area.map    = NULL;
 
-    return cli_html_normalise(ctx, -1, &m_area, dirname, hrefs, dconf);
+    return cli_html_normalise(ctx, -1, &m_area, dirname, hrefs, dconf, form_data);
 }
 
 bool html_normalise_map(cli_ctx *ctx, fmap_t *map, const char *dirname, tag_arguments_t *hrefs, const struct cli_dconf *dconf)
+{
+    return html_normalise_map_form_data(ctx, map, dirname, hrefs, dconf, NULL);
+}
+
+bool html_normalise_map_form_data(cli_ctx *ctx, fmap_t *map, const char *dirname, tag_arguments_t *hrefs, const struct cli_dconf *dconf, form_data_t *form_data)
 {
     bool retval = false;
     m_area_t m_area;
@@ -2000,7 +2053,7 @@ bool html_normalise_map(cli_ctx *ctx, fmap_t *map, const char *dirname, tag_argu
     m_area.length = map->len;
     m_area.offset = 0;
     m_area.map    = map;
-    retval        = cli_html_normalise(ctx, -1, &m_area, dirname, hrefs, dconf);
+    retval        = cli_html_normalise(ctx, -1, &m_area, dirname, hrefs, dconf, form_data);
     return retval;
 }
 

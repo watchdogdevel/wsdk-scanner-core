@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2014-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2014-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Kevin Lin <klin@sourcefire.com>
  *
@@ -38,8 +38,8 @@
 #include "scanners.h"
 #include "dconf.h"
 
-//#define DEBUG_MBR_PARSE
-//#define DEBUG_EBR_PARSE
+// #define DEBUG_MBR_PARSE
+// #define DEBUG_EBR_PARSE
 
 #ifdef DEBUG_MBR_PARSE
 #define mbr_parsemsg(...) cli_dbgmsg(__VA_ARGS__)
@@ -140,7 +140,7 @@ cl_error_t cli_scanmbr(cli_ctx *ctx, size_t sectorsize)
     unsigned i = 0, prtncount = 0;
     size_t maplen, partsize;
 
-    mbr_parsemsg("The start of something magnificant: MBR parsing\n");
+    mbr_parsemsg("The start of something magnificent: MBR parsing\n");
 
     if (!ctx || !ctx->fmap) {
         cli_errmsg("cli_scanmbr: Invalid context\n");
@@ -179,14 +179,12 @@ cl_error_t cli_scanmbr(cli_ctx *ctx, size_t sectorsize)
     /* MBR checks */
     status = mbr_check_mbr(&mbr, maplen, sectorsize);
     if (status != CL_SUCCESS) {
-        status = status;
         goto done;
     }
 
     /* MBR is valid, examine bootstrap code */
     status = cli_magic_scan_nested_fmap_type(ctx->fmap, 0, sectorsize, ctx, CL_TYPE_ANY, NULL, LAYER_ATTRIBUTES_NONE);
     if (status != CL_SUCCESS) {
-        status = status;
         goto done;
     }
 
@@ -194,7 +192,6 @@ cl_error_t cli_scanmbr(cli_ctx *ctx, size_t sectorsize)
     if (SCAN_HEURISTIC_PARTITION_INTXN && (ctx->dconf->other & OTHER_CONF_PRTNINTXN)) {
         status = mbr_primary_partition_intersection(ctx, mbr, sectorsize);
         if (status != CL_SUCCESS) {
-            status = status;
             goto done;
         }
     }
@@ -225,7 +222,6 @@ cl_error_t cli_scanmbr(cli_ctx *ctx, size_t sectorsize)
             status = mbr_scanextprtn(ctx, &prtncount, mbr.entries[i].firstLBA,
                                      mbr.entries[i].numLBA, sectorsize);
             if (status != CL_SUCCESS) {
-                status = status;
                 goto done;
             }
         } else {
@@ -236,7 +232,6 @@ cl_error_t cli_scanmbr(cli_ctx *ctx, size_t sectorsize)
             mbr_parsemsg("cli_magic_scan_nested_fmap_type: [%u, +%u)\n", partoff, partsize);
             status = cli_magic_scan_nested_fmap_type(ctx->fmap, partoff, partsize, ctx, CL_TYPE_PART_ANY, NULL, LAYER_ATTRIBUTES_NONE);
             if (status != CL_SUCCESS) {
-                status = status;
                 goto done;
             }
         }
@@ -284,7 +279,6 @@ static cl_error_t mbr_scanextprtn(cli_ctx *ctx, unsigned *prtncount, size_t extl
         /* EBR checks */
         status = mbr_check_ebr(&ebr);
         if (status != CL_SUCCESS) {
-            status = status;
             goto done;
         }
 
@@ -384,7 +378,6 @@ static cl_error_t mbr_scanextprtn(cli_ctx *ctx, unsigned *prtncount, size_t extl
 
                     status = cli_magic_scan_nested_fmap_type(ctx->fmap, partoff, partsize, ctx, CL_TYPE_PART_ANY, NULL, LAYER_ATTRIBUTES_NONE);
                     if (status != CL_SUCCESS) {
-                        status = status;
                         goto done;
                     }
                 }

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Michal 'GiM' Spadlinski
@@ -845,7 +845,7 @@ int unmew11(char *src, uint32_t off, uint32_t ssize, uint32_t dsize, uint32_t ba
                 return -1;
             }
 
-            if (!(newsect = cli_realloc(section, (i + 2) * sizeof(struct cli_exe_section)))) {
+            if (!(newsect = cli_max_realloc(section, (i + 2) * sizeof(struct cli_exe_section)))) {
                 cli_dbgmsg("MEW: Out of memory\n");
                 free(section);
                 return -1;
@@ -898,7 +898,7 @@ int unmew11(char *src, uint32_t off, uint32_t ssize, uint32_t dsize, uint32_t ba
         }
         loc_ds = PESALIGN(loc_ds, 0x1000);
 
-        section = cli_calloc(1, sizeof(struct cli_exe_section));
+        section = calloc(1, sizeof(struct cli_exe_section));
         if (!section) {
             cli_dbgmsg("MEW: Out of memory\n");
             return -1;

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -44,7 +44,7 @@ static inline int textbuffer_ensure_capacity(struct text_buffer *txtbuf, size_t 
     if (txtbuf->pos + len > txtbuf->capacity) {
         char *d;
         unsigned capacity = MAX(txtbuf->pos + len, txtbuf->capacity + 4096);
-        d                 = cli_realloc(txtbuf->data, capacity);
+        d                 = cli_max_realloc(txtbuf->data, capacity);
         if (!d)
             return -1;
         txtbuf->capacity = capacity;
@@ -86,7 +86,7 @@ static inline int textbuffer_append(struct text_buffer *txtbuf, const char *s)
 }
 
 /**
- * @brief Append a single cahracter from source `c` to the data in text_buffer `txtbuf`. Reallocate to a larger buf as needed.
+ * @brief Append a single character from source `c` to the data in text_buffer `txtbuf`. Reallocate to a larger buf as needed.
  *
  * @param txtbuf    The destination text_buffer.
  * @param c         Pointer to the source data.

@@ -1,7 +1,7 @@
 /*
  *  Fuzzy hash implementations, matching, and signature support
  *
- *  Copyright (C) 2022-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2022-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Micah Snyder, Mickey Sola, Scott Hutton
  *
@@ -26,22 +26,20 @@ use std::{
     ffi::CStr,
     mem::ManuallyDrop,
     os::raw::c_char,
-    panic,
-    slice,
+    panic, slice,
 };
 
 use image::{imageops::FilterType::Lanczos3, DynamicImage, ImageBuffer, Luma, Pixel, Rgb};
 use log::{debug, error, warn};
 use num_traits::{NumCast, ToPrimitive, Zero};
 use rustdct::DctPlanner;
-use thiserror::Error;
 use transpose::transpose;
 
 use crate::{ffi_error, ffi_util::FFIError, rrf_call, sys, validate_str_param};
 
-/// CdiffError enumerates all possible errors returned by this library.
-#[derive(Error, Debug)]
-pub enum FuzzyHashError {
+/// Error enumerates all possible errors returned by this library.
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
     #[error("Invalid format")]
     Format,
 
@@ -66,8 +64,11 @@ pub enum FuzzyHashError {
     #[error("Invalid parameter: {0}")]
     InvalidParameter(String),
 
-    #[error("{0} parmeter is NULL")]
+    #[error("{0} parameter is NULL")]
     NullParam(&'static str),
+
+    #[error("{0} hash must be {1} characters in length")]
+    InvalidHashLength(&'static str, usize),
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
@@ -81,18 +82,18 @@ pub enum FuzzyHash {
 }
 
 impl TryFrom<&str> for ImageFuzzyHash {
-    type Error = &'static str;
+    type Error = Error;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         if value.len() != 16 {
-            return Err("Image fuzzy hash must be 16 characters in length");
+            return Err(Error::InvalidHashLength("ImageFuzzyHash", 16));
         }
 
         let mut hashbytes = [0; 8];
         if hex::decode_to_slice(value, &mut hashbytes).is_ok() {
             Ok(ImageFuzzyHash { bytes: hashbytes })
         } else {
-            Err("Failed to decode image fuzzy hash bytes from hex to bytes")
+            Err(Error::FormatHashBytes(value.to_string()))
         }
     }
 }
@@ -180,7 +181,7 @@ pub unsafe extern "C" fn _fuzzy_hash_load_subsignature(
     subsig_id: u32,
     err: *mut *mut FFIError,
 ) -> bool {
-    let hexsig = validate_str_param!(hexsig);
+    let hexsig = validate_str_param!(hexsig, err = err);
 
     let mut hashmap = ManuallyDrop::new(Box::from_raw(fuzzy_hashmap as *mut FuzzyHashMap));
 
@@ -205,11 +206,11 @@ pub unsafe extern "C" fn _fuzzy_hash_calculate_image(
     err: *mut *mut FFIError,
 ) -> bool {
     if hash_out.is_null() {
-        return ffi_error!(err = err, FuzzyHashError::NullParam("hash_out"));
+        return ffi_error!(err = err, Error::NullParam("hash_out"));
     }
 
     let buffer = if file_bytes.is_null() {
-        return ffi_error!(err = err, FuzzyHashError::NullParam("file_bytes"));
+        return ffi_error!(err = err, Error::NullParam("file_bytes"));
     } else {
         slice::from_raw_parts(file_bytes, file_size)
     };
@@ -223,7 +224,7 @@ pub unsafe extern "C" fn _fuzzy_hash_calculate_image(
     if hash_out_len < hash_bytes.len() {
         return ffi_error!(
             err = err,
-            FuzzyHashError::InvalidParameter(format!(
+            Error::InvalidParameter(format!(
                 "hash_bytes output parameter too small to hold the hash: {} < {}",
                 hash_out_len,
                 hash_bytes.len()
@@ -257,24 +258,24 @@ impl FuzzyHashMap {
         hexsig: &str,
         lsig_id: u32,
         subsig_id: u32,
-    ) -> Result<(), FuzzyHashError> {
+    ) -> Result<(), Error> {
         let mut hexsig_split = hexsig.split('#');
 
         let algorithm = match hexsig_split.next() {
             Some(x) => x,
-            None => return Err(FuzzyHashError::Format),
+            None => return Err(Error::Format),
         };
 
         let hash = match hexsig_split.next() {
             Some(x) => x,
-            None => return Err(FuzzyHashError::Format),
+            None => return Err(Error::Format),
         };
 
         let distance: u32 = match hexsig_split.next() {
             Some(x) => match x.parse::<u32>() {
                 Ok(n) => n,
                 Err(_) => {
-                    return Err(FuzzyHashError::FormatHammingDistance(x.to_string()));
+                    return Err(Error::FormatHammingDistance(x.to_string()));
                 }
             },
             None => 0,
@@ -285,7 +286,7 @@ impl FuzzyHashMap {
             error!(
             "Non-zero hamming distances for image fuzzy hashes are not supported in this version."
         );
-            return Err(FuzzyHashError::InvalidHammingDistance(distance));
+            return Err(Error::InvalidHammingDistance(distance));
         }
 
         match algorithm {
@@ -293,7 +294,7 @@ impl FuzzyHashMap {
                 // Convert the hash string to an image fuzzy hash bytes struct
                 let image_fuzzy_hash = hash
                     .try_into()
-                    .map_err(|e| FuzzyHashError::FormatHashBytes(format!("{}: {}", e, hash)))?;
+                    .map_err(|e| Error::FormatHashBytes(format!("{}: {}", e, hash)))?;
 
                 let fuzzy_hash = FuzzyHash::Image(image_fuzzy_hash);
 
@@ -306,16 +307,13 @@ impl FuzzyHashMap {
 
                 // If the hash key does not exist in the hashmap, insert an empty vec.
                 // Then add the current meta struct to the entry.
-                self.hashmap
-                    .entry(fuzzy_hash)
-                    .or_insert_with(Vec::new)
-                    .push(meta);
+                self.hashmap.entry(fuzzy_hash).or_default().push(meta);
 
                 Ok(())
             }
             _ => {
                 error!("Unknown fuzzy hash algorithm: {}", algorithm);
-                Err(FuzzyHashError::UnknownAlgorithm(algorithm.to_string()))
+                Err(Error::UnknownAlgorithm(algorithm.to_string()))
             }
         }
     }
@@ -361,26 +359,26 @@ impl FuzzyHashMap {
 /// of the mean -- this change is required.
 ///
 /// 2) scipy.fftpack.dct behaves differently on twodimensional arrays than
-/// single-dimensional arrays.
-/// See https://docs.scipy.org/doc/scipy/reference/generated/scipy.fftpack.dct.html:
+///    single-dimensional arrays.
+///    See https://docs.scipy.org/doc/scipy/reference/generated/scipy.fftpack.dct.html:
 ///
 ///     Note the optional "axis" argument:
 ///         Axis along which the dct is computed; the default is over the last axis
 ///         (i.e., axis=-1).
 ///
 /// For the Python `imagehash` package:
-/// - The `phash_simple()` function is doing a DCT-2 transform on a 2-dimensionals
-/// 32x32 array which means, just on the 2nd axis (just the rows).
+/// - The `phash_simple()` function is doing a DCT-2 transform on a 2-dimensional
+///   32x32 array which means, just on the 2nd axis (just the rows).
 /// - The `phash()` function is doing a 2D DCT-2 transform, by running the DCT-2 on
-/// both X and Y axis, which is the same as transposing before or after each
-/// DCT-2 call.
+///   both X and Y axis, which is the same as transposing before or after each
+///   DCT-2 call.
 ///
 /// 3) I observed that the DCT2 results from Python are consistently 2x greater
-/// than those from Rust. If I multiply every value by 2 after running the DCT,
-/// then the results are the same.
+///    than those from Rust. If I multiply every value by 2 after running the DCT,
+///    then the results are the same.
 ///
 /// 4) We need to get a subset of the 2-D array representing the lower
-/// frequencies of the image, the same way the Python implementation does it.
+///    frequencies of the image, the same way the Python implementation does it.
 ///
 /// The way the python implementation does this is with this line:
 /// ```python
@@ -412,17 +410,16 @@ impl FuzzyHashMap {
 ///
 /// param: hash_out is an output variable
 /// param: hash_out_len indicates the size of the hash_out buffer
-pub fn fuzzy_hash_calculate_image(buffer: &[u8]) -> Result<Vec<u8>, FuzzyHashError> {
-
+pub fn fuzzy_hash_calculate_image(buffer: &[u8]) -> Result<Vec<u8>, Error> {
     // Load image and attempt to catch panics in case the decoders encounter unexpected issues
-    let result = panic::catch_unwind(|| -> Result<DynamicImage, FuzzyHashError> {
-        let image = image::load_from_memory(buffer).map_err(FuzzyHashError::ImageLoad)?;
+    let result = panic::catch_unwind(|| -> Result<DynamicImage, Error> {
+        let image = image::load_from_memory(buffer).map_err(Error::ImageLoad)?;
         Ok(image)
     });
 
     let og_image = match result {
         Ok(image) => image?,
-        Err(_) => return Err(FuzzyHashError::ImageLoadPanic()),
+        Err(_) => return Err(Error::ImageLoadPanic()),
     };
 
     // Drop the alpha channel (if exists).
@@ -534,7 +531,7 @@ fn rgb_to_luma(rgb: &[u8]) -> u8 {
 
 /// Convert the supplied image to grayscale. Alpha channel is discarded.
 ///
-/// This is a customized implemententation of the grayscale feature from the `image` crate.
+/// This is a customized implementation of the grayscale feature from the `image` crate.
 /// This allows us to:
 /// - use RGB->LUMA constants that match those used by the Python Pillow package.
 /// - round the luma floating point value to the nearest integer rather than truncating.

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2013 Sourcefire, Inc.
  *
  *  Authors: Steven Morgan (smorgan@sourcefire.com)
@@ -42,8 +42,6 @@ int cli_XzDecode(struct CLI_XZ *);
 #define XZ_RESULT_OK 0
 #define XZ_RESULT_DATA_ERROR 1
 #define XZ_STREAM_END 2
-
-#define XZ_DIC_HEURISTIC 3
 
 #define CLI_XZ_OBUF_SIZE 1024 * 1024
 #define CLI_XZ_IBUF_SIZE CLI_XZ_OBUF_SIZE >> 2 /* compression ratio 25% */

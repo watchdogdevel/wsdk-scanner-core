@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2019-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2019-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Mickey Sola
  *
@@ -291,7 +291,7 @@ static void onas_handle_signals(void)
 
 struct onas_context *onas_init_context(void)
 {
-    struct onas_context *ctx = (struct onas_context *)cli_malloc(sizeof(struct onas_context));
+    struct onas_context *ctx = (struct onas_context *)malloc(sizeof(struct onas_context));
     if (NULL == ctx) {
         return NULL;
     }
@@ -436,7 +436,7 @@ void help(void)
     mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "           ClamAV: On Access Scanning Application and Client %s\n", get_version());
     mprintf(LOGG_INFO, "           By The ClamAV Team: https://www.clamav.net/about.html#credits\n");
-    mprintf(LOGG_INFO, "           (C) 2023 Cisco Systems, Inc.\n");
+    mprintf(LOGG_INFO, "           (C) 2025 Cisco Systems, Inc.\n");
     mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "    clamonacc [options] [file/directory/-]\n");
     mprintf(LOGG_INFO, "\n");

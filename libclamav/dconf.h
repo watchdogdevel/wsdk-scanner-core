@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -97,6 +97,8 @@ struct cli_dconf {
 #define ARCH_CONF_APM     0x2000000
 #define ARCH_CONF_EGG     0x4000000
 #define ARCH_CONF_UDF     0x8000000
+#define ARCH_CONF_LHA_LZH 0x10000000
+#define ARCH_CONF_ALZ     0x20000000
 
 /* Document flags */
 #define DOC_CONF_HTML         0x1
@@ -109,26 +111,28 @@ struct cli_dconf {
 #define DOC_CONF_MSXML        0x80
 #define DOC_CONF_OOXML        0x100
 #define DOC_CONF_HWP          0x200
+#define DOC_CONF_ONENOTE      0x400
 
 /* Mail flags */
 #define MAIL_CONF_MBOX 0x1
 #define MAIL_CONF_TNEF 0x2
 
 /* Other flags */
-#define OTHER_CONF_UUENC        0x1
-#define OTHER_CONF_SCRENC       0x2
-#define OTHER_CONF_RIFF         0x4
-#define OTHER_CONF_JPEG         0x8
-#define OTHER_CONF_CRYPTFF      0x10
-#define OTHER_CONF_DLP          0x20
-#define OTHER_CONF_MYDOOMLOG    0x40
-#define OTHER_CONF_PREFILTERING 0x80
-#define OTHER_CONF_PDFNAMEOBJ   0x100
-#define OTHER_CONF_PRTNINTXN    0x200
-#define OTHER_CONF_LZW          0x400
-#define OTHER_CONF_PNG          0x800
-#define OTHER_CONF_GIF          0x1000
-#define OTHER_CONF_TIFF         0x2000
+#define OTHER_CONF_UUENC            0x1
+#define OTHER_CONF_SCRENC           0x2
+#define OTHER_CONF_RIFF             0x4
+#define OTHER_CONF_JPEG             0x8
+#define OTHER_CONF_CRYPTFF          0x10
+#define OTHER_CONF_DLP              0x20
+#define OTHER_CONF_MYDOOMLOG        0x40
+#define OTHER_CONF_PREFILTERING     0x80
+#define OTHER_CONF_PDFNAMEOBJ       0x100
+#define OTHER_CONF_PRTNINTXN        0x200
+#define OTHER_CONF_LZW              0x400
+#define OTHER_CONF_PNG              0x800
+#define OTHER_CONF_GIF              0x1000
+#define OTHER_CONF_TIFF             0x2000
+#define OTHER_CONF_IMAGE_FUZZY_HASH 0x4000
 
 /* Phishing flags */
 #define PHISHING_CONF_ENGINE  0x1

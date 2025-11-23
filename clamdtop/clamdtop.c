@@ -1,7 +1,7 @@
 /*
  *  ClamdTOP
  *
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -110,6 +110,7 @@ static void cleanup(void);
 static int send_string_noreconn(conn_t *conn, const char *cmd);
 static void send_string(conn_t *conn, const char *cmd);
 static int read_version(conn_t *conn);
+static int check_stats_available(conn_t *conn);
 char *get_ip(const char *ip);
 char *get_port(const char *ip);
 char *make_ip(const char *host, const char *port);
@@ -183,7 +184,7 @@ static WINDOW *stats_window      = NULL;
 static WINDOW *status_bar_window = NULL;
 static WINDOW *mem_window        = NULL;
 
-static const char *status_bar_keys[10];
+static char *status_bar_keys[10];
 static unsigned maxy = 0, maxx = 0;
 static char *queue_header       = NULL;
 static char *multi_queue_header = NULL;
@@ -316,7 +317,7 @@ static void init_ncurses(int num_clamd, int use_default)
     keypad(stdscr, TRUE);            /* enable keyboard mapping */
     nonl();                          /* tell curses not to do NL->CR/NL on output */
     halfdelay(UPDATE_INTERVAL * 10); /* timeout of 2s when waiting for input*/
-    noecho();                        /* dont echo input */
+    noecho();                        /* don't echo input */
     curs_set(0);                     /* turn off cursor */
     if (use_default)
         use_default_colors();
@@ -790,6 +791,7 @@ done:
 static int make_connection(const char *soname, conn_t *conn)
 {
     int rc;
+    int rv;
 
     if (!soname) {
         return -1;
@@ -801,8 +803,20 @@ static int make_connection(const char *soname, conn_t *conn)
     send_string(conn, "nIDSESSION\nnVERSION\n");
     free(conn->version);
     conn->version = NULL;
-    if (!read_version(conn))
-        return 0;
+
+    rv = read_version(conn);
+    if (rv == -3) {
+        print_con_info(conn, "VERSION command unavailable, consider enabling it in the clamd configuration.\n");
+        EXIT_PROGRAM(FAIL_INITIAL_CONN);
+    } else if (!rv) {
+        // check if STATS command is available
+        if (check_stats_available(conn)) {
+            return 0;
+        } else {
+            print_con_info(conn, "STATS command unavailable, consider enabling it in the clamd configuration.\n");
+            EXIT_PROGRAM(FAIL_INITIAL_CONN);
+        }
+    }
 
     /* clamd < 0.95 */
     if ((rc = make_connection_real(soname, conn)))
@@ -1324,10 +1338,20 @@ static int read_version(conn_t *conn)
 {
     char buf[1024];
     unsigned i;
+
     if (!recv_line(conn, buf, sizeof(buf)))
         return -1;
+
     if (!strcmp(buf, "UNKNOWN COMMAND\n"))
         return -2;
+
+    char *p = strchr(buf, ':');
+    if (NULL == p)
+        return -1;
+
+    // check if VERSION command is available
+    if (!strcmp(p, ": COMMAND UNAVAILABLE\n"))
+        return -3;
 
     conn->version = strdup(buf);
     OOM_CHECK(conn->version);
@@ -1335,6 +1359,24 @@ static int read_version(conn_t *conn)
         if (conn->version[i] == '\n')
             conn->version[i] = ' ';
     return 0;
+}
+
+static int check_stats_available(conn_t *conn)
+{
+    char buf[1024];
+    send_string(conn, "nSTATS\n");
+
+    if (!recv_line(conn, buf, sizeof(buf)))
+        return 0;
+
+    char *p = strchr(buf, ':');
+    if (NULL == p)
+        return 0;
+
+    if (!strcmp(p, ": COMMAND UNAVAILABLE\n"))
+        return 0;
+
+    return 1;
 }
 
 static void sigint(int a)
@@ -1348,7 +1390,7 @@ static void help(void)
     printf("\n");
     printf("                       Clam AntiVirus: Monitoring Tool %s\n", get_version());
     printf("           By The ClamAV Team: https://www.clamav.net/about.html#credits\n");
-    printf("           (C) 2023 Cisco Systems, Inc.\n");
+    printf("           (C) 2025 Cisco Systems, Inc.\n");
     printf("\n");
     printf("    clamdtop [-hVc] [host[:port] /path/to/clamd.sock ...]\n");
     printf("\n");
@@ -1548,6 +1590,10 @@ int main(int argc, char *argv[])
     int ch = 0;
     struct timeval tv_last, tv;
     unsigned i;
+
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+#endif
 
     atexit(cleanup);
     setup_connections(argc, argv);

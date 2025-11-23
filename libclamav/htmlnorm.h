@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Trog
@@ -45,13 +45,19 @@ typedef struct m_area_tag {
     fmap_t *map;
 } m_area_t;
 
-typedef void *css_image_extractor_t;
-typedef void *css_image_handle_t;
+typedef struct form_data_tag {
+    char **urls;
+    size_t count;
+} form_data_t;
 
 bool html_normalise_mem(cli_ctx *ctx, unsigned char *in_buff, off_t in_size, const char *dirname, tag_arguments_t *hrefs, const struct cli_dconf *dconf);
+bool html_normalise_mem_form_data(cli_ctx *ctx, unsigned char *in_buff, off_t in_size, const char *dirname, tag_arguments_t *hrefs, const struct cli_dconf *dconf, form_data_t *form_data);
 bool html_normalise_map(cli_ctx *ctx, fmap_t *map, const char *dirname, tag_arguments_t *hrefs, const struct cli_dconf *dconf);
+bool html_normalise_map_form_data(cli_ctx *ctx, fmap_t *map, const char *dirname, tag_arguments_t *hrefs, const struct cli_dconf *dconf, form_data_t *form_data);
 void html_tag_arg_free(tag_arguments_t *tags);
 bool html_screnc_decode(fmap_t *map, const char *dirname);
 void html_tag_arg_add(tag_arguments_t *tags, const char *tag, char *value);
+
+void html_form_data_tag_free(form_data_t *tags);
 
 #endif

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, Nigel Horne, Török Edvin
@@ -96,15 +96,33 @@ int cli_hexnibbles(char *str, int len);
 size_t cli_strlcat(char *dst, const char *src, size_t sz); /* libclamav/strlcat.c */
 
 /**
- * @brief   Get the file basename including extension from a file path.
+ * @brief Get the file basename including extension from a file path.
+ *
+ * Will treat both '/' and '\' as path separators.
  *
  * Caller is responsible for freeing filebase.
  * An empty string will be returned if the caller inputs a directory with a trailing slash (no file).
  *
  * @param filepath      The filepath in question.
  * @param[out] filebase An allocated string containing the file basename.
+ * @param posix_support_backslash_pathsep Whether to treat backslashes as path separators on Linux/Unix systems.
+ *
  * @return cl_error_t   CL_SUCCESS, CL_EARG, CL_EFORMAT, or CL_EMEM
  */
-cl_error_t cli_basename(const char *filepath, size_t filepath_len, char **filebase);
+cl_error_t cli_basename(
+    const char *filepath,
+    size_t filepath_len,
+    char **filebase,
+    bool posix_support_backslash_pathsep);
+
+/**
+ * @brief Convert a hex string to an appropriately sized byte array.
+ *
+ * @param hexstr   The input hex string (not null-terminated, length must be even).
+ * @param hexlen   The length of the hex string.
+ * @param outbuf   The output buffer (must be at least hexlen/2 bytes).
+ * @return CL_SUCCESS on success, CL_EFORMAT on error.
+ */
+cl_error_t cli_hexstr_to_bytes(const char *hexstr, size_t hexlen, uint8_t *outbuf);
 
 #endif

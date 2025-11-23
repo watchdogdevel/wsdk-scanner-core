@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2008-2013 Sourcefire, Inc.
  *
  *  Author: Tomasz Kojm <tkojm@clamav.net>
@@ -60,11 +60,12 @@
 #define CLAMKEY "Software\\ClamAV"
 #endif
 
-#define MAXCMDOPTS 150
+#define MAXCMDOPTS 200
+#define MAX_OPTION_LINE_LENGTH 1024
 
-#define MATCH_NUMBER "^[0-9]+$"
-#define MATCH_SIZE   "^[0-9]+[KMG]?$"
-#define MATCH_BOOL   "^(yes|true|1|no|false|0)$"
+#define MATCH_NUMBER "^[0-9]+((( +)?#(.*))?)$"
+#define MATCH_SIZE   "^[0-9]+[KMG]?(( +)?#(.*))?$"
+#define MATCH_BOOL   "^(yes|true|1|no|false|0)(( +)?#(.*))?$"
 
 #define FLAG_MULTIPLE 1 /* option can be used multiple times */
 #define FLAG_REQUIRED 2 /* arg is required, even if there's a default value */
@@ -72,33 +73,41 @@
 #define FLAG_REG_CASE 8 /* case-sensitive regex matching */
 
 #ifdef _WIN32
-static bool is_initialized = false;
 
-#ifndef BACKUP_DATADIR
-#define BACKUP_DATADIR "C:\\ClamAV\\database"
-#endif
-#ifndef BACKUP_CONFDIR
-#define BACKUP_CONFDIR "C:\\ClamAV"
-#endif
-char _DATADIR[MAX_PATH]           = BACKUP_DATADIR;
-char _CONFDIR[MAX_PATH]           = BACKUP_CONFDIR;
-char _CONFDIR_CLAMD[MAX_PATH]     = BACKUP_CONFDIR "\\clamd.conf";
-char _CONFDIR_FRESHCLAM[MAX_PATH] = BACKUP_CONFDIR "\\freshclam.conf";
-char _CONFDIR_MILTER[MAX_PATH]    = BACKUP_CONFDIR "\\clamav-milter.conf";
+    static bool is_initialized = false;
 
-#define CONST_DATADIR _DATADIR
-#define CONST_CONFDIR _CONFDIR
-#define CONST_CONFDIR_CLAMD _CONFDIR_CLAMD
-#define CONST_CONFDIR_FRESHCLAM _CONFDIR_FRESHCLAM
-#define CONST_CONFDIR_MILTER _CONFDIR_MILTER
+    #ifndef BACKUP_DATADIR
+    #define BACKUP_DATADIR "C:\\ClamAV\\database"
+    #endif
+    #ifndef BACKUP_CONFDIR
+    #define BACKUP_CONFDIR "C:\\ClamAV"
+    #endif
+    #ifndef BACKUP_CERTSDIR
+    #define BACKUP_CERTSDIR "C:\\ClamAV\\certs"
+    #endif
+
+    char _DATADIR[MAX_PATH]           = BACKUP_DATADIR;
+    char _CONFDIR[MAX_PATH]           = BACKUP_CONFDIR;
+    char _CERTSDIR[MAX_PATH]          = BACKUP_CERTSDIR;
+    char _CONFDIR_CLAMD[MAX_PATH]     = BACKUP_CONFDIR "\\clamd.conf";
+    char _CONFDIR_FRESHCLAM[MAX_PATH] = BACKUP_CONFDIR "\\freshclam.conf";
+    char _CONFDIR_MILTER[MAX_PATH]    = BACKUP_CONFDIR "\\clamav-milter.conf";
+
+    #define CONST_DATADIR           _DATADIR
+    #define CONST_CONFDIR           _CONFDIR
+    #define CONST_CERTSDIR          _CERTSDIR
+    #define CONST_CONFDIR_CLAMD     _CONFDIR_CLAMD
+    #define CONST_CONFDIR_FRESHCLAM _CONFDIR_FRESHCLAM
+    #define CONST_CONFDIR_MILTER    _CONFDIR_MILTER
 
 #else
 
-#define CONST_DATADIR DATADIR
-#define CONST_CONFDIR CONFDIR
-#define CONST_CONFDIR_CLAMD CONFDIR_CLAMD
-#define CONST_CONFDIR_FRESHCLAM CONFDIR_FRESHCLAM
-#define CONST_CONFDIR_MILTER CONFDIR_MILTER
+    #define CONST_DATADIR           OPT_DATADIR
+    #define CONST_CONFDIR           OPT_CONFDIR
+    #define CONST_CERTSDIR          OPT_CERTSDIR
+    #define CONST_CONFDIR_CLAMD     OPT_CONFDIR_CLAMD
+    #define CONST_CONFDIR_FRESHCLAM OPT_CONFDIR_FRESHCLAM
+    #define CONST_CONFDIR_MILTER    OPT_CONFDIR_MILTER
 
 #endif
 
@@ -152,10 +161,15 @@ const struct clam_option __clam_options[] = {
     {NULL, "include", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, FLAG_MULTIPLE, OPT_CLAMSCAN, "", ""},
     {NULL, "include-dir", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, FLAG_MULTIPLE, OPT_CLAMSCAN, "", ""},
     {NULL, "structured-ssn-format", 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, 0, NULL, 0, OPT_CLAMSCAN, "", ""},
+    {NULL, "hash-hint", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_CLAMSCAN, "", ""},
+    {NULL, "hash-alg", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_CLAMSCAN, "", ""},
+    {NULL, "file-type-hint", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_CLAMSCAN, "", ""},
+    {NULL, "log-hash", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMSCAN, "", ""},
+    {NULL, "log-file-type", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMSCAN, "", ""},
     {NULL, "hex-dump", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_SIGTOOL, "", ""},
     {NULL, "md5", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_SIGTOOL, "", ""},
     {NULL, "sha1", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_SIGTOOL, "", ""},
-    {NULL, "sha256", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_SIGTOOL, "", ""},
+    {NULL, "sha2-256", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_SIGTOOL, "", ""},
     {NULL, "mdb", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_SIGTOOL, "", ""},
     {NULL, "imp", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_SIGTOOL, "", ""},
     {NULL, "fuzzy-img", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_SIGTOOL, "", ""},
@@ -164,6 +178,11 @@ const struct clam_option __clam_options[] = {
     {NULL, "ascii-normalise", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
     {NULL, "utf16-decode", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
     {NULL, "build", 'b', CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
+    {NULL, "sign", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
+    {NULL, "verify", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
+    {NULL, "key", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_SIGTOOL, "", ""},
+    {NULL, "cert", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, FLAG_MULTIPLE, OPT_SIGTOOL, "", ""},
+    {NULL, "append", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_SIGTOOL, "", ""},
     {NULL, "max-bad-sigs", 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, 3000, NULL, 0, OPT_SIGTOOL, "Maximum number of mismatched signatures when building a CVD. Zero disables this limit.", "3000"},
     {NULL, "flevel", 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, CL_FLEVEL, NULL, 0, OPT_SIGTOOL, "Feature level to put in the CVD", ""},
     {NULL, "cvd-version", 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, 0, NULL, 0, OPT_SIGTOOL, "Version number of the CVD to build", ""},
@@ -238,6 +257,7 @@ const struct clam_option __clam_options[] = {
     {NULL, "tar", 0, CLOPT_TYPE_STRING, NULL, -1, "foo", 0, OPT_CLAMSCAN | OPT_DEPRECATED, "", ""},
     {NULL, "tgz", 0, CLOPT_TYPE_STRING, NULL, -1, "foo", 0, OPT_CLAMSCAN | OPT_DEPRECATED, "", ""},
     {NULL, "deb", 0, CLOPT_TYPE_STRING, NULL, -1, "foo", 0, OPT_CLAMSCAN | OPT_DEPRECATED, "", ""},
+    {NULL, "sha256", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_SIGTOOL, "", ""}, // OPT_DEPRECATED not used so that it will still function for now.
 
 #ifdef _WIN32
     {NULL, "memory", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMSCAN | OPT_CLAMDSCAN, "", ""},
@@ -280,6 +300,8 @@ const struct clam_option __clam_options[] = {
 
     {"DatabaseDirectory", "datadir", 0, CLOPT_TYPE_STRING, NULL, -1, CONST_DATADIR, 0, OPT_CLAMD | OPT_FRESHCLAM | OPT_SIGTOOL, "This option allows you to change the default database directory.\nIf you enable it, please make sure it points to the same directory in\nboth clamd and freshclam.", "/var/lib/clamav"},
 
+    {"CVDCertsDirectory", "cvdcertsdir", 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN | OPT_FRESHCLAM | OPT_SIGTOOL, "This option allows you to change the default ClamAV CA certificates directory used to verify database external digital signatures.\nIf you enable it, please make sure it points to the same directory in\nboth clamd and freshclam.", "/etc/clamav/certs"},
+
     {"OfficialDatabaseOnly", "official-db-only", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "Only load the official signatures published by the ClamAV project.", "no"},
 
     {"FailIfCvdOlderThan", "fail-if-cvd-older-than", 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, -1, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "Return with a nonzero error code if the virus database is older than the specified number of days.", "-1"},
@@ -295,6 +317,14 @@ const struct clam_option __clam_options[] = {
     {"FixStaleSocket", NULL, 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD | OPT_MILTER, "Remove a stale socket after unclean shutdown", "yes"},
 
     {"TCPSocket", NULL, 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, -1, NULL, 0, OPT_CLAMD, "A TCP port number the daemon will listen on.", "3310"},
+
+    {"EnableShutdownCommand", NULL, 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD, "Enables the SHUTDOWN command for clamd", "no"},
+
+    {"EnableReloadCommand", NULL, 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD, "Enables the RELOAD command for clamd", "no"},
+
+    {"EnableVersionCommand", NULL, 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD, "Enables the VERSION command for clamd", "yes"},
+
+    {"EnableStatsCommand", NULL, 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD, "Enables the STATS command for clamd", "yes"},
 
     /* FIXME: add a regex for IP addr */
     {"TCPAddr", NULL, 0, CLOPT_TYPE_STRING, NULL, -1, NULL, FLAG_MULTIPLE, OPT_CLAMD, "By default clamd binds to INADDR_ANY.\nThis option allows you to restrict the TCP address and provide\nsome degree of protection from the outside world.", "localhost"},
@@ -337,7 +367,7 @@ const struct clam_option __clam_options[] = {
 
     {"DisableCache", "disable-cache", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "This option allows you to disable clamd's caching feature.", "no"},
 
-    {"VirusEvent", NULL, 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_CLAMD, "Execute a command when a virus is found. In the command string %v will be\nreplaced with the virus name and %f will be replaced with the file name.\nAdditionally, two environment variables will be defined: $CLAM_VIRUSEVENT_FILENAME\nand $CLAM_VIRUSEVENT_VIRUSNAME.", "/usr/bin/mailx -s \"ClamAV VIRUS ALERT: %v\" alert < /dev/null"},
+    {"VirusEvent", NULL, 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_CLAMD, "Execute a command when virus is found.\nUse the following environment variables to identify the file and virus names:\n- $CLAM_VIRUSEVENT_FILENAME\n- $CLAM_VIRUSEVENT_VIRUSNAME\nIn the command string, '%v' will also be replaced with the virus name.\nNote: The '%f' filename format character has been disabled and will no longer\nbe replaced with the file name, due to command injection security concerns.\nUse the 'CLAM_VIRUSEVENT_FILENAME' environment variable instead.\nFor the same reason, you should NOT use the environment variables in the\ncommand directly, but should use it carefully from your executed script.", "/opt/send_virus_alert_sms.sh"},
 
     {"ExitOnOOM", NULL, 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMD, "Stop the daemon when libclamav reports an out of memory condition.", "yes"},
 
@@ -351,7 +381,15 @@ const struct clam_option __clam_options[] = {
 
     {"GenerateMetadataJson", NULL, 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMD, "Record metadata about the file being scanned.\nScan metadata is useful for file analysis purposes and for debugging scan behavior.\nThe JSON metadata will be printed after the scan is complete if Debug is enabled.\nA metadata.json file will be written to the scan temp directory if LeaveTemporaryFiles is enabled.", "no"},
 
+    {"JsonStoreHTMLURIs", "json-store-html-uris", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "When GenerateMetadataJson enabled: store URLs found in HTML <form and <a tags.", "yes"},
+
+    {"JsonStorePDFURIs", "json-store-pdf-uris", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "When GenerateMetadataJson enabled: store uris found in pdf /URI tags.", "yes"},
+
+    {"JsonStoreExtraHashes", "json-store-extra-hashes", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "When GenerateMetadataJson enabled: calculate and store each type of supported file hash.", "yes"},
+
     {"User", NULL, 0, CLOPT_TYPE_STRING, NULL, -1, NULL, 0, OPT_CLAMD | OPT_MILTER, "Run the daemon as a specified user (the process must be started by root).", "clamav"},
+
+    {"FIPSCryptoHashLimits", "fips-limits", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_FRESHCLAM | OPT_CLAMSCAN | OPT_CLAMD | OPT_SIGTOOL | OPT_CLAMONACC, "Apply FIPS-like limitations on which hash algorithms may be used for cryptographic purposes. This essentially disables the legacy CVD digital signature verfication method, and also disables support for MD5 and SHA1 false positive signatures ('.fp' and '.sfp' signatures using MD5 or SHA1).", "yes"},
 
     /* Scan options */
     {"Bytecode", "bytecode", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "With this option enabled ClamAV will load bytecode from the database. It is highly recommended you keep this option on, otherwise you'll miss detections for many new viruses.", "yes"},
@@ -434,7 +472,13 @@ const struct clam_option __clam_options[] = {
 
     {"ScanHWP3", "scan-hwp3", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "This option enables scanning HWP3 files.\nIf you turn off this option, the original files will still be scanned, but\nwithout additional processing.", "yes"},
 
+    {"ScanOneNote", "scan-onenote", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "This option enables scanning OneNote files.\nIf you turn off this option, the original files will still be scanned, but\nwithout additional processing.", "yes"},
+
     {"ScanArchive", "scan-archive", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "Scan within archives and compressed files.\nIf you turn off this option, the original files will still be scanned, but\nwithout unpacking and additional processing.", "yes"},
+
+    {"ScanImage", "scan-image", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "This option enables scanning of image (graphics).\nIf you turn off this option, the original files will still be scanned, but without additional processing.", "yes"},
+
+    {"ScanImageFuzzyHash", "scan-image-fuzzy-hash", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 1, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "This option enables detection by calculating a fuzzy hash of image (graphics)\nfiles\nSignatures using image fuzzy hashes typically match files and documents by\nidentifying images embedded or attached to those files.\nIf you turn off this option, then some files may no longer be detected.", "yes"},
 
     {"ForceToDisk", "force-to-disk", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMD | OPT_CLAMSCAN, "This option causes memory or nested map scans to dump the content to disk.\nIf you turn on this option, more data is written to disk and is available\nwhen the leave-temps option is enabled at the cost of more disk writes.", "no"},
 
@@ -492,7 +536,7 @@ const struct clam_option __clam_options[] = {
 
     {"OnAccessExtraScanning", NULL, 0, CLOPT_TYPE_BOOL, MATCH_BOOL, 0, NULL, 0, OPT_CLAMD, "Enables extra scanning and notification after catching certain inotify events. Only works with the DDD system enabled.", "yes"},
 
-    {"OnAccessCurlTimeout", NULL, 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, 5000l, NULL, 0, OPT_CLAMD, "Max amount of time (in milliseconds) that the OnAccess client should spend for every connect, send, and recieve attempt when communicating with clamd via curl (5s default)", "10000L"},
+    {"OnAccessCurlTimeout", NULL, 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, 5000l, NULL, 0, OPT_CLAMD, "Max amount of time (in milliseconds) that the OnAccess client should spend for every connect, send, and receive attempt when communicating with clamd via curl (5s default)", "10000L"},
 
     {"OnAccessMaxThreads", NULL, 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, 5, NULL, 0, OPT_CLAMD, "Max number of scanning threads to allocate to the OnAccess thread pool at startup--these threads are the ones responsible for creating a connection with the daemon and kicking off scanning after an event has been processed. To prevent clamonacc from consuming all clamd's resources keep this lower than clamd's max threads. Default is 5", "10"},
 
@@ -510,9 +554,6 @@ const struct clam_option __clam_options[] = {
 
     {"DevACDepth", "dev-ac-depth", 0, CLOPT_TYPE_NUMBER, MATCH_NUMBER, -1, NULL, FLAG_HIDDEN, OPT_CLAMD | OPT_CLAMSCAN, "", ""},
 
-#ifdef HAVE__INTERNAL__SHA_COLLECT
-    {"DevCollectHashes", "dev-collect-hashes", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, -1, NULL, FLAG_HIDDEN, OPT_CLAMD | OPT_CLAMSCAN, "", ""},
-#endif
     {"DevPerformance", "dev-performance", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, -1, NULL, FLAG_HIDDEN, OPT_CLAMD | OPT_CLAMSCAN, "", ""},
     {"DevLiblog", "dev-liblog", 0, CLOPT_TYPE_BOOL, MATCH_BOOL, -1, NULL, FLAG_HIDDEN, OPT_CLAMD, "", ""},
 
@@ -664,9 +705,23 @@ const struct clam_option __clam_options[] = {
 const struct clam_option *clam_options = __clam_options;
 
 #ifdef _WIN32
-void fix_paths(void)
+/**
+ * @brief For Windows, we support getting the database and configuration directories
+ * from the registry or based on the executable path.
+ *
+ * This function will set the global variables _DATADIR, _CONFDIR, and _CERTSDIR, pointed
+ * to by the macros CONST_DATADIR, CONST_CONFDIR, and CONST_CERTSDIR, respectively.
+ *
+ * Outside of this source file, you can get them with `optget()`, a la:
+ * ```c
+ *     const char *localdbdir = optget(opts, "datadir")->strarg;
+ * ```
+ */
+static void fix_paths(void)
 {
-    int have_ddir = 0, have_cdir = 0;
+    bool have_db_dir    = false;
+    bool have_conf_dir  = false;
+    bool have_certs_dir = false;
     char path[MAX_PATH] = "";
     DWORD sizof;
     HKEY key;
@@ -674,30 +729,42 @@ void fix_paths(void)
     if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, CLAMKEY, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS || RegOpenKeyEx(HKEY_CURRENT_USER, CLAMKEY, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
         sizof = sizeof(path);
         if (RegQueryValueEx(key, "DataDir", 0, NULL, path, &sizof) == ERROR_SUCCESS) {
-            have_ddir = 1;
-            memcpy(_DATADIR, path, sizof);
+            have_db_dir = true;
+            memcpy(_DATADIR, path, MIN(sizof, sizeof(_DATADIR) - 1));
         }
         sizof = sizeof(path);
         if (RegQueryValueEx(key, "ConfDir", 0, NULL, path, &sizof) == ERROR_SUCCESS) {
-            have_cdir = 1;
-            memcpy(_CONFDIR, path, sizof);
+            have_conf_dir = true;
+            memcpy(_CONFDIR, path, MIN(sizof, sizeof(_CONFDIR) - 1));
+        }
+        sizof = sizeof(path);
+        if (RegQueryValueEx(key, "CvdCertsDir", 0, NULL, path, &sizof) == ERROR_SUCCESS) {
+            have_certs_dir = true;
+            memcpy(_CERTSDIR, path, MIN(sizof, sizeof(_CERTSDIR) - 1));
         }
         RegCloseKey(key);
     }
-    if (!(have_ddir | have_cdir) && GetModuleFileName(NULL, path, sizeof(path))) {
+
+    if (!(have_db_dir | have_conf_dir | have_certs_dir) && GetModuleFileName(NULL, path, sizeof(path))) {
         char *dir;
         path[sizeof(path) - 1] = '\0';
         dir                    = dirname(path);
-        if (!have_ddir)
+        if (!have_db_dir) {
             snprintf(_DATADIR, sizeof(_DATADIR), "%s\\database", dir);
-        if (!have_cdir) {
+        }
+        if (!have_conf_dir) {
             strncpy(_CONFDIR, dir, sizeof(_CONFDIR));
-            have_cdir = 1;
+            have_conf_dir = true;
+        }
+        if (!have_certs_dir) {
+            snprintf(_CERTSDIR, sizeof(_CERTSDIR), "%s\\certs", dir);
         }
     }
+
     _DATADIR[sizeof(_DATADIR) - 1] = '\0';
     _CONFDIR[sizeof(_CONFDIR) - 1] = '\0';
-    if (have_cdir) {
+
+    if (have_conf_dir) {
         snprintf(_CONFDIR_CLAMD, sizeof(_CONFDIR_CLAMD), "%s\\%s", _CONFDIR, "clamd.conf");
         snprintf(_CONFDIR_FRESHCLAM, sizeof(_CONFDIR_FRESHCLAM), "%s\\%s", _CONFDIR, "freshclam.conf");
         snprintf(_CONFDIR_MILTER, sizeof(_CONFDIR_MILTER), "%s\\%s", _CONFDIR, "clamav-milter.conf");
@@ -916,15 +983,18 @@ struct optstruct *optparse(const char *cfgfile, int argc, char **argv, int verbo
     FILE *fs = NULL;
     const struct clam_option *optentry;
     char *pt;
-    const char *name = NULL, *arg;
+    const char *name = NULL;
+    char *arg;
     int i, err = 0, lc = 0, sc = 0, opt_index, line = 0, ret;
     struct optstruct *opts = NULL, *opts_last = NULL, *opt;
-    char buffer[1024], *buff;
+    char buffer[MAX_OPTION_LINE_LENGTH], *buff;
     struct option longopts[MAXCMDOPTS];
     char shortopts[MAXCMDOPTS];
     regex_t regex;
     long long numarg, lnumarg, lnumlimit;
-    int regflags = REG_EXTENDED | REG_NOSUB;
+    int regflags              = REG_EXTENDED | REG_NOSUB;
+    const char *inlinecomment = NULL;
+    char *trim_comment;
 
 #ifdef _WIN32
     if (!is_initialized) {
@@ -1006,8 +1076,9 @@ struct optstruct *optparse(const char *cfgfile, int argc, char **argv, int verbo
                 break;
 
             buff = buffer;
-            for (i = 0; i < (int)strlen(buff) - 1 && (buff[i] == ' ' || buff[i] == '\t'); i++)
+            for (i = 0; i < (int)strlen(buff) - 1 && (buff[i] == ' ' || buff[i] == '\t'); i++) {
                 ;
+            }
             buff += i;
             line++;
             if (strlen(buff) <= 2 || buff[0] == '#')
@@ -1028,11 +1099,13 @@ struct optstruct *optparse(const char *cfgfile, int argc, char **argv, int verbo
             }
             name  = buff;
             *pt++ = 0;
-            for (i = 0; i < (int)strlen(pt) - 1 && (pt[i] == ' ' || pt[i] == '\t'); i++)
+            for (i = 0; i < (int)strlen(pt) - 1 && (pt[i] == ' ' || pt[i] == '\t'); i++) {
                 ;
+            }
             pt += i;
-            for (i = strlen(pt); i >= 1 && (pt[i - 1] == ' ' || pt[i - 1] == '\t' || pt[i - 1] == '\n'); i--)
+            for (i = strlen(pt); i >= 1 && (pt[i - 1] == ' ' || pt[i - 1] == '\t' || pt[i - 1] == '\n'); i--) {
                 ;
+            }
             if (!i) {
                 if (verbose)
                     fprintf(stderr, "ERROR: Missing argument for option at %s:%d\n", cfgfile, line);
@@ -1180,7 +1253,21 @@ struct optstruct *optparse(const char *cfgfile, int argc, char **argv, int verbo
             }
         }
 
+        if (NULL != arg) {
+            /* Find and remove inline comments. */
+            inlinecomment = strchr(arg, '#');
+            if (inlinecomment != NULL) {
+                /* Found a '#', indicating an inline comment. Strip it off along with any leading spaces or tabs. */
+                arg          = strtok(arg, "#");
+                trim_comment = arg + strlen(arg) - 1;
+                while (trim_comment >= arg && (*trim_comment == ' ' || *trim_comment == '\t')) {
+                    *(trim_comment--) = '\0';
+                }
+            }
+        }
+
         numarg = -1;
+
         switch (optentry->argtype) {
             case CLOPT_TYPE_STRING:
                 if (!arg)

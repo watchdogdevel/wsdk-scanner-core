@@ -1,4 +1,4 @@
-# Copyright (C) 2020-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+# Copyright (C) 2020-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 
 if(WIN32)
     add_definitions(-DWIN32_LEAN_AND_MEAN)
@@ -18,7 +18,9 @@ target_sources( sigtool
         vba.c
         vba.h )
 if(WIN32)
-    target_sources( sigtool PRIVATE ${CMAKE_SOURCE_DIR}/win32/res/sigtool.rc )
+    target_sources( sigtool PRIVATE 
+    ${CMAKE_SOURCE_DIR}/win32/res/sigtool.rc
+    ${CMAKE_SOURCE_DIR}/win32/res/clam.manifest )
 endif()
 target_include_directories( sigtool
     PRIVATE

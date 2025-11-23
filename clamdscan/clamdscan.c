@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, aCaB
@@ -68,7 +68,9 @@ int main(int argc, char **argv)
     struct optstruct *opts;
     const struct optstruct *opt;
     char buffer[26];
-#ifndef _WIN32
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+#else /* !_WIN32 */
     struct sigaction sigact;
 #endif
 
@@ -225,7 +227,7 @@ void help(void)
     mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "                      Clam AntiVirus: Daemon Client %s\n", get_version());
     mprintf(LOGG_INFO, "           By The ClamAV Team: https://www.clamav.net/about.html#credits\n");
-    mprintf(LOGG_INFO, "           (C) 2023 Cisco Systems, Inc.\n");
+    mprintf(LOGG_INFO, "           (C) 2025 Cisco Systems, Inc.\n");
     mprintf(LOGG_INFO, "\n");
     mprintf(LOGG_INFO, "    clamdscan [options] [file/directory/-]\n");
     mprintf(LOGG_INFO, "\n");

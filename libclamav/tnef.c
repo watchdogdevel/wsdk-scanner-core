@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Nigel Horne
@@ -159,7 +159,7 @@ int cli_tnef(const char *dir, cli_ctx *ctx)
                  */
                 if (cli_debug_flag) {
                     int fout       = -1;
-                    char *filename = cli_gentemp(ctx->sub_tmpdir);
+                    char *filename = cli_gentemp(ctx->this_layer_tmpdir);
                     char buffer[BUFSIZ];
 
                     if (filename)
@@ -171,7 +171,7 @@ int cli_tnef(const char *dir, cli_ctx *ctx)
                         cli_warnmsg("Saving dump to %s:  refer to https://docs.clamav.net/manual/Installing.html\n", filename);
 
                         pos = 0;
-                        while ((count = fmap_readn(ctx->fmap, buffer, pos, sizeof(buffer))) != (size_t)-1) {
+                        while ((count = fmap_readn(ctx->fmap, buffer, pos, sizeof(buffer))) != (size_t)-1 && count != 0) {
                             pos += count;
                             cli_writen(fout, buffer, count);
                         }
@@ -246,7 +246,7 @@ tnef_message(fmap_t *map, off_t *pos, uint16_t type, uint16_t tag, int32_t lengt
         case attMSGCLASS:
             if (length <= 0)
                 return -1;
-            string = cli_malloc(length + 1);
+            string = cli_max_malloc(length + 1);
             if (string == NULL) {
                 cli_errmsg("tnef_message: Unable to allocate memory for string\n");
                 return -1;
@@ -296,7 +296,7 @@ tnef_attachment(fmap_t *map, off_t *pos, uint16_t type, uint16_t tag, int32_t le
         case attATTACHTITLE:
             if (length <= 0)
                 return -1;
-            string = cli_malloc(length + 1);
+            string = cli_max_malloc(length + 1);
             if (string == NULL) {
                 cli_errmsg("tnef_attachment: Unable to allocate memory for string\n");
                 return -1;

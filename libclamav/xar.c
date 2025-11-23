@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2013 Sourcefire, Inc.
  *
  *  Authors: Steven Morgan <smorgan@sourcefire.com>
@@ -27,7 +27,6 @@
 #include "xar.h"
 #include "fmap.h"
 
-#if HAVE_LIBXML2
 #include <libxml/xmlreader.h>
 #include "clamav.h"
 #include "str.h"
@@ -130,8 +129,8 @@ static void xar_get_checksum_values(xmlTextReaderPtr reader, unsigned char **cks
         xmlval = xmlTextReaderConstValue(reader);
         if (xmlval) {
             cli_dbgmsg("cli_scanxar: checksum value is %s.\n", xmlval);
-            if (((*hash == XAR_CKSUM_SHA1) && (xmlStrlen(xmlval) == 2 * CLI_HASHLEN_SHA1)) ||
-                ((*hash == XAR_CKSUM_MD5) && (xmlStrlen(xmlval) == 2 * CLI_HASHLEN_MD5))) {
+            if (((*hash == XAR_CKSUM_SHA1) && (xmlStrlen(xmlval) == 2 * SHA1_HASH_SIZE)) ||
+                ((*hash == XAR_CKSUM_MD5) && (xmlStrlen(xmlval) == 2 * MD5_HASH_SIZE))) {
                 *cksum = xmlStrdup(xmlval);
             } else {
                 cli_dbgmsg("cli_scanxar: checksum type is unknown or length is invalid.\n");
@@ -312,7 +311,7 @@ static int xar_scan_subdocuments(xmlTextReaderPtr reader, cli_ctx *ctx)
 
             /* make a file to leave if --leave-temps in effect */
             if (ctx->engine->keeptmp) {
-                if ((rc = cli_gentempfd(ctx->sub_tmpdir, &tmpname, &fd)) != CL_SUCCESS) {
+                if ((rc = cli_gentempfd(ctx->this_layer_tmpdir, &tmpname, &fd)) != CL_SUCCESS) {
                     cli_dbgmsg("cli_scanxar: Can't create temporary file for subdocument.\n");
                 } else {
                     cli_dbgmsg("cli_scanxar: Writing subdoc to temp file %s.\n", tmpname);
@@ -396,10 +395,10 @@ static int xar_hash_check(int hash, const void *result, const void *expected)
         return 1;
     switch (hash) {
         case XAR_CKSUM_SHA1:
-            len = CLI_HASHLEN_SHA1;
+            len = SHA1_HASH_SIZE;
             break;
         case XAR_CKSUM_MD5:
-            len = CLI_HASHLEN_MD5;
+            len = MD5_HASH_SIZE;
             break;
         case XAR_CKSUM_OTHER:
         case XAR_CKSUM_NONE:
@@ -408,8 +407,6 @@ static int xar_hash_check(int hash, const void *result, const void *expected)
     }
     return memcmp(result, expected, len);
 }
-
-#endif
 
 /*
   cli_scanxar - scan an xar archive.
@@ -423,7 +420,7 @@ int cli_scanxar(cli_ctx *ctx)
     int rc                      = CL_SUCCESS;
     unsigned int cksum_fails    = 0;
     unsigned int extract_errors = 0;
-#if HAVE_LIBXML2
+
     int fd = -1;
     struct xar_header hdr;
     fmap_t *map = ctx->fmap;
@@ -473,9 +470,9 @@ int cli_scanxar(cli_ctx *ctx)
         return CL_EREAD;
     }
     strm.avail_in = hdr.toc_length_compressed;
-    toc           = cli_malloc(hdr.toc_length_decompressed + 1);
+    toc           = cli_max_malloc(hdr.toc_length_decompressed + 1);
     if (toc == NULL) {
-        cli_dbgmsg("cli_scanxar: cli_malloc fails on TOC decompress buffer.\n");
+        cli_dbgmsg("cli_scanxar: cli_max_malloc fails on TOC decompress buffer.\n");
         return CL_EMEM;
     }
     toc[hdr.toc_length_decompressed] = '\0';
@@ -522,7 +519,7 @@ int cli_scanxar(cli_ctx *ctx)
 
     /* make a file to leave if --leave-temps in effect */
     if (ctx->engine->keeptmp) {
-        if ((rc = cli_gentempfd(ctx->sub_tmpdir, &tmpname, &fd)) != CL_SUCCESS) {
+        if ((rc = cli_gentempfd(ctx->this_layer_tmpdir, &tmpname, &fd)) != CL_SUCCESS) {
             cli_dbgmsg("cli_scanxar: Can't create temporary file for TOC.\n");
             goto exit_toc;
         }
@@ -571,7 +568,7 @@ int cli_scanxar(cli_ctx *ctx)
 
         at = offset + hdr.toc_length_compressed + hdr.size;
 
-        if ((rc = cli_gentempfd(ctx->sub_tmpdir, &tmpname, &fd)) != CL_SUCCESS) {
+        if ((rc = cli_gentempfd(ctx->this_layer_tmpdir, &tmpname, &fd)) != CL_SUCCESS) {
             cli_dbgmsg("cli_scanxar: Can't generate temporary file.\n");
             goto exit_reader;
         }
@@ -878,9 +875,7 @@ exit_toc:
     free(toc);
     if (rc == CL_BREAK)
         rc = CL_SUCCESS;
-#else
-    cli_dbgmsg("cli_scanxar: can't scan xar files, need libxml2.\n");
-#endif
+
     if (cksum_fails + extract_errors != 0) {
         cli_dbgmsg("cli_scanxar: %u checksum errors and %u extraction errors.\n",
                    cksum_fails, extract_errors);

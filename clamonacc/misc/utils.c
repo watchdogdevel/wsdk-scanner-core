@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2019-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2019-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Mickey Sola
  *
@@ -159,7 +159,7 @@ char **onas_get_opt_list(const char *fname, int *num_entries, cl_error_t *err)
 
     *num_entries = 0;
 
-    opt_list = cli_malloc(sizeof(char *));
+    opt_list = malloc(sizeof(char *));
     if (NULL == opt_list) {
         *err = CL_EMEM;
         return NULL;
@@ -206,7 +206,7 @@ char **onas_get_opt_list(const char *fname, int *num_entries, cl_error_t *err)
         }
 
         (*num_entries)++;
-        rlc_ptr = cli_realloc(opt_list, sizeof(char *) * (*num_entries + 1));
+        rlc_ptr = cli_safer_realloc(opt_list, sizeof(char *) * (*num_entries + 1));
         if (rlc_ptr) {
             opt_list               = rlc_ptr;
             opt_list[*num_entries] = NULL;

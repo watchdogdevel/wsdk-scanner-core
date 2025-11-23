@@ -1,4 +1,4 @@
-# Copyright (C) 2019-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+# Copyright (C) 2019-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 
 if(WIN32)
     add_definitions(-DWIN32_LEAN_AND_MEAN)
@@ -64,8 +64,12 @@ if(ENABLE_UNRAR)
 
         if(WIN32)
             set_target_properties(clamunrar_iface PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-        elseif(UNIX AND NOT APPLE)
+        elseif(UNIX AND NOT APPLE AND NOT AIX)
             target_link_options(clamunrar_iface PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/libclamunrar_iface.map")
+            if (${CMAKE_SYSTEM_NAME} MATCHES "SunOS")
+                # Solaris 11.4 linker supports a subset of GNU ld version scripts, but requires a special option to enable
+                target_link_options(clamunrar_iface PRIVATE "-Wl,-z,gnu-version-script-compat")
+            endif()
         endif()
 
         # Private (internal-only) dependencies.
@@ -108,6 +112,12 @@ if(ENABLE_UNRAR)
         target_link_libraries( clamunrar_iface_static
             PRIVATE
                 ClamAV::libunrar_static )
+
+        if(WIN32)
+            install(TARGETS clamunrar_iface_static DESTINATION . COMPONENT libraries)
+        else()
+            install(TARGETS clamunrar_iface_static DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT libraries)
+        endif()
 
         add_library( ClamAV::libunrar_iface_static ALIAS clamunrar_iface_static )
         if(NOT ENABLE_SHARED_LIB)

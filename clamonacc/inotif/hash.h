@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2015-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2015-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Mickey Sola
  *
@@ -45,11 +45,15 @@ struct onas_bucket {
 
     struct onas_element *head;
     struct onas_element *tail;
+    struct onas_bucket *next; /* Next activated bucket */
+    struct onas_bucket *prev; /* Prev activated bucket */
 };
 
 struct onas_ht {
 
     struct onas_bucket **htable;
+    struct onas_bucket *head; /* Activated buckets head */
+    struct onas_bucket *tail; /* Activated buckets tail */
 
     /* Must be a sufficiently high power of two--will not grow. */
     uint32_t size;

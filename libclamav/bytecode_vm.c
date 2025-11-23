@@ -1,7 +1,7 @@
 /*
  *  Execute ClamAV bytecode.
  *
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: Török Edvin
@@ -141,7 +141,7 @@ struct stack {
 };
 
 /* type with largest alignment that we use (in general it is a long double, but
- * thats too big alignment for us) */
+ * that's too big alignment for us) */
 typedef uint64_t align_t;
 
 static always_inline void *cli_stack_alloc(struct stack *stack, unsigned bytes)
@@ -171,7 +171,7 @@ static always_inline void *cli_stack_alloc(struct stack *stack, unsigned bytes)
         return NULL;
     }
     /* not enough room here, allocate new chunk */
-    chunk = cli_malloc(sizeof(*stack->chunk));
+    chunk = malloc(sizeof(*stack->chunk));
     if (!chunk) {
         cli_warnmsg("cli_stack_alloc: Unable to allocate memory for stack-chunk: bytes: %zu!\n", sizeof(*stack->chunk));
         return NULL;
@@ -596,8 +596,8 @@ static inline int64_t ptr_register_stack(struct ptr_infos *infos,
                                          uint32_t off, uint32_t size)
 {
     unsigned n              = infos->nstacks + 1;
-    struct ptr_info *sinfos = cli_realloc(infos->stack_infos,
-                                          sizeof(*sinfos) * n);
+    struct ptr_info *sinfos = cli_safer_realloc(infos->stack_infos,
+                                                sizeof(*sinfos) * n);
     if (!sinfos)
         return 0;
     infos->stack_infos = sinfos;
@@ -613,7 +613,7 @@ static inline int64_t ptr_register_glob_fixedid(struct ptr_infos *infos,
 {
     struct ptr_info *sinfos;
     if (n > infos->nglobs) {
-        sinfos = cli_realloc(infos->glob_infos, sizeof(*sinfos) * n);
+        sinfos = cli_safer_realloc(infos->glob_infos, sizeof(*sinfos) * n);
         if (!sinfos)
             return 0;
         memset(sinfos + infos->nglobs, 0, (n - infos->nglobs) * sizeof(*sinfos));

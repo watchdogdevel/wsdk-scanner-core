@@ -1,7 +1,7 @@
 /*
  * Extract component parts of OLE2 files (e.g. MS Office Documents)
  *
- * Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ * Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  * Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  * Authors: Kevin Lin
@@ -49,9 +49,7 @@
 #include "json_api.h"
 #include "entconv.h"
 
-#if HAVE_JSON
-static char *
-ole2_convert_utf(summary_ctx_t *sctx, char *begin, size_t sz, const char *encoding)
+static char *ole2_convert_utf(summary_ctx_t *sctx, char *begin, size_t sz, const char *encoding)
 {
     char *outbuf = NULL;
 #if HAVE_ICONV
@@ -72,7 +70,7 @@ ole2_convert_utf(summary_ctx_t *sctx, char *begin, size_t sz, const char *encodi
 
     if (sz == 0) {
         cli_dbgmsg("ole2_convert_utf: converting empty string\n");
-        return cli_calloc(1, 1); // Just send back an empty NULL-terminated string.
+        return calloc(1, 1); // Just send back an empty NULL-terminated string.
     }
 
     /* applies in the both case */
@@ -80,7 +78,7 @@ ole2_convert_utf(summary_ctx_t *sctx, char *begin, size_t sz, const char *encodi
         char *track;
         size_t bcnt, scnt;
 
-        outbuf = cli_calloc(1, sz + 1);
+        outbuf = cli_max_calloc(1, sz + 1);
         if (!(outbuf))
             return NULL;
         memcpy(outbuf, begin, sz);
@@ -110,7 +108,7 @@ ole2_convert_utf(summary_ctx_t *sctx, char *begin, size_t sz, const char *encodi
     }
 
 #if HAVE_ICONV
-    p1 = buf = cli_calloc(1, sz);
+    p1 = buf = cli_max_calloc(1, sz);
     if (!(buf))
         return NULL;
 
@@ -147,8 +145,8 @@ ole2_convert_utf(summary_ctx_t *sctx, char *begin, size_t sz, const char *encodi
         for (attempt = 1; attempt <= 3; ++attempt) {
             /* charset to UTF-8 should never exceed sz*6 */
             sz2 = (attempt * 2) * sz;
-            /* use cli_realloc, reuse the buffer that has already been translated */
-            outbuf = (char *)cli_realloc(outbuf, sz2 + 1);
+            /* use cli_max_realloc, reuse the buffer that has already been translated */
+            outbuf = (char *)cli_max_realloc(outbuf, sz2 + 1);
             if (!outbuf) {
                 free(buf);
                 iconv_close(cd);
@@ -428,7 +426,7 @@ ole2_process_property(summary_ctx_t *sctx, unsigned char *databuf, uint32_t offs
                     strsize = PROPSTRLIMIT;
                 }
 
-                outstr = cli_calloc(strsize + 1, 1); /* last char must be NULL */
+                outstr = cli_max_calloc(strsize + 1, 1); /* last char must be NULL */
                 if (!outstr) {
                     return CL_EMEM;
                 }
@@ -487,7 +485,7 @@ ole2_process_property(summary_ctx_t *sctx, unsigned char *databuf, uint32_t offs
                 sctx->flags |= OLE2_SUMMARY_ERROR_OOB;
                 return CL_EFORMAT;
             }
-            outstr = cli_calloc(strsize + 2, 1); /* last two chars must be NULL */
+            outstr = cli_max_calloc(strsize + 2, 1); /* last two chars must be NULL */
             if (!outstr) {
                 return CL_EMEM;
             }
@@ -815,7 +813,7 @@ static int cli_ole2_summary_json_cleanup(summary_ctx_t *sctx, int retcode)
     cli_dbgmsg("in cli_ole2_summary_json_cleanup: %d[%x]\n", retcode, sctx->flags);
 
     if (sctx->sfmap) {
-        funmap(sctx->sfmap);
+        fmap_free(sctx->sfmap);
     }
 
     if (sctx->flags) {
@@ -874,7 +872,7 @@ static int cli_ole2_summary_json_cleanup(summary_ctx_t *sctx, int retcode)
     return retcode;
 }
 
-int cli_ole2_summary_json(cli_ctx *ctx, int fd, int mode)
+int cli_ole2_summary_json(cli_ctx *ctx, int fd, int mode, const char *filepath)
 {
     summary_ctx_t sctx;
     STATBUF statbuf;
@@ -911,7 +909,7 @@ int cli_ole2_summary_json(cli_ctx *ctx, int fd, int mode)
         return CL_ESTAT;
     }
 
-    sctx.sfmap = fmap(fd, 0, statbuf.st_size, NULL);
+    sctx.sfmap = fmap_new(fd, 0, statbuf.st_size, NULL, filepath);
     if (!sctx.sfmap) {
         cli_dbgmsg("ole2_summary_json: failed to get fmap\n");
         return CL_EMAP;
@@ -921,14 +919,14 @@ int cli_ole2_summary_json(cli_ctx *ctx, int fd, int mode)
 
     switch (mode) {
         case 1:
-            sctx.summary = cli_jsonobj(ctx->wrkproperty, "DocSummaryInfo");
+            sctx.summary = cli_jsonobj(ctx->this_layer_metadata_json, "DocSummaryInfo");
             break;
         case 2:
-            sctx.summary = cli_jsonobj(ctx->wrkproperty, "Hwp5SummaryInfo");
+            sctx.summary = cli_jsonobj(ctx->this_layer_metadata_json, "Hwp5SummaryInfo");
             break;
         case 0:
         default:
-            sctx.summary = cli_jsonobj(ctx->wrkproperty, "SummaryInfo");
+            sctx.summary = cli_jsonobj(ctx->this_layer_metadata_json, "SummaryInfo");
             break;
     }
 
@@ -993,9 +991,8 @@ int cli_ole2_summary_json(cli_ctx *ctx, int fd, int mode)
 
     /* second property set (index=1) is always a custom property set (if present) */
     if (sumstub.num_propsets == 2) {
-        cli_jsonbool(ctx->wrkproperty, "HasUserDefinedProperties", 1);
+        cli_jsonbool(ctx->this_layer_metadata_json, "HasUserDefinedProperties", 1);
     }
 
     return cli_ole2_summary_json_cleanup(&sctx, CL_SUCCESS);
 }
-#endif /* HAVE_JSON */

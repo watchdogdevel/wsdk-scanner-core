@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB <acab@clamav.net>
@@ -28,7 +28,7 @@
 #include <pthread.h>
 #include "w32_errno_defs.c"
 
-char *w32_strerror(int errnum);
+const char *w32_strerror(int errnum);
 int w32_strerror_r(int errnum, char *buf, size_t buflen);
 
 #endif

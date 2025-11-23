@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2011-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB
@@ -144,7 +144,7 @@ int cli_7unz(cli_ctx *ctx, size_t offset)
                 if (newnamelen > namelen) {
                     if (namelen > UTFBUFSZ)
                         free(utf16name);
-                    utf16name = cli_malloc(newnamelen * 2);
+                    utf16name = cli_max_malloc(newnamelen * 2);
                     if (!utf16name) {
                         found = CL_EMEM;
                         break;
@@ -171,7 +171,7 @@ int cli_7unz(cli_ctx *ctx, size_t offset)
                     }
                 }
             }
-            if (CL_VIRUS == cli_matchmeta(ctx, name, 0, f->Size, encrypted, i, f->CrcDefined ? f->Crc : 0, NULL)) {
+            if (CL_VIRUS == cli_matchmeta(ctx, name, 0, f->Size, encrypted, i, f->CrcDefined ? f->Crc : 0)) {
                 found = CL_VIRUS;
                 break;
             }
@@ -180,7 +180,7 @@ int cli_7unz(cli_ctx *ctx, size_t offset)
             else if ((outBuffer == NULL) || (outSizeProcessed == 0)) {
                 cli_dbgmsg("cli_unz: extracted empty file\n");
             } else {
-                if ((found = cli_gentempfd(ctx->sub_tmpdir, &tmp_name, &fd)))
+                if ((found = cli_gentempfd(ctx->this_layer_tmpdir, &tmp_name, &fd)))
                     break;
 
                 cli_dbgmsg("cli_7unz: Saving to %s\n", tmp_name);

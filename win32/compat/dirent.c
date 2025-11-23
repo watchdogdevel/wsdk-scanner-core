@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB <acab@clamav.net>
@@ -22,11 +22,11 @@
 #include <errno.h>
 
 #include <Windows.h>
-//#include "clamav.h"
-//#include "others.h"
+// #include "clamav.h"
+// #include "others.h"
 #include "dirent.h"
 #include "w32_stat.h"
-//#include "misc.h"
+// #include "misc.h"
 
 DIR *opendir(const char *name)
 {

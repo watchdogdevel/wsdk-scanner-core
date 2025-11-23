@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -25,7 +25,7 @@
 #include <sys/types.h>
 
 #include "clamav.h"
-#include "fmap.h"
+#include "other_types.h"
 
 #define CL_FILE_MBUFF_SIZE 1024
 #define CL_PART_MBUFF_SIZE 1028
@@ -92,6 +92,10 @@ typedef enum cli_file {
     CL_TYPE_OOXML_HWP,
     CL_TYPE_PS,
     CL_TYPE_EGG,
+    CL_TYPE_ONENOTE,
+    CL_TYPE_PYTHON_COMPILED,
+    CL_TYPE_LHA_LZH,
+    CL_TYPE_AI_MODEL,
 
     /* Section for partition types */
     CL_TYPE_PART_ANY, /* unknown partition type */
@@ -123,6 +127,7 @@ typedef enum cli_file {
     CL_TYPE_MHTML,
     CL_TYPE_LNK,
     CL_TYPE_UDF,
+    CL_TYPE_ALZ,
     CL_TYPE_OTHER,  /* on-the-fly, used for target 14 (OTHER) */
     CL_TYPE_IGNORED /* please don't add anything below */
 } cli_file_t;
@@ -143,12 +148,34 @@ struct cli_matched_type {
     unsigned short cnt;
 };
 
+/**
+ * @brief Convert a file type name to a file type code.
+ *
+ * @param name The name of the file type. E.g. "CL_TYPE_PE", "CL_TYPE_ELF", etc.
+ * @return cli_file_t
+ */
 cli_file_t cli_ftcode(const char *name);
+
+/**
+ * @brief Convert a human-friendly file type name to a file type code.
+ *
+ * @param name The human-friendly name of the file type. E.g. "pe", "ZIP", "CL_TYPE_ELF", etc.
+ * @return cli_file_t
+ */
+cli_file_t cli_ftcode_human_friendly(const char *name);
+
+/**
+ * @brief Convert a file type code to a file type name.
+ *
+ * @param code The file type code. E.g. CL_TYPE_PE, CL_TYPE_ELF, etc.
+ * @return const char* A ame of the file type. E.g. "CL_TYPE_PE", "CL_TYPE_ELF", etc.
+ */
 const char *cli_ftname(cli_file_t code);
+
 void cli_ftfree(const struct cl_engine *engine);
 cli_file_t cli_compare_ftm_file(const unsigned char *buf, size_t buflen, const struct cl_engine *engine);
 cli_file_t cli_compare_ftm_partition(const unsigned char *buf, size_t buflen, const struct cl_engine *engine);
-cli_file_t cli_determine_fmap_type(fmap_t *map, const struct cl_engine *engine, cli_file_t basetype);
+cli_file_t cli_determine_fmap_type(cli_ctx_t ctx, cli_file_t basetype);
 int cli_addtypesigs(struct cl_engine *engine);
 
 #endif

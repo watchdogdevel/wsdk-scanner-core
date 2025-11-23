@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, aCaB
@@ -164,7 +164,7 @@ static int isremote(const struct optstruct *opts)
 }
 
 /* pings clamd at the specified interval the number of time specified
- * return 0 on a succesful connection, 1 upon timeout, -1 on error */
+ * return 0 on a successful connection, 1 upon timeout, -1 on error */
 int16_t ping_clamd(const struct optstruct *opts)
 {
 
@@ -175,7 +175,7 @@ int16_t ping_clamd(const struct optstruct *opts)
     char *errchk                = NULL;
     uint64_t i                  = 0;
     const struct optstruct *opt = NULL;
-    int64_t sockd;
+    int64_t sockd               = -1;
     struct RCVLN rcv;
     uint16_t ret = 0;
 
@@ -188,7 +188,7 @@ int16_t ping_clamd(const struct optstruct *opts)
     /* ping command takes the form --ping [attempts[:interval]] */
     if (NULL != (opt = optget(opts, "ping"))) {
         if (NULL != opt->strarg) {
-            if (NULL == (attempt_str = cli_strdup(opt->strarg))) {
+            if (NULL == (attempt_str = cli_safer_strdup(opt->strarg))) {
                 logg(LOGG_ERROR, "could not allocate memory for string\n");
                 ret = -1;
                 goto done;
@@ -208,7 +208,7 @@ int16_t ping_clamd(const struct optstruct *opts)
             }
             attempts = cli_strntoul(attempt_str, strlen(attempt_str), &errchk, 10);
             if (attempt_str + strlen(attempt_str) > errchk) {
-                logg(LOGG_WARNING, "attmept_str would go past end of buffer\n");
+                logg(LOGG_WARNING, "attempt_str would go past end of buffer\n");
                 ret = -1;
                 goto done;
             }
@@ -227,6 +227,7 @@ int16_t ping_clamd(const struct optstruct *opts)
             if (sendln(sockd, zPING, sizeof(zPING))) {
                 logg(LOGG_DEBUG, "PING failed...\n");
                 closesocket(sockd);
+                sockd = -1;
             } else {
                 if (!optget(opts, "wait")->enabled) {
                     logg(LOGG_INFO, "PONG\n");
@@ -262,6 +263,9 @@ int16_t ping_clamd(const struct optstruct *opts)
     }
 
 done:
+    if (sockd >= 0) {
+        closesocket(sockd);
+    }
     if (attempt_str) {
         free(attempt_str);
     }
@@ -357,6 +361,15 @@ int get_clamd_version(const struct optstruct *opts)
             logg(LOGG_ERROR, "Error occurred while receiving version information.\n");
             break;
         }
+
+        /* Check if the response was "COMMAND UNAVAILABLE", which means that
+           clamd has the VERSION command disabled. */
+        if (len >= 19 && memcmp(buff, "COMMAND UNAVAILABLE", 19) == 0) {
+            logg(LOGG_WARNING, "VERSION command disabled in clamd, printing the local version.\n");
+            closesocket(sockd);
+            return 2;
+        }
+
         printf("%s\n", buff);
     }
 
@@ -438,7 +451,7 @@ int client(const struct optstruct *opts, int *infected, int *err)
         int sockd, ret;
         STATBUF sb;
         if (FSTAT(0, &sb) < 0) {
-            logg(LOGG_INFO, "client.c: fstat failed for file name \"%s\", with %s\n.",
+            logg(LOGG_INFO, "client.c: fstat failed for file name \"%s\", with %s\n",
                  opts->filename[0], strerror(errno));
             return 2;
         }

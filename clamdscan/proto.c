@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2009-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm, aCaB
@@ -41,7 +41,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <sys/types.h>
 #ifdef HAVE_SYS_SELECT_H
 #include <sys/select.h>
 #endif
@@ -212,7 +211,7 @@ struct client_parallel_data {
         unsigned int id;
         const char *file;
         struct SCANID *next;
-    } * ids;
+    } *ids;
 };
 
 /* Sends a proper scan request to clamd and parses its replies
@@ -383,7 +382,7 @@ static cl_error_t parallel_callback(STATBUF *sb, char *filename, const char *pat
     cid->next = c->ids;
     c->ids    = cid;
 
-    /* Give up ownership of the filename to the client parralel scan ID list */
+    /* Give up ownership of the filename to the client parallel scan ID list */
     filename = NULL;
 
     status = CL_SUCCESS;

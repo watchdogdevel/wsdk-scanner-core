@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2011-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm <tkojm@clamav.net>
@@ -65,7 +65,7 @@
  * inserted after it to indicate that it's just and 0xff and _NOT_ a segment
  * marker. Decoders skip the 0x00 byte.
  * This only applies to entropy-encoded data, not to marker payload data.
- * We dont' really worry about this though because this parser stops when it
+ * We don't really worry about this though because this parser stops when it
  * reaches the image data.
  */
 
@@ -85,7 +85,7 @@ typedef enum {
      */
     JPEG_MARKER_SEGMENT_S0F0_START_OF_FRAME_BASELINE_DCT = 0xC0,
 
-    /* Start of Frame for a extended sequential DCT-based JPEG (S0F1)
+    /* Start of Frame for an extended sequential DCT-based JPEG (S0F1)
      * Variable size payload.
      */
     JPEG_MARKER_SEGMENT_S0F1_START_OF_FRAME_EXT_SEQ_DCT = 0xC1,
@@ -117,17 +117,17 @@ typedef enum {
      */
     JPEG_MARKER_SEGMENT_S0F7_START_OF_FRAME_DIFF_LOSSLESS_DCT = 0xC7,
 
-    /* Start of Frame for a differential sequential arithmatic-based JPEG (S0F5)
+    /* Start of Frame for a differential sequential arithmetic-based JPEG (S0F5)
      * Variable size payload.
      */
     JPEG_MARKER_SEGMENT_S0F9_START_OF_FRAME_DIFF_SEQ_ARITH = 0xC9,
 
-    /* Start of Frame for a differential progressive arithmatic-based JPEG (S0F6)
+    /* Start of Frame for a differential progressive arithmetic-based JPEG (S0F6)
      * Variable size payload.
      */
     JPEG_MARKER_SEGMENT_S0F10_START_OF_FRAME_DIFF_PROG_ARITH = 0xCA,
 
-    /* Start of Frame for a differential lossless arithmatic-based JPEG (S0F7)
+    /* Start of Frame for a differential lossless arithmetic-based JPEG (S0F7)
      * Variable size payload.
      */
     JPEG_MARKER_SEGMENT_S0F11_START_OF_FRAME_DIFF_LOSSLESS_ARITH = 0xCB,
@@ -138,7 +138,7 @@ typedef enum {
      */
     JPEG_MARKER_SEGMENT_DHT_DEFINE_HUFFMAN_TABLES = 0xC4,
 
-    /* Define Arithmatic Coding Conditioning (DAC)
+    /* Define Arithmetic Coding Conditioning (DAC)
      * Variable size payload.
      */
     JPEG_MARKER_SEGMENT_DHT_DEFINE_ARITH_CODING = 0xCC,
@@ -313,7 +313,7 @@ cl_error_t cli_parsejpeg(cli_ctx *ctx)
 {
     cl_error_t status = CL_SUCCESS;
 
-    fmap_t *map = NULL;
+    fmap_t *map          = NULL;
     jpeg_marker_t marker = JPEG_MARKER_NOT_A_MARKER_0x00, prev_marker, prev_segment = JPEG_MARKER_NOT_A_MARKER_0x00;
     uint8_t buff[50]; /* 50 should be sufficient for now */
     uint16_t len_u16;

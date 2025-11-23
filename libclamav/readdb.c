@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *  Copyright (C) 2002-2007 Tomasz Kojm <tkojm@clamav.net>
  *
@@ -114,9 +114,9 @@ char *cli_virname(const char *virname, unsigned int official)
     }
 
     if (official)
-        return cli_strdup(virname);
+        return cli_safer_strdup(virname);
 
-    newname = (char *)cli_malloc(strlen(virname) + 11 + 1);
+    newname = (char *)malloc(strlen(virname) + 11 + 1);
     if (!newname) {
         cli_errmsg("cli_virname: Can't allocate memory for newname\n");
         return NULL;
@@ -142,7 +142,7 @@ cl_error_t cli_sigopts_handler(struct cli_matcher *root, const char *virname, co
         return CL_EPARSE;
     }
 
-    hexcpy = cli_strdup(hexsig);
+    hexcpy = cli_safer_strdup(hexsig);
     if (!hexcpy)
         return CL_EMEM;
 
@@ -156,7 +156,7 @@ cl_error_t cli_sigopts_handler(struct cli_matcher *root, const char *virname, co
         /* FULLWORD regex sigopt handling */
         if (sigopts & ACPATT_OPTION_FULLWORD) {
             size_t ovrlen = strlen(hexcpy) + 21;
-            char *hexovr  = cli_calloc(ovrlen, sizeof(char));
+            char *hexovr  = calloc(ovrlen, sizeof(char));
             if (!hexovr) {
                 free(hexcpy);
                 return CL_EMEM;
@@ -173,7 +173,7 @@ cl_error_t cli_sigopts_handler(struct cli_matcher *root, const char *virname, co
         /* NOCASE sigopt is passed onto the regex-opt handler */
         if (sigopts & ACPATT_OPTION_NOCASE) {
             size_t ovrlen = strlen(hexcpy) + 2;
-            char *hexovr  = cli_calloc(ovrlen, sizeof(char));
+            char *hexovr  = calloc(ovrlen, sizeof(char));
             if (!hexovr) {
                 free(hexcpy);
                 return CL_EMEM;
@@ -213,7 +213,7 @@ cl_error_t cli_sigopts_handler(struct cli_matcher *root, const char *virname, co
     if (sigopts & ACPATT_OPTION_FULLWORD) {
         char *rechar;
         size_t ovrlen = strlen(hexcpy) + 7;
-        char *hexovr  = cli_calloc(ovrlen, sizeof(char));
+        char *hexovr  = calloc(ovrlen, sizeof(char));
         if (!hexovr) {
             free(hexcpy);
             return CL_EMEM;
@@ -245,7 +245,7 @@ cl_error_t cli_sigopts_handler(struct cli_matcher *root, const char *virname, co
     if (sigopts & ACPATT_OPTION_WIDE) {
         size_t hexcpylen = strlen(hexcpy);
         size_t ovrlen    = 2 * hexcpylen + 1;
-        char *hexovr     = cli_calloc(ovrlen, sizeof(char));
+        char *hexovr     = calloc(ovrlen, sizeof(char));
         if (!hexovr) {
             free(hexcpy);
             return CL_EMEM;
@@ -373,7 +373,7 @@ static cl_error_t readdb_load_regex_subsignature(struct cli_matcher *root, const
     }
 
     /* get copied */
-    hexcpy = cli_strdup(sig);
+    hexcpy = cli_safer_strdup(sig);
     if (!hexcpy) {
         status = CL_EMEM;
         goto done;
@@ -420,7 +420,7 @@ static cl_error_t readdb_load_regex_subsignature(struct cli_matcher *root, const
 
 done:
 
-    FREE(hexcpy);
+    CLI_FREE_AND_SET_NULL(hexcpy);
 
     return status;
 }
@@ -634,7 +634,7 @@ done:
         ffierror_free(fuzzy_hash_load_error);
     }
 
-    FREE(hexcpy);
+    CLI_FREE_AND_SET_NULL(hexcpy);
 
     return status;
 }
@@ -729,7 +729,7 @@ cl_error_t cli_add_content_match_pattern(struct cli_matcher *root, const char *v
              * Parse "{n}" wildcard - Not a "{n-m}" range-style one.
              * Replaces it with:  "??" * n  and then re-parses the modified hexsig with recursion.
              */
-            hexcpy = cli_calloc(hexlen + 2 * range, sizeof(char));
+            hexcpy = calloc(hexlen + 2 * range, sizeof(char));
             if (!hexcpy)
                 return CL_EMEM;
 
@@ -795,7 +795,7 @@ cl_error_t cli_add_content_match_pattern(struct cli_matcher *root, const char *v
 
         // Make a copy of the whole pattern so that we can NULL-terminate the hexsig
         // and pass it to cli_ac_addsig() without having to pass the part-length.
-        if (!(hexcpy = cli_strdup(hexsig)))
+        if (!(hexcpy = cli_safer_strdup(hexsig)))
             return CL_EMEM;
 
         start = pt = hexcpy;
@@ -1144,7 +1144,7 @@ static char *cli_signorm(const char *signame)
         nsz = 3;
     }
 
-    new_signame = cli_calloc((nsz + 1), sizeof(char));
+    new_signame = calloc((nsz + 1), sizeof(char));
     if (!new_signame)
         return NULL;
 
@@ -1256,7 +1256,7 @@ static cl_error_t cli_loaddb(FILE *fs, struct cl_engine *engine, unsigned int *s
     root = engine->root[0];
 
     if (engine->ignored)
-        if (!(buffer_cpy = cli_malloc(FILEBUFF))) {
+        if (!(buffer_cpy = malloc(FILEBUFF))) {
             cli_errmsg("cli_loaddb: Can't allocate memory for buffer_cpy\n");
             return CL_EMEM;
         }
@@ -1321,46 +1321,63 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
 {
     const char *tokens[ICO_TOKENS + 1] = {0};
     char buffer[FILEBUFF] = {0}, *buffer_cpy = NULL;
-    uint8_t *hash     = NULL;
-    int ret           = CL_SUCCESS;
+    uint8_t *hash  = NULL;
+    cl_error_t ret = CL_ERROR;
+
     unsigned int line = 0, sigs = 0, tokens_count, i, size, enginesize;
     struct icomtr *metric        = NULL;
     struct icon_matcher *matcher = NULL;
 
-    if (!(matcher = (struct icon_matcher *)MPOOL_CALLOC(engine->mempool, sizeof(*matcher), 1)))
-        return CL_EMEM;
-
-    if (engine->ignored)
-        if (!(buffer_cpy = cli_malloc(FILEBUFF))) {
-            cli_errmsg("cli_loadidb: Can't allocate memory for buffer_cpy\n");
-            MPOOL_FREE(engine->mempool, matcher);
-            return CL_EMEM;
+    if (NULL != engine->iconcheck) {
+        // If we've already loaded an icon database for this engine, we need to add to it.
+        matcher = engine->iconcheck;
+    } else if (engine->iconcheck == NULL) {
+        // If we haven't loaded an icon database for this engine, we need to create a new one.
+        matcher = (struct icon_matcher *)MPOOL_CALLOC(engine->mempool, sizeof(*matcher), 1);
+        if (!matcher) {
+            cli_errmsg("cli_loadidb: Can't allocate memory for icon matcher\n");
+            ret = CL_EMEM;
+            goto done;
         }
+        engine->iconcheck = matcher;
+    }
+
+    if (engine->ignored) {
+        if (!(buffer_cpy = malloc(FILEBUFF))) {
+            cli_errmsg("cli_loadidb: Can't allocate memory for buffer_cpy\n");
+            ret = CL_EMEM;
+            goto done;
+        }
+    }
 
     while (cli_dbgets(buffer, FILEBUFF, fs, dbio)) {
         line++;
-        if (buffer[0] == '#')
+
+        if (buffer[0] == '#') {
             continue;
+        }
 
         cli_chomp(buffer);
-        if (engine->ignored)
+        if (engine->ignored) {
             strcpy(buffer_cpy, buffer);
+        }
 
         tokens_count = cli_strtokenize(buffer, ':', ICO_TOKENS + 1, tokens);
         if (tokens_count != ICO_TOKENS) {
             cli_errmsg("cli_loadidb: Malformed hash at line %u (wrong token count)\n", line);
             ret = CL_EMALFDB;
-            break;
+            goto done;
         }
 
         if (strlen(tokens[3]) != 124) {
             cli_errmsg("cli_loadidb: Malformed hash at line %u (wrong length)\n", line);
             ret = CL_EMALFDB;
-            break;
+            goto done;
         }
 
-        if (engine->ignored && cli_chkign(engine->ignored, tokens[0], buffer_cpy))
+        if (engine->ignored && cli_chkign(engine->ignored, tokens[0], buffer_cpy)) {
             continue;
+        }
 
         if (engine->cb_sigload && engine->cb_sigload("idb", tokens[0], ~options & CL_DB_OFFICIAL, engine->cb_sigload_ctx)) {
             cli_dbgmsg("cli_loadidb: skipping %s due to callback\n", tokens[0]);
@@ -1371,13 +1388,13 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
         if (cli_hexnibbles((char *)hash, 124)) {
             cli_errmsg("cli_loadidb: Malformed hash at line %u (bad chars)\n", line);
             ret = CL_EMALFDB;
-            break;
+            goto done;
         }
         size = (hash[0] << 4) + hash[1];
         if (size != 32 && size != 24 && size != 16) {
             cli_errmsg("cli_loadidb: Malformed hash at line %u (bad size)\n", line);
             ret = CL_EMALFDB;
-            break;
+            goto done;
         }
         enginesize = (size >> 3) - 2;
         hash += 2;
@@ -1385,7 +1402,7 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
         metric = (struct icomtr *)MPOOL_REALLOC(engine->mempool, matcher->icons[enginesize], sizeof(struct icomtr) * (matcher->icon_counts[enginesize] + 1));
         if (!metric) {
             ret = CL_EMEM;
-            break;
+            goto done;
         }
 
         matcher->icons[enginesize] = metric;
@@ -1404,7 +1421,7 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
         if (i != 3) {
             cli_errmsg("cli_loadidb: Malformed hash at line %u (bad color data)\n", line);
             ret = CL_EMALFDB;
-            break;
+            goto done;
         }
 
         for (i = 0; i < 3; i++) {
@@ -1419,7 +1436,7 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
         if (i != 3) {
             cli_errmsg("cli_loadidb: Malformed hash at line %u (bad gray data)\n", line);
             ret = CL_EMALFDB;
-            break;
+            goto done;
         }
 
         for (i = 0; i < 3; i++) {
@@ -1433,7 +1450,7 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
         if (i != 3) {
             cli_errmsg("cli_loadidb: Malformed hash at line %u (bad bright data)\n", line);
             ret = CL_EMALFDB;
-            break;
+            goto done;
         }
 
         for (i = 0; i < 3; i++) {
@@ -1447,7 +1464,7 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
         if (i != 3) {
             cli_errmsg("cli_loadidb: Malformed hash at line %u (bad dark data)\n", line);
             ret = CL_EMALFDB;
-            break;
+            goto done;
         }
 
         for (i = 0; i < 3; i++) {
@@ -1461,7 +1478,7 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
         if (i != 3) {
             cli_errmsg("cli_loadidb: Malformed hash at line %u (bad edge data)\n", line);
             ret = CL_EMALFDB;
-            break;
+            goto done;
         }
 
         for (i = 0; i < 3; i++) {
@@ -1475,7 +1492,7 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
         if (i != 3) {
             cli_errmsg("cli_loadidb: Malformed hash at line %u (bad noedge data)\n", line);
             ret = CL_EMALFDB;
-            break;
+            goto done;
         }
 
         metric->rsum   = (hash[0] << 4) | hash[1];
@@ -1485,12 +1502,12 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
         if (metric->rsum + metric->gsum + metric->bsum > 103 || metric->ccount > 100) {
             cli_errmsg("cli_loadidb: Malformed hash at line %u (bad spread data)\n", line);
             ret = CL_EMALFDB;
-            break;
+            goto done;
         }
 
         if (!(metric->name = CLI_MPOOL_STRDUP(engine->mempool, tokens[0]))) {
             ret = CL_EMEM;
-            break;
+            goto done;
         }
 
         for (i = 0; i < matcher->group_counts[0]; i++) {
@@ -1501,7 +1518,7 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
             if (!(matcher->group_names[0] = MPOOL_REALLOC(engine->mempool, matcher->group_names[0], sizeof(char *) * (i + 1))) ||
                 !(matcher->group_names[0][i] = CLI_MPOOL_STRDUP(engine->mempool, tokens[1]))) {
                 ret = CL_EMEM;
-                break;
+                goto done;
             }
             matcher->group_counts[0]++;
         }
@@ -1515,7 +1532,7 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
             if (!(matcher->group_names[1] = MPOOL_REALLOC(engine->mempool, matcher->group_names[1], sizeof(char *) * (i + 1))) ||
                 !(matcher->group_names[1][i] = CLI_MPOOL_STRDUP(engine->mempool, tokens[2]))) {
                 ret = CL_EMEM;
-                break;
+                goto done;
             }
             matcher->group_counts[1]++;
         }
@@ -1524,30 +1541,53 @@ static cl_error_t cli_loadidb(FILE *fs, struct cl_engine *engine, unsigned int *
         if (matcher->group_counts[0] > 256 || matcher->group_counts[1] > 256) {
             cli_errmsg("cli_loadidb: too many icon groups!\n");
             ret = CL_EMALFDB;
-            break;
+            goto done;
         }
 
         sigs++;
     }
-    if (engine->ignored)
-        free(buffer_cpy);
 
     if (!line) {
-        cli_errmsg("cli_loadidb: Empty database file\n");
-        ret = CL_EMALFDB;
+        cli_dbgmsg("cli_loadidb: Empty database file\n");
+    } else {
+        cli_dbgmsg("cli_loadidb: %u signatures loaded\n", sigs);
+        if (signo) {
+            *signo += sigs;
+        }
     }
 
-    if (ret) {
-        cli_errmsg("cli_loadidb: Problem parsing database at line %u\n", line);
+    ret = CL_SUCCESS;
+
+done:
+
+    if (NULL != buffer_cpy) {
+        free(buffer_cpy);
+    }
+
+    if (CL_SUCCESS != ret && NULL != matcher) {
+        for (i = 0; i < 3; i++) {
+            if (matcher->icons[i]) {
+                uint32_t j;
+                for (j = 0; j < matcher->icon_counts[i]; j++) {
+                    struct icomtr *metric = matcher->icons[i];
+                    MPOOL_FREE(engine->mempool, metric[j].name);
+                }
+                MPOOL_FREE(engine->mempool, matcher->icons[i]);
+            }
+        }
+        for (i = 0; i < 2; i++) {
+            if (matcher->group_names[i]) {
+                uint32_t j;
+                for (j = 0; j < matcher->group_counts[i]; j++)
+                    MPOOL_FREE(engine->mempool, matcher->group_names[i][j]);
+                MPOOL_FREE(engine->mempool, matcher->group_names[i]);
+            }
+        }
         MPOOL_FREE(engine->mempool, matcher);
-        return ret;
+        engine->iconcheck = NULL;
     }
 
-    if (signo)
-        *signo += sigs;
-
-    engine->iconcheck = matcher;
-    return CL_SUCCESS;
+    return ret;
 }
 
 static int cli_loadwdb(FILE *fs, struct cl_engine *engine, unsigned int options, struct cli_dbio *dbio)
@@ -1607,7 +1647,7 @@ static int cli_loadndb(FILE *fs, struct cl_engine *engine, unsigned int *signo, 
         return ret;
 
     if (engine->ignored)
-        if (!(buffer_cpy = cli_malloc(FILEBUFF))) {
+        if (!(buffer_cpy = malloc(FILEBUFF))) {
             cli_errmsg("cli_loadndb: Can't allocate memory for buffer_cpy\n");
             return CL_EMEM;
         }
@@ -1731,7 +1771,7 @@ struct lsig_attrib {
 /* TODO: rework this */
 static int lsigattribs(char *attribs, struct cli_lsig_tdb *tdb)
 {
-// clang-format off
+    // clang-format off
 #define ATTRIB_TOKENS   10
 #define EXPR_TOKEN_MAX  16
     struct lsig_attrib attrtab[] = {
@@ -2121,18 +2161,6 @@ static cl_error_t load_oneldb(char *buffer, int chkpua, struct cl_engine *engine
         goto done;
     }
 
-#if !HAVE_PCRE
-    /* Regex Usage and Support Check */
-    for (i = 0; i < subsigs; ++i) {
-        char *slash = strchr(tokens[i + 3], '/');
-        if (slash && strchr(slash + 1, '/')) {
-            cli_warnmsg("cli_loadldb: logical signature for %s uses PCREs but support is disabled, skipping\n", virname);
-            status = CL_BREAK;
-            goto done;
-        }
-    }
-#endif
-
     /* enforce MAX_LDB_SUBSIGS subsig cap */
     if (subsigs > MAX_LDB_SUBSIGS) {
         cli_errmsg("cli_loadldb: Broken logical expression or too many subsignatures\n");
@@ -2254,7 +2282,7 @@ static int cli_loadldb(FILE *fs, struct cl_engine *engine, unsigned int *signo, 
         return ret;
 
     if (engine->ignored) {
-        if (!(buffer_cpy = cli_malloc(sizeof(buffer)))) {
+        if (!(buffer_cpy = malloc(sizeof(buffer)))) {
             cli_errmsg("cli_loadldb: Can't allocate memory for buffer_cpy\n");
             return CL_EMEM;
         }
@@ -2330,7 +2358,7 @@ static int cli_loadcbc(FILE *fs, struct cl_engine *engine, unsigned int *signo, 
         return CL_SUCCESS;
     }
 
-    bcs->all_bcs = cli_realloc2(bcs->all_bcs, sizeof(*bcs->all_bcs) * (bcs->count + 1));
+    bcs->all_bcs = cli_safer_realloc_or_free(bcs->all_bcs, sizeof(*bcs->all_bcs) * (bcs->count + 1));
     if (!bcs->all_bcs) {
         cli_errmsg("cli_loadcbc: Can't allocate memory for bytecode entry\n");
         return CL_EMEM;
@@ -2401,8 +2429,8 @@ static int cli_loadcbc(FILE *fs, struct cl_engine *engine, unsigned int *signo, 
         if (bc->kind >= _BC_START_HOOKS && bc->kind < _BC_LAST_HOOK) {
             unsigned hook       = bc->kind - _BC_START_HOOKS;
             unsigned cnt        = ++engine->hooks_cnt[hook];
-            engine->hooks[hook] = cli_realloc2(engine->hooks[hook],
-                                               sizeof(*engine->hooks[0]) * cnt);
+            engine->hooks[hook] = cli_safer_realloc_or_free(engine->hooks[hook],
+                                                            sizeof(*engine->hooks[0]) * cnt);
             if (!engine->hooks[hook]) {
                 cli_errmsg("Out of memory allocating memory for hook %u", hook);
                 return CL_EMEM;
@@ -2587,7 +2615,7 @@ static int cli_loadinfo(FILE *fs, struct cl_engine *engine, unsigned int options
         return CL_EMALFDB;
     }
 
-    ctx = cl_hash_init("sha256");
+    ctx = cl_hash_init("sha2-256");
     if (!(ctx))
         return CL_EMALFDB;
 
@@ -2667,7 +2695,7 @@ static int cli_loadinfo(FILE *fs, struct cl_engine *engine, unsigned int options
         new->size = atoi(tokens[1]);
 
         if (strlen(tokens[2]) != 64 || !(new->hash = CLI_MPOOL_HEX2STR(engine->mempool, tokens[2]))) {
-            cli_errmsg("cli_loadinfo: Malformed SHA256 string at line %u\n", line);
+            cli_errmsg("cli_loadinfo: Malformed SHA2-256 string at line %u\n", line);
             MPOOL_FREE(engine->mempool, new->name);
             MPOOL_FREE(engine->mempool, new);
             ret = CL_EMALFDB;
@@ -2792,52 +2820,24 @@ static int cli_loadign(FILE *fs, struct cl_engine *engine, unsigned int options,
     return CL_SUCCESS;
 }
 
-#define MD5_HDB 0
-#define MD5_MDB 1
-#define MD5_FP 2
-#define MD5_IMP 3
-
-#define MD5_TOKENS 5
-static int cli_loadhash(FILE *fs, struct cl_engine *engine, unsigned int *signo, unsigned int mode, unsigned int options, struct cli_dbio *dbio, const char *dbname)
+#define HASH_DB_TOKENS 5
+static int cli_loadhash(FILE *fs, struct cl_engine *engine, unsigned int *signo, hash_purpose_t purpose, unsigned int options, struct cli_dbio *dbio, const char *dbname)
 {
-    const char *tokens[MD5_TOKENS + 1];
+    const char *tokens[HASH_DB_TOKENS + 1];
     char buffer[FILEBUFF], *buffer_cpy = NULL;
     const char *pt, *virname;
     int ret                 = CL_SUCCESS;
-    unsigned int size_field = 1, md5_field = 0, line = 0, sigs = 0, tokens_count;
+    unsigned int size_field = 1, hash_field = 0, line = 0, sigs = 0, tokens_count;
     unsigned int req_fl = 0;
-    struct cli_matcher *db;
     unsigned long size;
 
-    if (mode == MD5_MDB) {
+    if (purpose == HASH_PURPOSE_PE_SECTION_DETECT) {
         size_field = 0;
-        md5_field  = 1;
-        db         = engine->hm_mdb;
-    } else if (mode == MD5_HDB)
-        db = engine->hm_hdb;
-    else if (mode == MD5_IMP)
-        db = engine->hm_imp;
-    else
-        db = engine->hm_fp;
-
-    if (!db) {
-        if (!(db = MPOOL_CALLOC(engine->mempool, 1, sizeof(*db))))
-            return CL_EMEM;
-#ifdef USE_MPOOL
-        db->mempool = engine->mempool;
-#endif
-        if (mode == MD5_HDB)
-            engine->hm_hdb = db;
-        else if (mode == MD5_MDB)
-            engine->hm_mdb = db;
-        else if (mode == MD5_IMP)
-            engine->hm_imp = db;
-        else
-            engine->hm_fp = db;
+        hash_field = 1;
     }
 
     if (engine->ignored)
-        if (!(buffer_cpy = cli_malloc(FILEBUFF))) {
+        if (!(buffer_cpy = malloc(FILEBUFF))) {
             cli_errmsg("cli_loadhash: Can't allocate memory for buffer_cpy\n");
             return CL_EMEM;
         }
@@ -2850,23 +2850,23 @@ static int cli_loadhash(FILE *fs, struct cl_engine *engine, unsigned int *signo,
         if (engine->ignored)
             strcpy(buffer_cpy, buffer);
 
-        tokens_count = cli_strtokenize(buffer, ':', MD5_TOKENS + 1, tokens);
+        tokens_count = cli_strtokenize(buffer, ':', HASH_DB_TOKENS + 1, tokens);
         if (tokens_count < 3) {
             ret = CL_EMALFDB;
             break;
         }
-        if (tokens_count > MD5_TOKENS - 2) {
-            req_fl = atoi(tokens[MD5_TOKENS - 2]);
+        if (tokens_count > HASH_DB_TOKENS - 2) {
+            req_fl = atoi(tokens[HASH_DB_TOKENS - 2]);
 
-            if (tokens_count > MD5_TOKENS) {
+            if (tokens_count > HASH_DB_TOKENS) {
                 ret = CL_EMALFDB;
                 break;
             }
 
             if (cl_retflevel() < req_fl)
                 continue;
-            if (tokens_count == MD5_TOKENS) {
-                int max_fl = atoi(tokens[MD5_TOKENS - 1]);
+            if (tokens_count == HASH_DB_TOKENS) {
+                int max_fl = atoi(tokens[HASH_DB_TOKENS - 1]);
                 if (cl_retflevel() > (unsigned int)max_fl)
                     continue;
             }
@@ -2886,7 +2886,7 @@ static int cli_loadhash(FILE *fs, struct cl_engine *engine, unsigned int *signo,
             // is specified.  This check doesn't apply to .imp rules, though,
             // since this rule category wasn't introduced until FLEVEL 90, and
             // has always supported wildcard usage in rules.
-            if (mode != MD5_IMP && ((tokens_count < MD5_TOKENS - 1) || (req_fl < 73))) {
+            if (purpose != HASH_PURPOSE_PE_IMPORT_DETECT && ((tokens_count < HASH_DB_TOKENS - 1) || (req_fl < 73))) {
                 cli_errmsg("cli_loadhash: Minimum FLEVEL field must be at least 73 for wildcard size hash signatures."
                            " For reference, running FLEVEL is %d\n",
                            cl_retflevel());
@@ -2921,7 +2921,7 @@ static int cli_loadhash(FILE *fs, struct cl_engine *engine, unsigned int *signo,
             break;
         }
 
-        if (CL_SUCCESS != (ret = hm_addhash_str(db, tokens[md5_field], size, virname))) {
+        if (CL_SUCCESS != (ret = hm_addhash_str(engine, purpose, tokens[hash_field], size, virname))) {
             cli_errmsg("cli_loadhash: Malformed hash string at line %u\n", line);
             MPOOL_FREE(engine->mempool, (void *)virname);
             break;
@@ -2965,7 +2965,7 @@ static int cli_loadmd(FILE *fs, struct cl_engine *engine, unsigned int *signo, i
     UNUSEDPARAM(dbname);
 
     if (engine->ignored)
-        if (!(buffer_cpy = cli_malloc(FILEBUFF))) {
+        if (!(buffer_cpy = malloc(FILEBUFF))) {
             cli_errmsg("cli_loadmd: Can't allocate memory for buffer_cpy\n");
             return CL_EMEM;
         }
@@ -3119,7 +3119,7 @@ static int cli_loadcdb(FILE *fs, struct cl_engine *engine, unsigned int *signo, 
     struct cli_cdb *new;
 
     if (engine->ignored)
-        if (!(buffer_cpy = cli_malloc(FILEBUFF))) {
+        if (!(buffer_cpy = malloc(FILEBUFF))) {
             cli_errmsg("cli_loadcdb: Can't allocate memory for buffer_cpy\n");
             return CL_EMEM;
         }
@@ -3475,8 +3475,8 @@ static int cli_loadcrt(FILE *fs, struct cl_engine *engine, struct cli_dbio *dbio
             ca.name = NULL;
 
         if (strlen(tokens[9]))
-            ca.not_before = atoi(tokens[8]);
-        ca.not_after = (-1U) >> 1;
+            ca.not_before = atoi(tokens[9]);
+        ca.not_after = (-1ULL) >> 1;
 
         ca.hashtype = CLI_HASHTYPE_ANY;
         crtmgr_add(&(engine->cmgr), &ca);
@@ -3508,7 +3508,7 @@ static int cli_loadmscat(FILE *fs, const char *dbname, struct cl_engine *engine,
         return 0;
     }
 
-    if (!(map = fmap(fileno(fs), 0, 0, dbname))) {
+    if (!(map = fmap_new(fileno(fs), 0, 0, dbname, NULL))) {
         cli_dbgmsg("Can't map cat: %s\n", dbname);
         return 0;
     }
@@ -3517,7 +3517,7 @@ static int cli_loadmscat(FILE *fs, const char *dbname, struct cl_engine *engine,
         cli_dbgmsg("Failed to load certificates from cat: %s\n", dbname);
     }
 
-    funmap(map);
+    fmap_free(map);
     return 0;
 }
 
@@ -3581,7 +3581,7 @@ static char *parse_yara_hex_string(YR_STRING *string, int *ret)
     }
 
     reslen++;
-    res = cli_calloc(reslen, 1);
+    res = calloc(reslen, 1);
     if (!(res)) {
         if (ret) *ret = CL_EMEM;
         return NULL;
@@ -3720,7 +3720,7 @@ static cl_error_t ytable_add_attrib(struct cli_ytable *ytable, const char *hexsi
         if (ytable->table[lookup]->offset)
             free(ytable->table[lookup]->offset);
 
-        ytable->table[lookup]->offset = cli_strdup(value);
+        ytable->table[lookup]->offset = cli_safer_strdup(value);
 
         if (!ytable->table[lookup]->offset) {
             cli_yaramsg("ytable_add_attrib: ran out of memory for offset\n");
@@ -3741,13 +3741,13 @@ static int ytable_add_string(struct cli_ytable *ytable, const char *hexsig)
     if (!ytable || !hexsig)
         return CL_ENULLARG;
 
-    new = cli_calloc(1, sizeof(struct cli_ytable_entry));
+    new = calloc(1, sizeof(struct cli_ytable_entry));
     if (!new) {
         cli_yaramsg("ytable_add_string: out of memory for new ytable entry\n");
         return CL_EMEM;
     }
 
-    new->hexstr = cli_strdup(hexsig);
+    new->hexstr = cli_safer_strdup(hexsig);
     if (!new->hexstr) {
         cli_yaramsg("ytable_add_string: out of memory for hexsig copy\n");
         free(new);
@@ -3755,7 +3755,7 @@ static int ytable_add_string(struct cli_ytable *ytable, const char *hexsig)
     }
 
     ytable->tbl_cnt++;
-    newtable = cli_realloc(ytable->table, ytable->tbl_cnt * sizeof(struct cli_ytable_entry *));
+    newtable = cli_safer_realloc(ytable->table, ytable->tbl_cnt * sizeof(struct cli_ytable_entry *));
     if (!newtable) {
         cli_yaramsg("ytable_add_string: failed to reallocate new ytable table\n");
         free(new->hexstr);
@@ -3861,7 +3861,7 @@ static int load_oneyara(YR_RULE *rule, int chkpua, struct cl_engine *engine, uns
         return CL_SUCCESS;
     }
 
-    newident = cli_malloc(strlen(rule->identifier) + 5 + 1);
+    newident = malloc(strlen(rule->identifier) + 5 + 1);
     if (!newident) {
         cli_errmsg("cli_loadyara(): newident == NULL\n");
         return CL_EMEM;
@@ -3935,7 +3935,6 @@ static int load_oneyara(YR_RULE *rule, int chkpua, struct cl_engine *engine, uns
 #ifdef YARA_FINISHED
         } else if (STRING_IS_LITERAL(string)) {
             /* TODO - handle literal strings, short-circuits other string type handling */
-            cli_yaramsg("load_oneyara: literal string: [%.*s] => [%s]\n", string->length, string->string, substr);
 #else
         } else if (STRING_IS_LITERAL(string)) {
             cli_errmsg("load_oneyara: literal strings are unsupported, reorganize existing code\n");
@@ -4027,10 +4026,9 @@ static int load_oneyara(YR_RULE *rule, int chkpua, struct cl_engine *engine, uns
             free(substr);
         } else if (STRING_IS_REGEXP(string)) {
             /* TODO - rewrite to NOT use PCRE_BYPASS */
-#if HAVE_PCRE
             size_t length = strlen(PCRE_BYPASS) + string->length + 3;
 
-            substr = cli_calloc(length, sizeof(char));
+            substr = calloc(length, sizeof(char));
             if (!substr) {
                 cli_errmsg("load_oneyara: cannot allocate memory for converted regex string\n");
                 str_error++;
@@ -4044,12 +4042,6 @@ static int load_oneyara(YR_RULE *rule, int chkpua, struct cl_engine *engine, uns
 
             ytable_add_string(&ytable, substr);
             free(substr);
-#else
-            cli_warnmsg("cli_loadyara: %s uses PCREs but support is disabled\n", newident);
-            str_error++;
-            ret = CL_SUCCESS;
-            break;
-#endif
         } else {
             /* TODO - extract the string length to handle NULL hex-escaped characters
              * For now, we'll just use the strlen we get which crudely finds the length
@@ -4063,7 +4055,7 @@ static int load_oneyara(YR_RULE *rule, int chkpua, struct cl_engine *engine, uns
                 continue;
             }
 
-            substr = cli_calloc(totsize, sizeof(char));
+            substr = calloc(totsize, sizeof(char));
             if (!substr) {
                 cli_errmsg("load_oneyara: cannot allocate memory for converted generic string\n");
                 str_error++;
@@ -4195,7 +4187,7 @@ static int load_oneyara(YR_RULE *rule, int chkpua, struct cl_engine *engine, uns
 #if 0
     if (rule->cl_flags & RULE_ALL ||  rule->cl_flags & RULE_ANY) {
         lsize = 3*ytable.tbl_cnt;
-        logic = cli_calloc(lsize, sizeof(char));
+        logic = calloc(lsize, sizeof(char));
         if (!logic) {
             cli_errmsg("load_oneyara: cannot allocate memory for logic statement\n");
             ytable_delete(&ytable);
@@ -4221,10 +4213,10 @@ static int load_oneyara(YR_RULE *rule, int chkpua, struct cl_engine *engine, uns
 
     /* TDB */
     if (rule->cl_flags & RULE_EP && ytable.tbl_cnt == 1)
-        target_str = cli_strdup(YARATARGET1);
+        target_str = cli_safer_strdup(YARATARGET1);
     else
 #endif
-    target_str = cli_strdup(YARATARGET0);
+    target_str = cli_safer_strdup(YARATARGET0);
 
     memset(&tdb, 0, sizeof(tdb));
     if (CL_SUCCESS != (ret = init_tdb(&tdb, engine, target_str, newident))) {
@@ -4354,7 +4346,7 @@ struct _yara_global {
 cl_error_t cli_yara_init(struct cl_engine *engine)
 {
     /* Initialize YARA */
-    engine->yara_global = cli_calloc(1, sizeof(struct _yara_global));
+    engine->yara_global = calloc(1, sizeof(struct _yara_global));
     if (NULL == engine->yara_global) {
         cli_errmsg("cli_yara_init: failed to create YARA global\n");
         return CL_EMEM;
@@ -4592,7 +4584,7 @@ static int cli_loadpwdb(FILE *fs, struct cl_engine *engine, unsigned int options
 
         /* append target type 0 to tdb string if needed */
         if ((tokens[1][0] == '\0') || (strstr(tokens[1], "Target:") != NULL)) {
-            attribs = cli_strdup(tokens[1]);
+            attribs = cli_safer_strdup(tokens[1]);
             if (!attribs) {
                 cli_errmsg("cli_loadpwdb: Can't allocate memory for attributes\n");
                 ret = CL_EMEM;
@@ -4600,7 +4592,7 @@ static int cli_loadpwdb(FILE *fs, struct cl_engine *engine, unsigned int options
             }
         } else {
             size_t attlen = strlen(tokens[1]) + 10;
-            attribs       = cli_calloc(attlen, sizeof(char));
+            attribs       = calloc(attlen, sizeof(char));
             if (!attribs) {
                 cli_errmsg("cli_loadpwdb: Can't allocate memory for attributes\n");
                 ret = CL_EMEM;
@@ -4709,9 +4701,9 @@ static int cli_loadpwdb(FILE *fs, struct cl_engine *engine, unsigned int options
     return CL_SUCCESS;
 }
 
-static cl_error_t cli_loaddbdir(const char *dirname, struct cl_engine *engine, unsigned int *signo, unsigned int options);
+static cl_error_t cli_loaddbdir(const char *dirname, struct cl_engine *engine, unsigned int *signo, unsigned int options, void *sign_verifier);
 
-cl_error_t cli_load(const char *filename, struct cl_engine *engine, unsigned int *signo, unsigned int options, struct cli_dbio *dbio)
+cl_error_t cli_load(const char *filename, struct cl_engine *engine, unsigned int *signo, unsigned int options, struct cli_dbio *dbio, void *sign_verifier)
 {
     cl_error_t ret = CL_SUCCESS;
 
@@ -4755,35 +4747,35 @@ cl_error_t cli_load(const char *filename, struct cl_engine *engine, unsigned int
         ret = cli_loaddb(fs, engine, signo, options, dbio, dbname);
 
     } else if (cli_strbcasestr(dbname, ".cvd")) {
-        ret = cli_cvdload(fs, engine, signo, options, 0, filename, 0);
+        ret = cli_cvdload(engine, signo, options, CVD_TYPE_CVD, filename, sign_verifier, false);
 
     } else if (cli_strbcasestr(dbname, ".cld")) {
-        ret = cli_cvdload(fs, engine, signo, options, 1, filename, 0);
+        ret = cli_cvdload(engine, signo, options, CVD_TYPE_CLD, filename, sign_verifier, false);
 
     } else if (cli_strbcasestr(dbname, ".cud")) {
-        ret = cli_cvdload(fs, engine, signo, options, 2, filename, 0);
+        ret = cli_cvdload(engine, signo, options, CVD_TYPE_CUD, filename, sign_verifier, false);
 
     } else if (cli_strbcasestr(dbname, ".crb")) {
         ret = cli_loadcrt(fs, engine, dbio);
 
     } else if (cli_strbcasestr(dbname, ".hdb") || cli_strbcasestr(dbname, ".hsb")) {
-        ret = cli_loadhash(fs, engine, signo, MD5_HDB, options, dbio, dbname);
+        ret = cli_loadhash(fs, engine, signo, HASH_PURPOSE_WHOLE_FILE_DETECT, options, dbio, dbname);
     } else if (cli_strbcasestr(dbname, ".hdu") || cli_strbcasestr(dbname, ".hsu")) {
         if (options & CL_DB_PUA)
-            ret = cli_loadhash(fs, engine, signo, MD5_HDB, options | CL_DB_PUA_MODE, dbio, dbname);
+            ret = cli_loadhash(fs, engine, signo, HASH_PURPOSE_WHOLE_FILE_DETECT, options | CL_DB_PUA_MODE, dbio, dbname);
         else
             skipped = 1;
 
     } else if (cli_strbcasestr(dbname, ".fp") || cli_strbcasestr(dbname, ".sfp")) {
-        ret = cli_loadhash(fs, engine, signo, MD5_FP, options, dbio, dbname);
+        ret = cli_loadhash(fs, engine, signo, HASH_PURPOSE_WHOLE_FILE_FP_CHECK, options, dbio, dbname);
     } else if (cli_strbcasestr(dbname, ".mdb") || cli_strbcasestr(dbname, ".msb")) {
-        ret = cli_loadhash(fs, engine, signo, MD5_MDB, options, dbio, dbname);
+        ret = cli_loadhash(fs, engine, signo, HASH_PURPOSE_PE_SECTION_DETECT, options, dbio, dbname);
     } else if (cli_strbcasestr(dbname, ".imp")) {
-        ret = cli_loadhash(fs, engine, signo, MD5_IMP, options, dbio, dbname);
+        ret = cli_loadhash(fs, engine, signo, HASH_PURPOSE_PE_IMPORT_DETECT, options, dbio, dbname);
 
     } else if (cli_strbcasestr(dbname, ".mdu") || cli_strbcasestr(dbname, ".msu")) {
         if (options & CL_DB_PUA)
-            ret = cli_loadhash(fs, engine, signo, MD5_MDB, options | CL_DB_PUA_MODE, dbio, dbname);
+            ret = cli_loadhash(fs, engine, signo, HASH_PURPOSE_PE_SECTION_DETECT, options | CL_DB_PUA_MODE, dbio, dbname);
         else
             skipped = 1;
 
@@ -5036,7 +5028,7 @@ done:
     return num_signatures;
 }
 
-static cl_error_t cli_loaddbdir(const char *dirname, struct cl_engine *engine, unsigned int *signo, unsigned int options)
+static cl_error_t cli_loaddbdir(const char *dirname, struct cl_engine *engine, unsigned int *signo, unsigned int options, void *sign_verifier)
 {
     cl_error_t ret = CL_EOPEN;
 
@@ -5081,7 +5073,7 @@ static cl_error_t cli_loaddbdir(const char *dirname, struct cl_engine *engine, u
             continue;
         }
 
-        dbfile = (char *)cli_malloc(strlen(dent->d_name) + dirname_len + 2);
+        dbfile = (char *)malloc(strlen(dent->d_name) + dirname_len + 2);
         if (!dbfile) {
             cli_errmsg("cli_loaddbdir: dbfile == NULL\n");
             ret = CL_EMEM;
@@ -5219,7 +5211,7 @@ static cl_error_t cli_loaddbdir(const char *dirname, struct cl_engine *engine, u
             }
         }
 
-        ret = cli_load(iter->path, engine, signo, options, NULL);
+        ret = cli_load(iter->path, engine, signo, options, NULL, sign_verifier);
         if (ret) {
             cli_errmsg("cli_loaddbdir: error loading database %s\n", iter->path);
             goto done;
@@ -5258,7 +5250,9 @@ done:
 cl_error_t cl_load(const char *path, struct cl_engine *engine, unsigned int *signo, unsigned int dboptions)
 {
     STATBUF sb;
-    int ret;
+    cl_error_t ret;
+    void *sign_verifier          = NULL;
+    FFIError *new_verifier_error = NULL;
 
     if (!engine) {
         cli_errmsg("cl_load: engine == NULL\n");
@@ -5266,7 +5260,7 @@ cl_error_t cl_load(const char *path, struct cl_engine *engine, unsigned int *sig
     }
 
     if (engine->dboptions & CL_DB_COMPILED) {
-        cli_errmsg("cl_load(): can't load new databases when engine is already compiled\n");
+        cli_errmsg("cl_load: can't load new databases when engine is already compiled\n");
         return CL_EARG;
     }
 
@@ -5274,27 +5268,27 @@ cl_error_t cl_load(const char *path, struct cl_engine *engine, unsigned int *sig
         switch (errno) {
 #if defined(EACCES)
             case EACCES:
-                cli_errmsg("cl_load(): Access denied for path: %s\n", path);
+                cli_errmsg("cl_load: Access denied for path: %s\n", path);
                 break;
 #endif
 #if defined(ENOENT)
             case ENOENT:
-                cli_errmsg("cl_load(): No such file or directory: %s\n", path);
+                cli_errmsg("cl_load: No such file or directory: %s\n", path);
                 break;
 #endif
 #if defined(ELOOP)
             case ELOOP:
-                cli_errmsg("cl_load(): Too many symbolic links encountered in path: %s\n", path);
+                cli_errmsg("cl_load: Too many symbolic links encountered in path: %s\n", path);
                 break;
 #endif
 #if defined(EOVERFLOW)
             case EOVERFLOW:
-                cli_errmsg("cl_load(): File size is too large to be recognized. Path: %s\n", path);
+                cli_errmsg("cl_load: File size is too large to be recognized. Path: %s\n", path);
                 break;
 #endif
 #if defined(EIO)
             case EIO:
-                cli_errmsg("cl_load(): An I/O error occurred while reading from path: %s\n", path);
+                cli_errmsg("cl_load: An I/O error occurred while reading from path: %s\n", path);
                 break;
 #endif
             default:
@@ -5315,27 +5309,47 @@ cl_error_t cl_load(const char *path, struct cl_engine *engine, unsigned int *sig
         cli_dbgmsg("Bytecode engine disabled\n");
     }
 
-    if (!engine->cache && clean_cache_init(engine))
-        return CL_EMEM;
+    if (!engine->cache) {
+        ret = clean_cache_init(engine);
+        if (ret != CL_SUCCESS) {
+            cli_errmsg("cl_load: Failed to initialize the cache: %s\n", cl_strerror(ret));
+            return ret;
+        }
+    }
 
     engine->dboptions |= dboptions;
+
+    if (NULL != engine->certs_directory) {
+        if (!codesign_verifier_new(engine->certs_directory, &sign_verifier, &new_verifier_error)) {
+            cli_errmsg("Failed to create a new code-signature verifier: %s\n", ffierror_fmt(new_verifier_error));
+            ffierror_free(new_verifier_error);
+            ret = CL_ECVD;
+            return ret;
+        }
+    }
 
     switch (sb.st_mode & S_IFMT) {
         case S_IFREG:
             /* Count # of sigs in the database now */
             engine->num_total_signatures += count_signatures(path, engine, dboptions);
-
-            ret = cli_load(path, engine, signo, dboptions, NULL);
+            ret = cli_load(path, engine, signo, dboptions, NULL, sign_verifier);
             break;
 
         case S_IFDIR:
             /* Count # of signatures inside cli_loaddbdir(), before loading */
-            ret = cli_loaddbdir(path, engine, signo, dboptions | CL_DB_DIRECTORY);
+            ret = cli_loaddbdir(path, engine, signo, dboptions | CL_DB_DIRECTORY, sign_verifier);
             break;
 
         default:
-            cli_errmsg("cl_load(%s): Not supported database file type\n", path);
+            cli_errmsg("cl_load: Not supported database file type: %s\n", path);
+            if (sign_verifier) {
+                codesign_verifier_free(sign_verifier);
+            }
             return CL_EOPEN;
+    }
+
+    if (sign_verifier) {
+        codesign_verifier_free(sign_verifier);
     }
 
     if (engine->cb_sigload_progress) {
@@ -5397,7 +5411,7 @@ cl_error_t cl_statinidir(const char *dirname, struct cl_stat *dbstat)
         dbstat->entries   = 0;
         dbstat->stattab   = NULL;
         dbstat->statdname = NULL;
-        dbstat->dir       = cli_strdup(dirname);
+        dbstat->dir       = cli_safer_strdup(dirname);
     } else {
         cli_errmsg("cl_statdbdir(): Null argument passed.\n");
         return CL_ENULLARG;
@@ -5415,7 +5429,7 @@ cl_error_t cl_statinidir(const char *dirname, struct cl_stat *dbstat)
         if (dent->d_ino) {
             if (strcmp(dent->d_name, ".") && strcmp(dent->d_name, "..") && CLI_DBEXT(dent->d_name)) {
                 dbstat->entries++;
-                dbstat->stattab = (STATBUF *)cli_realloc2(dbstat->stattab, dbstat->entries * sizeof(STATBUF));
+                dbstat->stattab = (STATBUF *)cli_safer_realloc_or_free(dbstat->stattab, dbstat->entries * sizeof(STATBUF));
                 if (!dbstat->stattab) {
                     cl_statfree(dbstat);
                     closedir(dd);
@@ -5423,7 +5437,7 @@ cl_error_t cl_statinidir(const char *dirname, struct cl_stat *dbstat)
                 }
 
 #ifdef _WIN32
-                dbstat->statdname = (char **)cli_realloc2(dbstat->statdname, dbstat->entries * sizeof(char *));
+                dbstat->statdname = (char **)cli_safer_realloc_or_free(dbstat->statdname, dbstat->entries * sizeof(char *));
                 if (!dbstat->statdname) {
                     cli_errmsg("cl_statinidir: Can't allocate memory for dbstat->statdname\n");
                     cl_statfree(dbstat);
@@ -5432,7 +5446,7 @@ cl_error_t cl_statinidir(const char *dirname, struct cl_stat *dbstat)
                 }
 #endif
 
-                fname = cli_malloc(strlen(dirname) + strlen(dent->d_name) + 32);
+                fname = malloc(strlen(dirname) + strlen(dent->d_name) + 32);
                 if (!fname) {
                     cli_errmsg("cl_statinidir: Cant' allocate memory for fname\n");
                     cl_statfree(dbstat);
@@ -5441,7 +5455,7 @@ cl_error_t cl_statinidir(const char *dirname, struct cl_stat *dbstat)
                 }
                 sprintf(fname, "%s" PATHSEP "%s", dirname, dent->d_name);
 #ifdef _WIN32
-                dbstat->statdname[dbstat->entries - 1] = (char *)cli_malloc(strlen(dent->d_name) + 1);
+                dbstat->statdname[dbstat->entries - 1] = (char *)malloc(strlen(dent->d_name) + 1);
                 if (!dbstat->statdname[dbstat->entries - 1]) {
                     cli_errmsg("cli_statinidir: Can't allocate memory for dbstat->statdname\n");
                     cl_statfree(dbstat);
@@ -5484,7 +5498,7 @@ int cl_statchkdir(const struct cl_stat *dbstat)
     while ((dent = readdir(dd))) {
         if (dent->d_ino) {
             if (strcmp(dent->d_name, ".") && strcmp(dent->d_name, "..") && CLI_DBEXT(dent->d_name)) {
-                fname = cli_malloc(strlen(dbstat->dir) + strlen(dent->d_name) + 32);
+                fname = malloc(strlen(dbstat->dir) + strlen(dent->d_name) + 32);
                 if (!fname) {
                     cli_errmsg("cl_statchkdir: can't allocate memory for fname\n");
                     closedir(dd);
@@ -5617,8 +5631,10 @@ cl_error_t cl_engine_free(struct cl_engine *engine)
     pthread_mutex_unlock(&cli_ref_mutex);
 #endif
 
-    if (engine->stats_data)
+    if (engine->stats_data) {
         free(engine->stats_data);
+        engine->stats_data = NULL;
+    }
 
     /*
      * Pre-calculate number of "major" tasks to complete for the progress callback
@@ -5634,14 +5650,17 @@ cl_error_t cl_engine_free(struct cl_engine *engine)
                     tasks_to_do += root->ac_lsigs / 1000; // every 1000 logical sigs
                     tasks_to_do += 1;                     // ac lsig table
                 }
-#if HAVE_PCRE
+
                 tasks_to_do += 1; // pcre table
-#endif
+
+                tasks_to_do += 1; // fuzzy hashmap
+
                 tasks_to_do += 1; // root mempool
             }
         }
         tasks_to_do += 1; // engine root mempool
     }
+
     tasks_to_do += 7; // hdb, mdb, imp, fp, crtmgr, cdb, dbinfo
 
     if (engine->dconf) {
@@ -5653,7 +5672,8 @@ cl_error_t cl_engine_free(struct cl_engine *engine)
         tasks_to_do += 1; // phishing cleanup
         tasks_to_do += 1; // dconf mempool
     }
-    tasks_to_do += 7; // pwdbs, pua cats, iconcheck, tempdir, cache, engine, ignored
+
+    tasks_to_do += 8; // certs_directory, pwdbs, pua cats, iconcheck, tempdir, cache, engine, ignored
 
     if (engine->test_root) {
         root = engine->test_root;
@@ -5665,10 +5685,8 @@ cl_error_t cl_engine_free(struct cl_engine *engine)
             tasks_to_do += root->ac_lsigs / 1000; // every 1000 logical sigs
             tasks_to_do += 1;                     // ac lsig table
         }
-#if HAVE_PCRE
+
         tasks_to_do += 1; // pcre table
-#endif
-        tasks_to_do += 1; // fuzzy hashmap
 
         tasks_to_do += 1; // engine root mempool
     }
@@ -5718,10 +5736,10 @@ cl_error_t cl_engine_free(struct cl_engine *engine)
                     MPOOL_FREE(engine->mempool, root->ac_lsigtable);
                     TASK_COMPLETE();
                 }
-#if HAVE_PCRE
+
                 cli_pcre_freetable(root);
                 TASK_COMPLETE();
-#endif /* HAVE_PCRE */
+
                 fuzzy_hash_free_hashmap(root->fuzzy_hashmap);
                 TASK_COMPLETE();
 
@@ -5777,7 +5795,7 @@ cl_error_t cl_engine_free(struct cl_engine *engine)
         MPOOL_FREE(engine->mempool, pt->name);
         MPOOL_FREE(engine->mempool, pt->hash);
         if (pt->cvd)
-            cl_cvdfree(pt->cvd);
+            cvd_free(pt->cvd);
         MPOOL_FREE(engine->mempool, pt);
     }
     TASK_COMPLETE();
@@ -5808,6 +5826,11 @@ cl_error_t cl_engine_free(struct cl_engine *engine)
         MPOOL_FREE(engine->mempool, engine->dconf);
         TASK_COMPLETE();
     }
+
+    if (engine->certs_directory) {
+        MPOOL_FREE(engine->mempool, engine->certs_directory);
+    }
+    TASK_COMPLETE();
 
     if (engine->pwdbs) {
         for (i = 0; i < CLI_PWDB_COUNT; i++)
@@ -5889,10 +5912,9 @@ cl_error_t cl_engine_free(struct cl_engine *engine)
             MPOOL_FREE(engine->mempool, root->ac_lsigtable);
             TASK_COMPLETE();
         }
-#if HAVE_PCRE
         cli_pcre_freetable(root);
         TASK_COMPLETE();
-#endif /* HAVE_PCRE */
+
         MPOOL_FREE(engine->mempool, root);
         TASK_COMPLETE();
     }
@@ -5938,9 +5960,7 @@ cl_error_t cl_engine_compile(struct cl_engine *engine)
     for (i = 0; i < CLI_MTARGETS; i++) {
         if ((root = engine->root[i])) {
             tasks_to_do += 1; // build ac trie
-#if HAVE_PCRE
             tasks_to_do += 1; // compile pcre regex
-#endif
         }
     }
     tasks_to_do += 1; // flush hdb
@@ -6000,15 +6020,12 @@ cl_error_t cl_engine_compile(struct cl_engine *engine)
             if ((ret = cli_ac_buildtrie(root)))
                 return ret;
             TASK_COMPLETE();
-#if HAVE_PCRE
+
             if ((ret = cli_pcre_build(root, engine->pcre_match_limit, engine->pcre_recmatch_limit, engine->dconf)))
                 return ret;
             TASK_COMPLETE();
 
             cli_dbgmsg("Matcher[%u]: %s: AC sigs: %u (reloff: %u, absoff: %u) BM sigs: %u (reloff: %u, absoff: %u) PCREs: %u (reloff: %u, absoff: %u) maxpatlen %u %s\n", i, cli_mtargets[i].name, root->ac_patterns, root->ac_reloff_num, root->ac_absoff_num, root->bm_patterns, root->bm_reloff_num, root->bm_absoff_num, root->pcre_metas, root->pcre_reloff_num, root->pcre_absoff_num, root->maxpatlen, root->ac_only ? "(ac_only mode)" : "");
-#else
-            cli_dbgmsg("Matcher[%u]: %s: AC sigs: %u (reloff: %u, absoff: %u) BM sigs: %u (reloff: %u, absoff: %u) maxpatlen %u PCREs: 0 (disabled) %s\n", i, cli_mtargets[i].name, root->ac_patterns, root->ac_reloff_num, root->ac_absoff_num, root->bm_patterns, root->bm_reloff_num, root->bm_absoff_num, root->maxpatlen, root->ac_only ? "(ac_only mode)" : "");
-#endif
         }
     }
 
@@ -6061,9 +6078,9 @@ cl_error_t cl_engine_compile(struct cl_engine *engine)
             }
             MPOOL_FREE(engine->mempool, root->ac_lsigtable);
         }
-#if HAVE_PCRE
+
         cli_pcre_freetable(root);
-#endif /* HAVE_PCRE */
+
         MPOOL_FREE(engine->mempool, root);
         engine->test_root = NULL;
         TASK_COMPLETE();

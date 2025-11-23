@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2011-2013 Sourcefire, Inc.
  *
  *  Authors: aCaB <acab@clamav.net>
@@ -26,7 +26,7 @@
 #include <stddef.h>
 #include <malloc.h>
 
-char *cli_to_utf8_maybe_alloc(const char *s);
+const char *cli_to_utf8_maybe_alloc(const char *s);
 char *cli_strdup_to_utf8(const char *s);
 
 #endif

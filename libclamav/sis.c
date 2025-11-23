@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Alberto Wu
@@ -74,7 +74,7 @@ cl_error_t cli_scansis(cli_ctx *ctx)
 
     cli_dbgmsg("in scansis()\n");
 
-    if (!(tmpd = cli_gentemp_with_prefix(ctx->sub_tmpdir, "sis-tmp")))
+    if (!(tmpd = cli_gentemp_with_prefix(ctx->this_layer_tmpdir, "sis-tmp")))
         return CL_ETMPDIR;
     if (mkdir(tmpd, 0700)) {
         cli_dbgmsg("SIS: Can't create temporary directory %s\n", tmpd);
@@ -166,14 +166,14 @@ enum {
     else {                                                      \
         if ((N) < sleft) {                                      \
             cli_dbgmsg("SIS: Refusing to seek back\n");         \
-            free(alangs);                                       \
+            free((void *)alangs);                               \
             return CL_CLEAN;                                    \
         }                                                       \
         pos += (N)-sleft;                                       \
         size_t tmp = fmap_readn(map, buff, pos, BUFSIZ);        \
         if (((size_t)-1) == tmp) {                              \
             cli_dbgmsg("SIS: Read failed during SKIP\n");       \
-            free(alangs);                                       \
+            free((void *)alangs);                               \
             return CL_CLEAN;                                    \
         }                                                       \
         sleft = smax = tmp;                                     \
@@ -190,7 +190,7 @@ static char *getsistring(fmap_t *map, uint32_t ptr, uint32_t len)
 
     if (!len) return NULL;
     if (len > 400) len = 400;
-    name = cli_malloc(len + 1);
+    name = cli_max_malloc(len + 1);
     if (!name) {
         cli_dbgmsg("SIS: OOM\n");
         return NULL;
@@ -303,7 +303,7 @@ static cl_error_t real_scansis(cli_ctx *ctx, const char *tmpd)
         goto done;
     }
     pos += sis.langs * sizeof(uint16_t);
-    if (!(alangs = cli_malloc(sis.langs * sizeof(char *)))) {
+    if (!(alangs = cli_max_malloc(sis.langs * sizeof(char *)))) {
         cli_dbgmsg("SIS: OOM\n");
         goto done;
     }
@@ -428,10 +428,10 @@ static cl_error_t real_scansis(cli_ctx *ctx, const char *tmpd)
                 }
                 if ((install_filepath = getsistring(map, pdname, sdname))) {
                     cli_dbgmsg("\tInstalled to: %s\n", install_filepath);
-                    FREE(install_filepath);
+                    CLI_FREE_AND_SET_NULL(install_filepath);
                 }
 
-                if (!(ptrs = cli_malloc(fcount * sizeof(uint32_t) * 3))) {
+                if (!(ptrs = cli_max_malloc(fcount * sizeof(uint32_t) * 3))) {
                     cli_dbgmsg("\tOOM\n");
                     status = CL_EMEM;
                     goto done;
@@ -486,13 +486,13 @@ static cl_error_t real_scansis(cli_ctx *ctx, const char *tmpd)
                                 continue;
                             }
 
-                            if (!(decomp = cli_malloc(olen))) {
+                            if (!(decomp = cli_max_malloc(olen))) {
                                 cli_dbgmsg("\tOOM\n");
                                 goto done;
                             }
                             if (uncompress(decomp, &olen, comp, lens[j]) != Z_OK) {
                                 cli_dbgmsg("\tUnpacking failure\n");
-                                FREE(decomp);
+                                CLI_FREE_AND_SET_NULL(decomp);
                                 continue;
                             }
                             decompp = decomp;
@@ -506,7 +506,7 @@ static cl_error_t real_scansis(cli_ctx *ctx, const char *tmpd)
                         snprintf(ofn, 1024, "%s" PATHSEP "sis%02d", tmpd, umped);
                         ofn[1023] = '\0';
                         if ((fd = open(ofn, O_RDWR | O_CREAT | O_TRUNC | O_BINARY, 0600)) == -1) {
-                            cli_errmsg("SIS: unable to create output file %s - aborting.", ofn);
+                            cli_errmsg("SIS: unable to create output file %s - aborting.\n", ofn);
                             status = CL_ECREAT;
                             goto done;
                         }
@@ -515,7 +515,7 @@ static cl_error_t real_scansis(cli_ctx *ctx, const char *tmpd)
                             goto done;
                         }
 
-                        FREE(decomp);
+                        CLI_FREE_AND_SET_NULL(decomp);
 
                         status = cli_magic_scan_desc(fd, ofn, ctx, original_filepath, LAYER_ATTRIBUTES_NONE);
                         if (CL_SUCCESS != status) {
@@ -529,8 +529,8 @@ static cl_error_t real_scansis(cli_ctx *ctx, const char *tmpd)
                     }
                 }
 
-                FREE(original_filepath);
-                FREE(ptrs);
+                CLI_FREE_AND_SET_NULL(original_filepath);
+                CLI_FREE_AND_SET_NULL(ptrs);
 
                 fcount = 2 * sizeof(uint32_t);
                 break;
@@ -569,10 +569,10 @@ done:
     if (-1 != fd) {
         close(fd);
     }
-    FREE(original_filepath);
-    FREE(decomp);
-    FREE(ptrs);
-    FREE(alangs);
+    CLI_FREE_AND_SET_NULL(original_filepath);
+    CLI_FREE_AND_SET_NULL(decomp);
+    CLI_FREE_AND_SET_NULL(ptrs);
+    CLI_FREE_AND_SET_NULL(alangs);
 
     return status;
 }
@@ -790,7 +790,7 @@ static cl_error_t real_scansis9x(cli_ctx *ctx, const char *tmpd)
                             s->sleft = s->smax = 0;
 
                             if (cli_checklimits("sis", ctx, ALIGN4(s->fsize[s->level]), 0, 0) != CL_CLEAN) break;
-                            if (!(src = cli_malloc(ALIGN4(s->fsize[s->level])))) break;
+                            if (!(src = cli_max_malloc(ALIGN4(s->fsize[s->level])))) break;
 
                             len = ALIGN4(s->fsize[s->level]);
                             if ((uint32_t)fmap_readn(s->map, src, s->pos, len) != len) {
@@ -811,7 +811,7 @@ static cl_error_t real_scansis9x(cli_ctx *ctx, const char *tmpd)
                                     break;
                                 }
 
-                                if (!(dst = cli_malloc(uusize))) {
+                                if (!(dst = cli_max_malloc(uusize))) {
                                     cli_dbgmsg("SIS: OOM\n");
                                     free(src);
                                     break;
@@ -832,7 +832,7 @@ static cl_error_t real_scansis9x(cli_ctx *ctx, const char *tmpd)
                                 uusize = s->fsize[s->level];
                             }
                             if ((fd = open(tempf, O_RDWR | O_CREAT | O_TRUNC | O_BINARY, 0600)) == -1) {
-                                cli_errmsg("SIS: unable to create output file %s - aborting.", tempf);
+                                cli_errmsg("SIS: unable to create output file %s - aborting.\n", tempf);
                                 free(dst);
                                 break;
                             }

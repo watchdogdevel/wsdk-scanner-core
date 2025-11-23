@@ -1,7 +1,7 @@
 /*
  * Fuzz target for cl_scanfile()
  *
- * Copyright (C) 2018-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ * Copyright (C) 2018-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  * Authors: Micah Snyder, Alex Gaynor
  *
  * Redistribution and use in source and binary forms, with or without
@@ -37,6 +37,11 @@
 #include <string.h>
 
 #include "clamav.h"
+
+/* Apple does not define __pid_t */
+#ifdef __APPLE__
+typedef pid_t __pid_t;
+#endif
 
 void clamav_message_callback(enum cl_msg severity, const char* fullmsg,
                              const char* msg, void* context)

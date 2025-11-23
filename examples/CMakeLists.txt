@@ -1,4 +1,4 @@
-# Copyright (C) 2020-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+# Copyright (C) 2020-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 
 #
 # Example executables
@@ -71,6 +71,23 @@ if(WIN32)
     install(TARGETS ex_file_inspection_callback DESTINATION .)
 else()
     install(TARGETS ex_file_inspection_callback DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(ex_scan_callbacks)
+target_sources(ex_scan_callbacks
+    PRIVATE   ex_scan_callbacks.c)
+set_target_properties(ex_scan_callbacks PROPERTIES COMPILE_FLAGS "${WARNCFLAGS}")
+target_link_libraries(ex_scan_callbacks
+    PRIVATE
+        ClamAV::libclamav)
+if(LLVM_FOUND)
+    target_link_directories( ex_scan_callbacks PUBLIC ${LLVM_LIBRARY_DIRS} )
+    target_link_libraries( ex_scan_callbacks PUBLIC ${LLVM_LIBRARIES} )
+endif()
+if(WIN32)
+    install(TARGETS ex_scan_callbacks DESTINATION .)
+else()
+    install(TARGETS ex_scan_callbacks DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 add_executable(ex_cl_cvdunpack)

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Nigel Horne
@@ -50,10 +50,6 @@ typedef struct message {
     char base64_1, base64_2, base64_3;
     unsigned int isInfected : 1;
     unsigned int isTruncated : 1;
-
-#if HAVE_JSON
-    json_object *jobj;
-#endif
 } message;
 
 message *messageCreate(void);
@@ -89,8 +85,5 @@ int isuuencodebegin(const char *line);
 void messageSetCTX(message *m, cli_ctx *ctx);
 int messageContainsVirus(const message *m);
 int messageSavePartial(message *m, const char *dir, const char *id, unsigned part);
-#if HAVE_JSON
-json_object *messageGetJObj(message *m);
-#endif
 
 #endif /*_MESSAGE_H*/

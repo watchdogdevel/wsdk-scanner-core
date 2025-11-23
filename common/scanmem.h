@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2021-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2021-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2005-2010 Gianluigi Tiesi <sherpya@netfarm.it>
  *
  *  Authors: Gianluigi Tiesi
@@ -21,6 +21,8 @@
 
 #ifndef __SCANMEM_H
 #define __SCANMEM_H
+
+#include <clamav-types.h>
 
 #ifndef TH32CS_SNAPMODULE32
 #define TH32CS_SNAPMODULE32 0x00000010
@@ -54,10 +56,10 @@ typedef struct _scanmem_data_t {
 } scanmem_data;
 
 struct mem_info {
-    unsigned int d;           /*1 = clamdscan, 0 = clamscan */
-    unsigned int files;       /* number of scanned files */
-    unsigned int ifiles;      /* number of infected files */
-    unsigned long int blocks; /* number of *scanned* 16kb blocks */
+    unsigned int d;         /*1 = clamdscan, 0 = clamscan */
+    unsigned int files;     /* number of scanned files */
+    unsigned int ifiles;    /* number of infected files */
+    uint64_t bytes_scanned; /* number of *scanned* bytes */
     unsigned int errors;
 
     struct cl_engine *engine;

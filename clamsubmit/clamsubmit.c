@@ -1,7 +1,7 @@
 /*
  *  ClamAV Malware and False Positive Reporting Tool
  *
- *  Copyright (C) 2014-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2014-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Shawn Webb, Steve Morgan
  *
@@ -75,7 +75,7 @@ void usage(char *name)
     printf("\n");
     printf("                       Clam AntiVirus: Malware and False Positive Reporting Tool %s\n", get_version());
     printf("           By The ClamAV Team: https://www.clamav.net/about.html#credits\n");
-    printf("           (C) 2023 Cisco Systems, Inc.\n");
+    printf("           (C) 2025 Cisco Systems, Inc.\n");
     printf("\n");
     printf("    %s -hHinpVvd?\n", name);
     printf("\n");
@@ -203,6 +203,10 @@ int main(int argc, char *argv[])
 
     char *url_for_auth_token;
     char *url_for_presigned_cookie;
+
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+#endif
 
     curl_global_init(CURL_GLOBAL_ALL);
 

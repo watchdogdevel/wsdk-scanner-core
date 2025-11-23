@@ -1,7 +1,7 @@
 /*
  *  Extract XLM (Excel 4.0) macro source code for component MS Office Documents
  *
- *  Copyright (C) 2020-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2020-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Jonas Zaddach
  *
@@ -3785,7 +3785,7 @@ typedef enum {
  * @param data                      data buffer starting with the record header
  * @param data_len                  length of the buffer
  * @param[in,out] unpacked_header   fill this
- * @return cl_error_t               CL_SUCCESS if successfull, else some error code.
+ * @return cl_error_t               CL_SUCCESS if successful, else some error code.
  */
 static cl_error_t
 read_office_art_record_header(const unsigned char *data, size_t data_len, struct OfficeArtRecordHeader_Unpacked *unpacked_header)
@@ -4334,7 +4334,7 @@ cl_error_t process_blip_record(struct OfficeArtRecordHeader_Unpacked *rh, const 
         if (ctx->engine->keeptmp) {
             /* Drop a temp file and scan that */
             if (CL_SUCCESS != (ret = cli_gentempfd_with_prefix(
-                                   ctx->sub_tmpdir,
+                                   ctx->this_layer_tmpdir,
                                    extracted_image_type,
                                    &extracted_image_filepath,
                                    &extracted_image_tempfd))) {
@@ -4636,13 +4636,13 @@ cl_error_t cli_extract_xlm_macros_and_images(const char *dir, cli_ctx *ctx, char
 
     if (in_fd == -1) {
         cli_dbgmsg("[cli_extract_xlm_macros_and_images] Failed to open input file\n");
-        /* Don't return an error. If the file is missing, an error probably occured
+        /* Don't return an error. If the file is missing, an error probably occurred
          * earlier, such as a UTF8 conversion error in parse_formula() and so the file was never written.
          * There are no macros to scan, so report SUCCESS / CLEAN. */
         goto done;
     }
 
-    if ((ret = cli_gentempfd_with_prefix(ctx->sub_tmpdir, "xlm_macros", &tempfile, &out_fd)) != CL_SUCCESS) {
+    if ((ret = cli_gentempfd_with_prefix(ctx->this_layer_tmpdir, "xlm_macros", &tempfile, &out_fd)) != CL_SUCCESS) {
         cli_dbgmsg("[cli_extract_xlm_macros_and_images] Failed to open output file descriptor\n");
         status = ret;
         goto done;
@@ -4790,7 +4790,7 @@ cl_error_t cli_extract_xlm_macros_and_images(const char *dir, cli_ctx *ctx, char
                 } else {
                     /* already found the beginning of a drawing group, extract the remaining chunks */
                     drawinggroup_len += biff_header.length;
-                    CLI_REALLOC(drawinggroup, drawinggroup_len, status = CL_EMEM);
+                    CLI_MAX_REALLOC_OR_GOTO_DONE(drawinggroup, drawinggroup_len, status = CL_EMEM);
                     memcpy(drawinggroup + (drawinggroup_len - biff_header.length), data, biff_header.length);
                     // cli_dbgmsg("Collected %d drawing group bytes\n", biff_header.length);
                 }
@@ -4801,7 +4801,7 @@ cl_error_t cli_extract_xlm_macros_and_images(const char *dir, cli_ctx *ctx, char
                     (NULL != drawinggroup)) {
                     /* already found the beginning of an image, extract the remaining chunks */
                     drawinggroup_len += biff_header.length;
-                    CLI_REALLOC(drawinggroup, drawinggroup_len, status = CL_EMEM);
+                    CLI_MAX_REALLOC_OR_GOTO_DONE(drawinggroup, drawinggroup_len, status = CL_EMEM);
                     memcpy(drawinggroup + (drawinggroup_len - biff_header.length), data, biff_header.length);
                     // cli_dbgmsg("Collected %d image bytes\n", biff_header.length);
                 }
@@ -4950,14 +4950,14 @@ cl_error_t cli_extract_xlm_macros_and_images(const char *dir, cli_ctx *ctx, char
     }
 
     if (CL_VIRUS == cli_scan_desc(out_fd, ctx, CL_TYPE_SCRIPT, false, NULL, AC_SCAN_VIR,
-                                  NULL, NULL, LAYER_ATTRIBUTES_NONE)) {
+                                  NULL, "xlm-macro", tempfile, LAYER_ATTRIBUTES_NONE)) {
         status = CL_VIRUS;
         goto done;
     }
 
     /* If a read failed, return with an error. */
     if (size_read == (size_t)-1) {
-        cli_dbgmsg("cli_extract_xlm_macros_and_images: Read error occured when trying to read BIFF header. Truncated or malformed XLM macro file?\n");
+        cli_dbgmsg("cli_extract_xlm_macros_and_images: Read error occurred when trying to read BIFF header. Truncated or malformed XLM macro file?\n");
         status = CL_EREAD;
         goto done;
     }
@@ -4977,7 +4977,7 @@ cl_error_t cli_extract_xlm_macros_and_images(const char *dir, cli_ctx *ctx, char
     status = CL_SUCCESS;
 
 done:
-    FREE(drawinggroup);
+    CLI_FREE_AND_SET_NULL(drawinggroup);
 
     if (in_fd != -1) {
         close(in_fd);
@@ -4992,12 +4992,12 @@ done:
         out_fd = -1;
     }
 
-    FREE(data);
+    CLI_FREE_AND_SET_NULL(data);
 
     if (tempfile && !ctx->engine->keeptmp) {
         remove(tempfile);
     }
-    FREE(tempfile);
+    CLI_FREE_AND_SET_NULL(tempfile);
 
     return status;
 }

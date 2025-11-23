@@ -1,4 +1,4 @@
-# Copyright (C) 2020-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+# Copyright (C) 2020-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 
 #
 # Decrypt test files
@@ -148,6 +148,8 @@ if(LLVM_FOUND)
     list(JOIN LLVM_LIBRARY_DIRS "," LLVM_DIRS)
 endif()
 
+set(CVD_CERTS_DIR         ${CMAKE_SOURCE_DIR}/unit_tests/input/signing/verify)
+
 if(WIN32)
     file(TO_NATIVE_PATH ${CMAKE_SOURCE_DIR}                                     SOURCE)
     file(TO_NATIVE_PATH ${CMAKE_BINARY_DIR}                                     BUILD)
@@ -194,6 +196,9 @@ if(WIN32)
         file(TO_NATIVE_PATH $<TARGET_FILE_DIR:check_clamav>/freshclam.exe       FRESHCLAM)
         file(TO_NATIVE_PATH $<TARGET_FILE_DIR:check_clamav>/sigtool.exe         SIGTOOL)
     endif()
+
+    # Convert the CVD_CERTS_DIR to a native path for Windows (replacing forward slashes with backslashes).
+    file(TO_NATIVE_PATH ${CVD_CERTS_DIR} CVD_CERTS_DIR)
 else()
     set(LD_LIBRARY_PATH     $<TARGET_FILE_DIR:ClamAV::libclamav>:$<TARGET_FILE_DIR:${LIBMSPACK}>:$ENV{LD_LIBRARY_PATH})
     if(NOT ENABLE_LIBCLAMAV_ONLY)
@@ -264,6 +269,7 @@ set(ENVIRONMENT
     CK_DEFAULT_TIMEOUT=300
     LD_LIBRARY_PATH=${LD_LIBRARY_PATH}
     DYLD_LIBRARY_PATH=${LD_LIBRARY_PATH}
+    CVD_CERTS_DIR=${CVD_CERTS_DIR}
     PATH=${NEW_PATH}
     LIBSSL=${LIBSSL}
     LIBCRYPTO=${LIBCRYPTO}
@@ -297,6 +303,40 @@ set(ENVIRONMENT
     CLAMAV_MILTER=${CLAMAV_MILTER}
     CLAMONACC=${CLAMONACC}
 )
+
+# The Rust openssl-sys crate needs to know how to find the OpenSSL headers and libraries.
+get_filename_component(OPENSSL_DIR "${OPENSSL_INCLUDE_DIR}" DIRECTORY)
+
+set(OPENSSL_LIBS "")
+
+# Get the libcrypto library.
+# Remove path and extension.
+get_filename_component(LIBNAME "${OPENSSL_CRYPTO_LIBRARY}" NAME_WLE)
+# Remove "lib" prefix, if present.
+string(REGEX REPLACE "^lib" "" LIBNAME "${LIBNAME}")
+# Add libcrypto.
+set(OPENSSL_LIBS "${LIBNAME}")
+
+# Get the libssl library.
+# Remove path and extension.
+get_filename_component(LIBNAME "${OPENSSL_SSL_LIBRARY}" NAME_WLE)
+# Remove "lib" prefix, if present.
+string(REGEX REPLACE "^lib" "" LIBNAME "${LIBNAME}")
+# Add libssl.
+set(OPENSSL_LIBS "${OPENSSL_LIBS}:${LIBNAME}")
+
+# Get directory of the first library to use for the OPENSSL_LIB_DIR.
+get_filename_component(OPENSSL_LIB_DIR "${OPENSSL_CRYPTO_LIBRARY}" DIRECTORY)
+
+list(APPEND ENVIRONMENT "OPENSSL_DIR=${OPENSSL_DIR}")
+list(APPEND ENVIRONMENT "OPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR}")
+if(NOT MSVC)
+    # Setting OPENSSL_LIBS caused failures in testing for Windows.
+    # It's possible they require a different format or the .lib or .dll extensions.
+    # For now, we'll only set this for non-Windows builds.
+    list(APPEND ENVIRONMENT "OPENSSL_LIBS=${OPENSSL_LIBS}")
+endif()
+list(APPEND ENVIRONMENT "OPENSSL_LIB_DIR=${OPENSSL_LIB_DIR}")
 
 #
 # The Tests
@@ -441,6 +481,8 @@ if(WIN32)
                         $<TARGET_FILE_DIR:LibXml2::LibXml2>
                         $<TARGET_FILE_DIR:CURL::libcurl>
                         $<TARGET_FILE_DIR:JSONC::jsonc>
+                    POST_EXCLUDE_REGEXES
+                        "[cC]:[\\/][wW][iI][nN][dD][oO][wW][sS]"
                     CONFLICTING_DEPENDENCIES_PREFIX CTEST_CONFLICTING_DEPENDENCIES
                 )
                 foreach(_file ${_r_deps})
@@ -496,6 +538,8 @@ if(WIN32)
                         $<TARGET_FILE_DIR:PCRE2::pcre2>
                         $<TARGET_FILE_DIR:LibXml2::LibXml2>
                         $<TARGET_FILE_DIR:JSONC::jsonc>
+                    POST_EXCLUDE_REGEXES
+                        "[cC]:[\\/][wW][iI][nN][dD][oO][wW][sS]"
                     CONFLICTING_DEPENDENCIES_PREFIX CTEST_CONFLICTING_DEPENDENCIES
                 )
                 foreach(_file ${_r_deps})

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2019-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2019-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *
  *  Authors: Mickey Sola
  *
@@ -49,7 +49,7 @@
 // common
 #include "optparser.h"
 #include "output.h"
-
+#include "misc.h"
 // clamd
 #include "server.h"
 #include "clamd_others.h"
@@ -105,7 +105,7 @@ static int onas_ddd_init_wdlt(uint64_t nwatches)
 
     if (nwatches <= 0) return CL_EARG;
 
-    wdlt = (char **)cli_calloc(nwatches << 1, sizeof(char *));
+    wdlt = (char **)calloc(nwatches << 1, sizeof(char *));
     if (!wdlt) return CL_EMEM;
 
     wdlt_len = nwatches << 1;
@@ -121,7 +121,7 @@ static int onas_ddd_grow_wdlt(void)
 
     char **ptr = NULL;
 
-    ptr = (char **)cli_realloc(wdlt, wdlt_len << 1);
+    ptr = (char **)cli_safer_realloc(wdlt, wdlt_len << 1);
     if (ptr) {
         wdlt = ptr;
         memset(&ptr[wdlt_len], 0, sizeof(char *) * (wdlt_len - 1));
@@ -143,6 +143,7 @@ int onas_ddd_init(uint64_t nwatches, size_t ht_size)
     int ret                            = 0;
     char nwatch_str[MAX_WATCH_LEN + 1] = {0};
     char *p                            = NULL;
+    int64_t tmp                        = 0;
     nwatches                           = 0;
 
     nwfd = open(nwatch_file, O_RDONLY);
@@ -152,7 +153,13 @@ int onas_ddd_init(uint64_t nwatches, size_t ht_size)
     close(nwfd);
     if (ret < 0) return CL_EREAD;
 
-    nwatches = strtol(nwatch_str, &p, 10);
+    tmp = strtol(nwatch_str, &p, 10);
+    if (tmp < 0 || tmp == LONG_MAX) {
+        /*Seems like a sane value (also the value on my ubuntu system)*/
+        nwatches = 0x10000;
+    } else {
+        nwatches = tmp;
+    }
 
     ret = onas_ddd_init_wdlt(nwatches);
     if (ret) return ret;
@@ -243,9 +250,9 @@ static int onas_ddd_watch_hierarchy(const char *pathname, size_t len, int fd, ui
         curr = curr->next;
 
         size_t size      = len + strlen(curr->dirname) + 2;
-        char *child_path = (char *)cli_malloc(size);
+        char *child_path = (char *)malloc(size);
         if (child_path == NULL) {
-            logg(LOGG_ERROR, "ClamInotif: out of memory when when adding child for %s\n", hnode->pathname);
+            logg(LOGG_ERROR, "ClamInotif: out of memory when adding child for %s\n", hnode->pathname);
             return CL_EMEM;
         }
 
@@ -330,7 +337,7 @@ static int onas_ddd_unwatch_hierarchy(const char *pathname, size_t len, int fd, 
         curr = curr->next;
 
         size_t size      = len + strlen(curr->dirname) + 2;
-        char *child_path = (char *)cli_malloc(size);
+        char *child_path = (char *)malloc(size);
         if (child_path == NULL)
             return CL_EMEM;
         if (hnode->pathname[len - 1] == '/')
@@ -375,7 +382,7 @@ cl_error_t onas_enable_inotif_ddd(struct onas_context **ctx)
 
 void *onas_ddd_th(void *arg)
 {
-    /* Set thread name for profiling and debuging */
+    /* Set thread name for profiling and debugging */
     const char thread_name[] = "clamonacc-ddd";
 
 #if defined(__linux__)
@@ -524,15 +531,28 @@ void *onas_ddd_th(void *arg)
     /* Remove provided paths recursively. */
     if ((pt = optget(ctx->clamdopts, "OnAccessExcludePath"))->enabled) {
         while (pt) {
-            size_t ptlen = strlen(pt->strarg);
-            if (onas_ht_get(ddd_ht, pt->strarg, ptlen, NULL) == CL_SUCCESS) {
-                if (onas_ht_rm_hierarchy(ddd_ht, pt->strarg, ptlen, 0)) {
-                    logg(LOGG_ERROR, "ClamInotif: can't exclude '%s'\n", pt->strarg);
-                    return NULL;
-                } else
-                    logg(LOGG_INFO, "ClamInotif: excluding '%s' (and all sub-directories)\n", pt->strarg);
+            struct onas_bucket *ob = ddd_ht->head;
+            /* Iterate through the activated buckets to find matched paths */
+            while (ob != NULL) {
+                struct onas_element *oe = ob->head;
+                while (oe != NULL) {
+                    if (match_regex(oe->key, pt->strarg)) {
+                        if (onas_ht_get(ddd_ht, oe->key, oe->klen, NULL) == CL_SUCCESS) {
+                            char *oe_key = cli_safer_strdup(oe->key);
+                            if (onas_ht_rm_hierarchy(ddd_ht, oe->key, oe->klen, 0)) {
+                                logg(LOGG_ERROR, "ClamInotif: can't exclude '%s'\n", oe_key);
+                                free(oe_key);
+                                return NULL;
+                            } else {
+                                logg(LOGG_INFO, "ClamInotif: excluding '%s' (and all sub-directories)\n", oe_key);
+                                free(oe_key);
+                            }
+                        }
+                    }
+                    oe = oe->next;
+                }
+                ob = ob->next;
             }
-
             pt = (struct optstruct *)pt->nextarg;
         }
     }
@@ -598,8 +618,8 @@ void *onas_ddd_th(void *arg)
                         }
                     }
                 }
-                pt = (struct optstruct *)pt->nextarg;
             }
+            pt = (struct optstruct *)pt->nextarg;
         }
     }
 
@@ -671,15 +691,15 @@ void *onas_ddd_th(void *arg)
                 }
 
                 if (event->mask & IN_UNMOUNT) {
-                    logg(LOGG_ERROR, "ClamInotif: inofify event IN_UNMOUNT (mask:%d) occured, clamonacc should be restartet because a filesystem monitored by inotify was umounted.\n", event->mask);
+                    logg(LOGG_ERROR, "ClamInotif: inotify event IN_UNMOUNT (mask:%d) occurred, clamonacc should be restarted because a filesystem monitored by inotify was umounted.\n", event->mask);
                 } else if (event->mask & IN_Q_OVERFLOW) {
-                    logg(LOGG_ERROR, "ClamInotif: inotify event IN_Q_OVERFLOW (mask:%d) occured, clamonacc should be restartet because a inotify events were dropped by the kernel and the internal clamonacc inotify data structures are likely invalid.\n", event->mask);
+                    logg(LOGG_ERROR, "ClamInotif: inotify event IN_Q_OVERFLOW (mask:%d) occurred, clamonacc should be restarted because inotify events were dropped by the kernel and the internal clamonacc inotify data structures are likely invalid.\n", event->mask);
                 } else if (event->mask & IN_IGNORED) {
                     // Ignore for debugging purposes
                 } else {
                     len              = strlen(path);
                     size_t size      = strlen(child) + len + 2;
-                    char *child_path = (char *)cli_malloc(size);
+                    char *child_path = (char *)malloc(size);
                     if (child_path == NULL) {
                         logg(LOGG_DEBUG, "ClamInotif: could not allocate space for child path ... aborting\n");
                         return NULL;
@@ -814,14 +834,14 @@ static void onas_ddd_handle_extra_scanning(struct onas_context *ctx, const char 
 
     struct onas_scan_event *event_data;
 
-    event_data = (struct onas_scan_event *)cli_calloc(1, sizeof(struct onas_scan_event));
+    event_data = (struct onas_scan_event *)calloc(1, sizeof(struct onas_scan_event));
     if (NULL == event_data) {
         logg(LOGG_ERROR, "ClamInotif: could not allocate memory for event data struct\n");
     }
 
     /* general mapping */
     onas_map_context_info_to_event_data(ctx, &event_data);
-    event_data->pathname = cli_strdup(pathname);
+    event_data->pathname = cli_safer_strdup(pathname);
     event_data->bool_opts |= ONAS_SCTH_B_SCAN;
 
     /* inotify specific stuffs */

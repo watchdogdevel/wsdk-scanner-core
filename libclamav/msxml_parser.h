@@ -1,7 +1,7 @@
 /*
  * Extract component parts of various MS XML files (e.g. MS Office 2003 XML Documents)
  *
- * Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ * Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  * Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  * Authors: Kevin Lin
@@ -22,8 +22,6 @@
 
 #ifndef __MSXML_PARSER_H
 #define __MSXML_PARSER_H
-
-#if HAVE_LIBXML2
 
 #if HAVE_CONFIG_H
 #include "clamav-config.h"
@@ -87,7 +85,5 @@ struct msxml_ctx {
 };
 
 cl_error_t cli_msxml_parse_document(cli_ctx *ctx, xmlTextReaderPtr reader, const struct key_entry *keys, const size_t num_keys, uint32_t flags, struct msxml_ctx *mxctx);
-
-#endif /* HAVE_LIBXML2 */
 
 #endif /* __MSXML_PARSER_H */

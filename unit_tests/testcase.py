@@ -1,4 +1,4 @@
-# Copyright (C) 2017-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+# Copyright (C) 2017-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 
 """
 Wrapper for unittest to provide ClamAV specific test environment features.
@@ -359,8 +359,8 @@ class TestCase(unittest.TestCase):
         if stdout_unexpected:
             self.verify_unexpected_output(stdout_unexpected, stdout)
 
-    def _md5(self, filepath):
-        """Get md5 hash sum of a given file.
+    def _sha2_256(self, filepath):
+        """Get sha2-256 hash sum of a given file.
 
         :Parameters:
             - `filepath`: path to file.
@@ -375,31 +375,31 @@ class TestCase(unittest.TestCase):
         assert isinstance(filepath, str), "Invalid filepath: %s." % (filepath,)
         assert os.path.exists(filepath), "file does not exist: %s." % (filepath,)
 
-        hash_md5 = hashlib.md5()
+        hash_sha2_256 = hashlib.sha256()
         with open(filepath, "rb") as f:
             for chunk in iter(lambda: f.read(4096), b""):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
+                hash_sha2_256.update(chunk)
+        return hash_sha2_256.hexdigest()
 
-    def get_md5(self, files):
-        """Get md5 hash sum of every given file.
+    def get_sha2_256(self, files):
+        """Get sha2-256 hash sum of every given file.
 
         :Parameters:
             - `files`: a list or a tuple of files.
 
         :Return:
-            - dictionary like {file: md5sum}.
+            - dictionary like {file: sha2_256_sum}.
 
         :Exceptions:
             - `AssertionError`: is raised if `files` is empty.
         """
         assert files, "`files` should not be empty."
         files = files if isinstance(files, (list, tuple)) else [files]
-        md5_dict = {}
+        sha2_256_dict = {}
         for path in files:
             if os.path.isfile(path):
-                md5_dict[path] = self._md5(path)
-        return md5_dict
+                sha2_256_dict[path] = self._sha2_256(path)
+        return sha2_256_dict
 
     def _pkill(self, process, options=["-9 -f"], sudo=False):
         """Wrapper for CLI *nix `pkill` command.
@@ -507,6 +507,20 @@ class TestCase(unittest.TestCase):
             - namedtuple(ec, out, err).
         """
         return self.execute(cmd, **kwargs)
+
+    # Find the metadata.json file and verify its contents.
+    def verify_metadata_json(self, tempdir, expected=[], unexpected=[]):
+        for parent, dirs, files in os.walk(tempdir):
+            for f in files:
+                if "metadata.json" == f:
+                    with open(os.path.join(parent, f)) as handle:
+                        metadata_json = handle.read()
+                        self.verify_output(metadata_json, expected=expected, unexpected=unexpected)
+
+                    # There is only one metadata.json per scan.
+                    # We found it, so we can break out of the loop.
+                    break
+
 
 
 class Logger(object):

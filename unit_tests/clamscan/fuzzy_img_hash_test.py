@@ -1,4 +1,4 @@
-# Copyright (C) 2020-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+# Copyright (C) 2020-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
 
 """
 Run clamscan tests.
@@ -60,6 +60,26 @@ class TC(testcase.TestCase):
         ]
         self.verify_output(output.out, expected=expected_stdout)
 
+        # Try again with image fuzzy hashing disabled to verify the flag will disable this feature (at least for PNG files)
+        command = '{valgrind} {valgrind_args} {clamscan} -d {path_db} {testfiles} --allmatch --scan-image-fuzzy-hash=no'.format(
+            valgrind=TC.valgrind, valgrind_args=TC.valgrind_args, clamscan=TC.clamscan,
+            path_db=TC.path_tmp / 'good.ldb',
+            testfiles=TC.testfiles,
+        )
+        output = self.execute_command(command)
+
+        assert output.ec == 0  # virus
+
+        # Try again with image scanning disabled to verify that the flag disables this feature (at least for PNG files)
+        command = '{valgrind} {valgrind_args} {clamscan} -d {path_db} {testfiles} --allmatch --scan-image=no'.format(
+            valgrind=TC.valgrind, valgrind_args=TC.valgrind_args, clamscan=TC.clamscan,
+            path_db=TC.path_tmp / 'good.ldb',
+            testfiles=TC.testfiles,
+        )
+        output = self.execute_command(command)
+
+        assert output.ec == 0  # virus
+
     #
     # Next check with the bad signatures
     #
@@ -82,7 +102,7 @@ class TC(testcase.TestCase):
 
         expected_stderr = [
             'LibClamAV Error: Failed to load',
-            'Invalid hash: Image fuzzy hash must be 16 characters in length: abcdef',
+            'Invalid hash: ImageFuzzyHash hash must be 16 characters in length: abcdef',
         ]
         unexpected_stdout = [
             'logo.png.bad.UNOFFICIAL FOUND',
@@ -91,7 +111,7 @@ class TC(testcase.TestCase):
         self.verify_output(output.out, unexpected=unexpected_stdout)
 
     def test_sigs_bad_hamming(self):
-        self.step_name('Test Unsupported hamming distancee')
+        self.step_name('Test Unsupported hamming distance')
 
         # Unsupported hamming distance
         (TC.path_tmp / 'invalid-ham.ldb').write_text(

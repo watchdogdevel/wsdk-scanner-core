@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2013-2023 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
  *
  *  Authors: Tomasz Kojm
@@ -82,7 +82,7 @@ char *freshdbdir(void)
 
     /* try to find the most up-to-date db directory */
     dbdir = cl_retdbdir();
-    if ((opts = optparse(CONFDIR_FRESHCLAM, 0, NULL, 0, OPT_FRESHCLAM, 0, NULL))) {
+    if ((opts = optparse(OPT_CONFDIR_FRESHCLAM, 0, NULL, 0, OPT_FRESHCLAM, 0, NULL))) {
         if ((opt = optget(opts, "DatabaseDirectory"))->enabled) {
             if (strcmp(dbdir, opt->strarg)) {
                 char *daily = (char *)malloc(strlen(opt->strarg) + strlen(dbdir) + 30);
@@ -334,7 +334,7 @@ int daemonize_parent_wait(const char *const user, const char *const log_file)
         return -1;
     } else if (daemonizePid) { // parent
         /* The parent will wait until either the child process
-         * exits, or signals the parent that it's initialization is
+         * exits, or signals the parent that its initialization is
          * complete.  If it exits, it is due to an error condition,
          * so the parent should exit with the same error code as the child.
          * If the child signals the parent that initialization is complete, it
@@ -479,7 +479,15 @@ unsigned int countlines(const char *filename)
         return 0;
 
     while (fgets(buff, sizeof(buff), fh)) {
+        // ignore comments
         if (buff[0] == '#') continue;
+
+        // ignore empty lines in CR/LF format
+        if (buff[0] == '\r' && buff[1] == '\n') continue;
+
+        // ignore empty lines in LF format
+        if (buff[0] == '\n') continue;
+
         lines++;
     }
 
