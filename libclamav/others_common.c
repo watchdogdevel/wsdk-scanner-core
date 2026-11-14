@@ -41,6 +41,9 @@
 #endif
 #include <time.h>
 #include <fcntl.h>
+#ifdef __FreeBSD__
+#include <sys/user.h>
+#endif
 #ifdef HAVE_PWD_H
 #include <pwd.h>
 #endif
@@ -1492,6 +1495,31 @@ cl_error_t cli_get_filepath_from_filedesc(int desc, char **filepath)
         goto done;
     }
 
+#elif defined(__FreeBSD__) && defined(F_KINFO)
+
+    struct kinfo_file file_info;
+
+    if (NULL == filepath) {
+        cli_errmsg("cli_get_filepath_from_filedesc: Invalid args.\n");
+        goto done;
+    }
+
+    memset(&file_info, 0, sizeof(file_info));
+    file_info.kf_structsize = sizeof(file_info);
+
+    if ((fcntl(desc, F_KINFO, &file_info) < 0) || ('\0' == file_info.kf_path[0])) {
+        cli_dbgmsg("cli_get_filepath_from_filedesc: Failed to resolve filename for descriptor %d\n", desc);
+        status = CL_EOPEN;
+        goto done;
+    }
+
+    evaluated_filepath = CLI_STRNDUP(file_info.kf_path, CLI_STRNLEN(file_info.kf_path, sizeof(file_info.kf_path)));
+    if (NULL == evaluated_filepath) {
+        cli_errmsg("cli_get_filepath_from_filedesc: Failed to allocate memory to store filename\n");
+        status = CL_EMEM;
+        goto done;
+    }
+
 #elif C_DARWIN
 
     char fname[PATH_MAX];
@@ -1554,10 +1582,6 @@ cl_error_t cli_realpath(const char *file_name, char **real_filename)
 #ifdef _WIN32
     HANDLE hFile   = INVALID_HANDLE_VALUE;
     wchar_t *wpath = NULL;
-    WIN32_FILE_ATTRIBUTE_DATA attrs;
-
-#elif C_DARWIN
-    int fd = -1;
 #endif
 
     cli_dbgmsg("Checking realpath of %s\n", file_name);
@@ -1590,34 +1614,18 @@ cl_error_t cli_realpath(const char *file_name, char **real_filename)
 
     status = cli_get_filepath_from_handle(hFile, &real_file_path);
 
-#elif C_DARWIN
-
-    /* Using the filepath from filedesc method on macOS because
-       realpath will fail to check the realpath of a symbolic link if
-       the link doesn't point to anything.
-       Plus, we probably don't wan tot follow the link in this case anyways,
-       so this will check the realpath of the link, and not of the thing the
-       link points to. */
-    fd = open(file_name, O_RDONLY | O_SYMLINK);
-    if (fd == -1) {
-        char err[128];
-        cli_strerror(errno, err, sizeof(err));
-        if (errno == EACCES) {
-            status = CL_EACCES;
-        } else {
-            status = CL_EOPEN;
-        }
-        cli_dbgmsg("Can't open file %s: %s\n", file_name, err);
-        goto done;
-    }
-
-    status = cli_get_filepath_from_filedesc(fd, &real_file_path);
-
 #else
 
+    /*
+     * On POSIX, cli_realpath() is used for canonical resolved paths such as
+     * quarantine action_path values and the quarantine destination root.
+     * Do not use the old macOS O_SYMLINK/F_GETPATH approach here: that returns
+     * the symlink's own path, not the resolved target path, which breaks the
+     * dual-path scan/quarantine design.
+     */
     real_file_path = realpath(file_name, NULL);
     if (NULL == real_file_path) {
-        status = CL_EMEM;
+        status = (errno == EACCES) ? CL_EACCES : CL_EOPEN;
         goto done;
     }
 
@@ -1635,10 +1643,6 @@ done:
     }
     if (NULL != wpath) {
         free(wpath);
-    }
-#elif C_DARWIN
-    if (fd != -1) {
-        close(fd);
     }
 #endif
 

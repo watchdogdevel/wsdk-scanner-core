@@ -1886,17 +1886,20 @@ extern cl_error_t cl_scanmap_ex(
     char **file_type_out);
 
 /**
- * @brief Scan a file, given a handle.
+ * @brief Scan a file, given a file handle.
  *
- * @param handle			Handle of the file to be scanned
- * @param filename          Filepath of the file to be scanned.
- * @param[out] virname      Will be set to a statically allocated (i.e. needs not be freed) signature name if the scan matches against a signature.
- * @param[out] scanned      The number of bytes scanned.
- * @param engine            The scanning engine.
- * @param scanoptions       Scanning options.
+ * @param handle        Handle of the file to be scanned
+ * @param filename      Filepath of the file to be scanned.
+ * @param[out] virname  Will be set to a statically allocated (i.e. needs not be
+ *                      freed) signature name if the scan matches against a
+ *                      signature.
+ * @param[out] scanned  The number of bytes scanned.
+ * @param engine        The scanning engine.
+ * @param scanoptions   Scanning options.
  * @param context       An application-defined context struct, opaque to
  *                      libclamav. May be used within your callback functions.
- * @return cl_error_t       CL_CLEAN, CL_VIRUS, or an error code if an error occured during the scan.
+ * @return cl_error_t   CL_CLEAN, CL_VIRUS, or an error code if an error
+ *                      occurred during the scan.
  */
 extern cl_error_t cl_scanhandle(
     HANDLE handle,
@@ -1908,18 +1911,23 @@ extern cl_error_t cl_scanhandle(
     void *context);
 
 /**
- * @brief Scan a file, given a filename.
+ * @brief Scan a file, given a file handle.
  *
- * This callback variant allows the caller to provide a context structure that caller provided callback functions can interpret.
+ * This callback variant allows the caller to provide a context structure that
+ * caller provided callback functions can interpret.
  *
- * @param handle			Handle of the file to be scanned
- * @param filename          Filepath of the file to be scanned.
- * @param[out] virname      Will be set to a statically allocated (i.e. needs not be freed) signature name if the scan matches against a signature.
- * @param[out] scanned      The number of bytes scanned.
- * @param engine            The scanning engine.
- * @param scanoptions       Scanning options.
- * @param[in/out] context   An opaque context structure allowing the caller to record details about the sample being scanned.
- * @return cl_error_t       CL_CLEAN, CL_VIRUS, or an error code if an error occured during the scan.
+ * @param handle        Handle of the file to be scanned
+ * @param filename      Filepath of the file to be scanned.
+ * @param[out] virname  Will be set to a statically allocated (i.e. needs not be
+ *                      freed) signature name if the scan matches against a
+ *                      signature.
+ * @param[out] scanned  The number of bytes scanned.
+ * @param engine        The scanning engine.
+ * @param scanoptions   Scanning options.
+ * @param[in/out] context   An opaque context structure allowing the caller to
+ *                          record details about the sample being scanned.
+ * @return cl_error_t   CL_CLEAN, CL_VIRUS, or an error code if an error
+ *                      occurred during the scan.
  */
 extern cl_error_t cl_scanhandle_callback(
     HANDLE handle,
@@ -1929,8 +1937,6 @@ extern cl_error_t cl_scanhandle_callback(
     const struct cl_engine *engine,
     struct cl_scan_options *scanoptions,
     void *context);
-
-
 
 /* ----------------------------------------------------------------------------
  * Database handling.

@@ -71,7 +71,7 @@
  * in re-enabling affected modules.
  */
 
-#define CL_FLEVEL 231
+#define CL_FLEVEL 234
 #define CL_FLEVEL_DCONF CL_FLEVEL
 #define CL_FLEVEL_SIGTOOL CL_FLEVEL
 
@@ -1283,7 +1283,7 @@ cl_error_t cli_get_filepath_from_handle(HANDLE hFile, char **filepath);
  * @brief   Attempt to get a filename from an open file descriptor.
  *
  * Caller is responsible for free'ing the filename.
- * Should work on Linux, macOS, Windows.
+ * Should work on Linux, FreeBSD when F_KINFO is available, macOS, Windows.
  *
  * @param desc           File descriptor
  * @param[out] filepath  Will be set to file path if found, or NULL.
