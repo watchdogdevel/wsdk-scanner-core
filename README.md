@@ -13,7 +13,7 @@
 </p>
 
 Clamav windows HANDLE type scan improvement. In this version of libclamav, cl_scan function is extended to accept HANDLE type of variables.
-That will make easy to make a scan using the return value of CreateFile or equvielent. The clamav version is 1.2.1.
+That will make easy to make a scan using the return value of CreateFile or equvielent. The clamav version is 1.5.4.
 
 ## Installation
 Please replace current libclamav installation with wsdk scanner core directory.
