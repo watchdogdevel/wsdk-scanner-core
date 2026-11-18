@@ -1,3 +1,5 @@
+/* Modified by WatchdogDevelopment LLC, 2023-2026: exports cl_scanhandle and
+   cl_scanhandle_callback. */
 CLAMAV_PUBLIC {
   global:
     cl_cvdfree;

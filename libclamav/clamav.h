@@ -1,6 +1,8 @@
 /*
  *  Copyright (C) 2013-2025 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  *  Copyright (C) 2007-2013 Sourcefire, Inc.
+ *  Modified by WatchdogDevelopment LLC, 2023-2026: added cl_scanhandle and
+ *  cl_scanhandle_callback, which scan an open Windows file HANDLE.
  *
  *  Authors: Tomasz Kojm
  *

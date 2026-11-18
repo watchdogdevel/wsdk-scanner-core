@@ -1,4 +1,18 @@
+WSDK Scanner Core is a modified version of ClamAV and is licensed, as a whole,
+under the GNU General Public License, version 2: see COPYING.txt. The licenses
+of the third-party code ClamAV includes are in COPYING.
+
+The code WatchdogDevelopment LLC added to ClamAV (the cl_scanhandle and
+cl_scanhandle_callback scan entry points in libclamav/scanners.c,
+libclamav/clamav.h and libclamav/libclamav.map) may also be used on its own
+under the Boost Software License, Version 1.0, below. This does not change the
+license of ClamAV's code, or of the scanner core as a whole.
+
+--------------------------------------------------------------------------------
+
 Boost Software License - Version 1.0 - August 17th, 2003
+
+Copyright (C) 2023-2026 WatchdogDevelopment LLC
 
 Permission is hereby granted, free of charge, to any person or organization
 obtaining a copy of the software and accompanying documentation covered by

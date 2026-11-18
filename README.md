@@ -35,5 +35,14 @@ HANDLE handle = CreateFile(path,
 int result = cl_scanhandle(handle, path, &virname, &size, engine, &options);
 ```
 
+## Building
+[BUILD-WINDOWS.md](BUILD-WINDOWS.md) is the exact recipe for the Windows build.
+
 ## Licensing
-This project is licensed under the [Boost Software License - Version 1.0](https://github.com/watchdogdevel/wsdk-scanner-core/blob/master/LICENSE).
+WSDK Scanner Core is a modified version of [ClamAV](https://github.com/Cisco-Talos/clamav) and, like ClamAV, is licensed
+under the **GNU General Public License, version 2** ([COPYING.txt](COPYING.txt)); the licenses of the code ClamAV
+includes are in [COPYING](COPYING). ClamAV is Copyright (C) Cisco Systems, Inc. and its contributors.
+
+The code WatchdogDevelopment LLC added (the `cl_scanhandle` and `cl_scanhandle_callback` scan entry points) may also be
+used on its own under the [Boost Software License 1.0](LICENSE). That does not change the license of the rest: the
+scanner core as a whole, and anything built from it, is GPL-2.0.
